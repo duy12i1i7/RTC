@@ -1,0 +1,65 @@
+{
+  "scenario": "tb4_typed_projection_v1",
+  "sidecar": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "flush_period_ms": 20,
+  "include_feedback": true,
+  "link": {
+    "capacity_bytes_per_tick": 4096,
+    "rtt_ms": 40,
+    "jitter_ms": 5,
+    "loss": 0.005
+  },
+  "topics": [
+    {
+      "topic": "/robot_0000/cmd_vel",
+      "msg_type": "geometry_msgs/msg/Twist",
+      "robot_id": "robot_0000",
+      "qos": {
+        "reliability": "reliable",
+        "depth": 1,
+        "deadline_ms": 45,
+        "lifespan_ms": 90
+      },
+      "collision_risk": 0.8,
+      "coordination_pressure": 0.15
+    },
+    {
+      "topic": "/robot_0000/odom",
+      "msg_type": "nav_msgs/msg/Odometry",
+      "robot_id": "robot_0000",
+      "qos": {
+        "reliability": "reliable",
+        "depth": 3,
+        "deadline_ms": 120,
+        "lifespan_ms": 350
+      }
+    },
+    {
+      "topic": "/robot_0000/scan",
+      "msg_type": "sensor_msgs/msg/LaserScan",
+      "robot_id": "robot_0000",
+      "qos": {
+        "reliability": "best_effort",
+        "depth": 1,
+        "deadline_ms": 160,
+        "lifespan_ms": 300
+      }
+    },
+    {
+      "topic": "/robot_0000/front_camera/image_raw/compressed",
+      "msg_type": "sensor_msgs/msg/CompressedImage",
+      "robot_id": "robot_0000",
+      "operator_visible": true,
+      "operator_attention": 1.0,
+      "qos": {
+        "reliability": "best_effort",
+        "depth": 1,
+        "deadline_ms": 120,
+        "lifespan_ms": 180
+      }
+    }
+  ]
+}

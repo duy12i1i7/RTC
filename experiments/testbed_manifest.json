@@ -1,0 +1,386 @@
+{
+  "suite": "fleetqox_research_testbed",
+  "version": "0.1.0",
+  "tiers": [
+    {
+      "tier": "T0",
+      "name": "analytical_fleetqox_sim",
+      "runner": "local_python",
+      "purpose": "Validate QoX metrics, scheduler behavior, and large-fleet stress patterns without ROS dependencies.",
+      "baselines": ["fifo", "static_priority", "fleetqox_csds", "fleetqox_predictive"],
+      "scenarios": [
+        {
+          "name": "warehouse_50_constrained",
+          "robots": 50,
+          "seconds": 30,
+          "seed": 7,
+          "capacity_bytes_per_second": 300000
+        },
+        {
+          "name": "warehouse_100_constrained",
+          "robots": 100,
+          "seconds": 30,
+          "seed": 11,
+          "capacity_bytes_per_second": 600000
+        },
+        {
+          "name": "warehouse_300_stress",
+          "robots": 300,
+          "seconds": 20,
+          "seed": 17,
+          "capacity_bytes_per_second": 1800000
+        }
+      ],
+      "metrics": [
+        "control_deadline_miss_ratio",
+        "stale_state_ratio",
+        "qoe_delivery_ratio",
+        "utility_score",
+        "bytes_sent",
+        "degraded",
+        "compacted"
+      ]
+    },
+    {
+      "tier": "T1",
+      "name": "ros2_synthetic_graph",
+      "runner": "planned_ros2_performance_test",
+      "purpose": "Measure real ROS 2 pub/sub latency, jitter, throughput, CPU, and QoS compatibility across RMWs.",
+      "baselines": [
+        "rmw_fastrtps_cpp",
+        "rmw_cyclonedds_cpp",
+        "rmw_zenoh_cpp"
+      ],
+      "scenarios": [
+        {
+          "name": "small_messages_many_endpoints",
+          "publishers": 100,
+          "subscribers": 100,
+          "message_bytes": 128,
+          "qos": "reliable_keep_last_1",
+          "performance_msg": "Array1k",
+          "rate_hz": 100,
+          "runtime_s": 30,
+          "num_pub_threads": 1,
+          "num_sub_threads": 1
+        },
+        {
+          "name": "large_sensor_stream",
+          "publishers": 20,
+          "subscribers": 20,
+          "message_bytes": 1048576,
+          "qos": "best_effort_keep_last_1",
+          "performance_msg": "Array1m",
+          "rate_hz": 30,
+          "runtime_s": 30,
+          "num_pub_threads": 1,
+          "num_sub_threads": 1
+        },
+        {
+          "name": "mixed_control_sensor_debug",
+          "publishers": 150,
+          "subscribers": 150,
+          "message_bytes": "mixed",
+          "qos": "mixed",
+          "components": [
+            {
+              "name": "control",
+              "msg": "Array1k",
+              "rate_hz": 50,
+              "runtime_s": 30,
+              "qos": "reliable_keep_last_1",
+              "num_pub_threads": 1,
+              "num_sub_threads": 1
+            },
+            {
+              "name": "state",
+              "msg": "Array1k",
+              "rate_hz": 20,
+              "runtime_s": 30,
+              "qos": "reliable_keep_last_3",
+              "num_pub_threads": 1,
+              "num_sub_threads": 1
+            },
+            {
+              "name": "sensor",
+              "msg": "Array1m",
+              "rate_hz": 10,
+              "runtime_s": 30,
+              "qos": "best_effort_keep_last_1",
+              "num_pub_threads": 1,
+              "num_sub_threads": 1
+            },
+            {
+              "name": "debug",
+              "msg": "Array1k",
+              "rate_hz": 5,
+              "runtime_s": 30,
+              "qos": "best_effort_keep_last_5",
+              "num_pub_threads": 1,
+              "num_sub_threads": 1
+            }
+          ]
+        }
+      ],
+      "metrics": [
+        "p50_latency_ms",
+        "p99_latency_ms",
+        "p999_latency_ms",
+        "throughput_mbps",
+        "cpu_percent",
+        "memory_mb",
+        "deadline_miss_ratio"
+      ]
+    },
+    {
+      "tier": "T2E",
+      "name": "network_emulation",
+      "runner": "docker_netem_container",
+      "purpose": "Run real ROS 2/RMW traffic under controlled loss, jitter, bandwidth, multicast, and routed-network impairments.",
+      "baselines": [
+        "fastdds_simple_discovery",
+        "fastdds_discovery_server",
+        "cyclonedds_peers",
+        "zenoh_rmw",
+        "rmw_fleetqox_cpp",
+        "fleetqox_sidecar_later"
+      ],
+      "scenarios": [
+        {
+          "name": "fleetrmw_multi_robot_live_netem_profiles",
+          "runner": "scripts/run_rmw_docker_multi_robot_live_netem_matrix.py",
+          "image": "localhost/fleetrmw/rmw-netem:jazzy",
+          "dockerfile": "external/rmw-netem/Dockerfile",
+          "profiles": ["wifi", "wan", "roaming"],
+          "seeds": [7],
+          "require_netem": true,
+          "netem_loss_scale": 0.0,
+          "netem_drain_s": 2.0,
+          "topics": ["/robot_0000/cmd_vel", "/robot_0001/odom"]
+        },
+        {
+          "name": "fleetrmw_multi_robot_live_stochastic_netem_profiles",
+          "runner": "scripts/run_rmw_docker_multi_robot_live_stochastic_netem_matrix.py",
+          "image": "localhost/fleetrmw/rmw-netem:jazzy",
+          "dockerfile": "external/rmw-netem/Dockerfile",
+          "profiles": ["wifi", "wan", "roaming"],
+          "seeds": [7],
+          "require_netem": true,
+          "netem_loss_scale": 0.1,
+          "netem_drain_s": 2.0,
+          "seed_semantics": "repetition_id_only",
+          "topics": ["/robot_0000/cmd_vel", "/robot_0001/odom"]
+        },
+        {
+          "name": "fleetrmw_multi_robot_live_stochastic_netem_sweep",
+          "runner": "scripts/run_rmw_docker_multi_robot_live_stochastic_netem_sweep.py",
+          "image": "localhost/fleetrmw/rmw-netem:jazzy",
+          "dockerfile": "external/rmw-netem/Dockerfile",
+          "profiles": ["wifi", "wan", "roaming"],
+          "seeds": [7, 13, 29],
+          "loss_scales": [0.1, 0.25, 0.5],
+          "require_netem": true,
+          "netem_drain_s": 2.0,
+          "reuse_build": true,
+          "seed_semantics": "repetition_id_only",
+          "topics": ["/robot_0000/cmd_vel", "/robot_0001/odom"]
+        },
+        {
+          "name": "fleetrmw_multi_robot_live_stochastic_netem_ablation",
+          "runner": "scripts/run_rmw_docker_multi_robot_live_stochastic_netem_ablation.py",
+          "image": "localhost/fleetrmw/rmw-netem:jazzy",
+          "dockerfile": "external/rmw-netem/Dockerfile",
+          "profiles": ["wifi", "wan", "roaming"],
+          "seeds": [7, 13, 29],
+          "loss_scales": [0.1, 0.25, 0.5],
+          "modes": ["none", "state_only", "control_state"],
+          "require_netem": true,
+          "netem_drain_s": 2.0,
+          "reuse_build": true,
+          "seed_semantics": "repetition_id_only",
+          "topics": ["/robot_0000/cmd_vel", "/robot_0001/odom"]
+        },
+        {
+          "name": "ros2_direct_rmw_netem_matrix",
+          "runner": "scripts/run_ros2_direct_rmw_netem_matrix.py",
+          "image": "localhost/fleetrmw/rmw-netem:jazzy",
+          "dockerfile": "external/rmw-netem/Dockerfile",
+          "rmws": ["rmw_fastrtps_cpp", "rmw_cyclonedds_cpp", "rmw_zenoh_cpp"],
+          "profiles": ["wifi", "wan", "roaming"],
+          "seeds": [7, 13, 29],
+          "netem_loss_scale": 0.1,
+          "require_netem": true,
+          "topics": ["/robot_0000/cmd_vel", "/robot_0001/odom"],
+          "comparability": "direct_ros2_pubsub_single_path_baseline"
+        },
+        {
+          "name": "wifi_loss_jitter",
+          "trace_robots": 50,
+          "trace_seconds": 10,
+          "seed": 41,
+          "delay_ms": 20,
+          "jitter_ms": 15,
+          "loss_percent": 3,
+          "rate_mbit": 20,
+          "max_packets": 20000,
+          "time_scale": 2.0
+        },
+        {
+          "name": "roaming_capacity_drop",
+          "trace_robots": 50,
+          "trace_seconds": 10,
+          "seed": 43,
+          "delay_ms": 35,
+          "jitter_ms": 40,
+          "loss_percent": 8,
+          "rate_mbit": 5,
+          "max_packets": 20000,
+          "time_scale": 2.0
+        },
+        {
+          "name": "routed_lan_no_multicast",
+          "multicast": "blocked",
+          "trace_robots": 50,
+          "trace_seconds": 10,
+          "seed": 47,
+          "delay_ms": 10,
+          "jitter_ms": 3,
+          "loss_percent": 0.2,
+          "rate_mbit": 100,
+          "max_packets": 20000,
+          "time_scale": 2.0
+        }
+      ],
+      "metrics": [
+        "discovery_convergence_ms",
+        "discovery_bytes",
+        "p99_latency_ms",
+        "stale_sample_ratio",
+        "graph_churn_events",
+        "bytes_sent"
+      ]
+    },
+    {
+      "tier": "T2S",
+      "name": "discrete_event_network_simulation",
+      "runner": "planned_ns3_omnetpp",
+      "purpose": "Validate FleetQoX policies under high-fidelity Wi-Fi, 5G, mesh, mobility, queueing, and traffic-shaping models.",
+      "baselines": [
+        "fifo_trace_policy",
+        "static_priority_trace_policy",
+        "fleetqox_trace_policy",
+        "fleetqox_predictive_trace_policy"
+      ],
+      "scenarios": [
+        {
+          "name": "ns3_wifi_contention_100_robots",
+          "simulator": "ns-3",
+          "robots": 100,
+          "network": "wifi_contention",
+          "mobility": "warehouse_roaming",
+          "traffic_source": "trace_driven"
+        },
+        {
+          "name": "ns3_5glena_private_5g_300_robots",
+          "simulator": "ns-3-5g-lena",
+          "robots": 300,
+          "network": "private_5g",
+          "mobility": "factory_cells",
+          "traffic_source": "trace_driven"
+        },
+        {
+          "name": "omnetpp_inet_tsn_mixed_fleet",
+          "simulator": "omnetpp-inet",
+          "robots": 100,
+          "network": "wired_wireless_tsn",
+          "traffic_shaping": "time_aware_and_credit_based",
+          "traffic_source": "trace_driven"
+        },
+        {
+          "name": "omnetpp_inet_mesh_degraded",
+          "simulator": "omnetpp-inet",
+          "robots": 80,
+          "network": "mobile_mesh",
+          "routing": "manet",
+          "traffic_source": "trace_driven"
+        }
+      ],
+      "metrics": [
+        "per_flow_p99_delay_ms",
+        "deadline_miss_ratio",
+        "queue_occupancy",
+        "airtime_utilization",
+        "handover_interruption_ms",
+        "control_starvation_events",
+        "qoe_freeze_events",
+        "semantic_utility_delivered"
+      ]
+    },
+    {
+      "tier": "T3",
+      "name": "gazebo_nav2_multirobot",
+      "runner": "planned_gazebo_nav2",
+      "purpose": "Connect communication behavior to navigation/task outcomes with simulated ROS 2 robots.",
+      "baselines": [
+        "fastdds",
+        "cyclonedds",
+        "zenoh_rmw",
+        "fleetqox_sidecar_later"
+      ],
+      "scenarios": [
+        {
+          "name": "nav2_10_robots_intersections",
+          "robots": 10,
+          "operator_video_flows": 2,
+          "debug_load": "medium"
+        },
+        {
+          "name": "nav2_30_robots_dense_warehouse",
+          "robots": 30,
+          "operator_video_flows": 4,
+          "debug_load": "high"
+        }
+      ],
+      "metrics": [
+        "task_success_rate",
+        "task_completion_time_s",
+        "navigation_recoveries",
+        "coordination_delay_ms",
+        "operator_freeze_count",
+        "command_latency_p99_ms"
+      ]
+    },
+    {
+      "tier": "T4",
+      "name": "open_rmf_fleet_task",
+      "runner": "planned_open_rmf",
+      "purpose": "Evaluate fleet/task dispatch, synthetic fleet adapters, and communication limits at facility scale.",
+      "baselines": [
+        "open_rmf_default",
+        "open_rmf_with_static_priority_bridge",
+        "open_rmf_with_fleetqox_later"
+      ],
+      "scenarios": [
+        {
+          "name": "office_patrol_100_synthetic",
+          "synthetic_robots": 100,
+          "full_sim_robots": 5,
+          "task_rate_per_min": 20
+        },
+        {
+          "name": "warehouse_dispatch_300_synthetic",
+          "synthetic_robots": 300,
+          "full_sim_robots": 10,
+          "task_rate_per_min": 60
+        }
+      ],
+      "metrics": [
+        "task_success_rate",
+        "dispatch_delay_ms",
+        "conflict_resolution_delay_ms",
+        "adapter_state_staleness_ms",
+        "network_bytes_per_task"
+      ]
+    }
+  ]
+}

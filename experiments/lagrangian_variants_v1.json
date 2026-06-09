@@ -1,0 +1,39 @@
+{
+  "variants": {
+    "lag_012": {
+      "deadline_drop_risk": 0.45,
+      "deadline_risk_budget": 0.08,
+      "initial_deadline_lambda": 1.8,
+      "risk_barrier_scale": 12.0,
+      "risk_barrier_start": 0.62
+    },
+    "lag_015": {
+      "deadline_drop_risk": 0.45,
+      "deadline_risk_budget": 0.08,
+      "initial_deadline_lambda": 1.8,
+      "risk_barrier_scale": 12.0,
+      "risk_barrier_start": 0.7
+    },
+    "lag_adapt_001": {
+      "deadline_drop_risk": 0.3830192226489454,
+      "deadline_risk_budget": 0.06425480566223635,
+      "initial_deadline_lambda": 3.0,
+      "risk_barrier_scale": 14.261779150664548,
+      "risk_barrier_start": 0.5412740283111817
+    },
+    "lag_adapt_002": {
+      "deadline_drop_risk": 0.40667637931862793,
+      "deadline_risk_budget": 0.07291766833010938,
+      "initial_deadline_lambda": 2.7834284333031745,
+      "risk_barrier_scale": 13.395492883877246,
+      "risk_barrier_start": 0.5649311849808643
+    },
+    "lag_adapt_003": {
+      "deadline_drop_risk": 0.42910490748345237,
+      "deadline_risk_budget": 0.08108907959603916,
+      "initial_deadline_lambda": 2.5791431516549297,
+      "risk_barrier_scale": 12.578351757284267,
+      "risk_barrier_start": 0.5873597131456887
+    }
+  }
+}

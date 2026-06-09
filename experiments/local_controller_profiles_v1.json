@@ -1,0 +1,36 @@
+{
+  "schema_version": "fleetrmw.local_controller_profiles.v1",
+  "default_profile": "tb4_lite_safe_v1",
+  "profiles": {
+    "tb4_lite_safe_v1": {
+      "max_linear_x": 0.25,
+      "max_abs_linear_y": 0.0,
+      "max_abs_linear_z": 0.0,
+      "max_abs_angular_x": 0.0,
+      "max_abs_angular_y": 0.0,
+      "max_abs_angular_z": 0.35,
+      "max_linear_accel_x": 1.0,
+      "max_abs_angular_accel_z": 2.0,
+      "max_linear_jerk_x": 20.0,
+      "max_abs_angular_jerk_z": 40.0,
+      "max_local_lifespan_ms": 500.0,
+      "pending_command_window_ms": 120.0,
+      "expiry_action": "stop"
+    },
+    "warehouse_amr_safe_v1": {
+      "max_linear_x": 0.8,
+      "max_abs_linear_y": 0.0,
+      "max_abs_linear_z": 0.0,
+      "max_abs_angular_x": 0.0,
+      "max_abs_angular_y": 0.0,
+      "max_abs_angular_z": 0.7,
+      "max_linear_accel_x": 0.6,
+      "max_abs_angular_accel_z": 1.0,
+      "max_linear_jerk_x": 4.0,
+      "max_abs_angular_jerk_z": 8.0,
+      "max_local_lifespan_ms": 300.0,
+      "pending_command_window_ms": 80.0,
+      "expiry_action": "hold_last"
+    }
+  }
+}

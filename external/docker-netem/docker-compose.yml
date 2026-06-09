@@ -1,0 +1,47 @@
+services:
+  receiver:
+    platform: ${DOCKER_DEFAULT_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/docker-netem/Dockerfile
+      args:
+        BASE_IMAGE: ${DOCKER_NETEM_BASE_IMAGE:-python:3.12-slim}
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    command: >
+      python3 -m scripts.udp_trace_receiver
+      --output /work/${RESULT_FILE:-results_t2e/received.jsonl}
+      --port 9100
+      --idle-timeout-s ${IDLE_TIMEOUT_S:-3}
+      --max-runtime-s ${MAX_RUNTIME_S:-120}
+
+  sender:
+    platform: ${DOCKER_DEFAULT_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/docker-netem/Dockerfile
+      args:
+        BASE_IMAGE: ${DOCKER_NETEM_BASE_IMAGE:-python:3.12-slim}
+    depends_on:
+      - receiver
+    cap_add:
+      - NET_ADMIN
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    command: >
+      sh -lc "
+      tc qdisc replace dev eth0 root netem
+      delay ${NETEM_DELAY_MS:-20}ms ${NETEM_JITTER_MS:-5}ms
+      loss ${NETEM_LOSS_PERCENT:-1}%
+      rate ${NETEM_RATE_MBIT:-20}mbit
+      || echo 'warning: failed to apply netem; missing NET_ADMIN or unsupported runtime';
+      sleep 1;
+      python3 -m scripts.udp_trace_sender
+      --trace /work/${TRACE_FILE}
+      --host receiver
+      --port 9100
+      --time-scale ${TIME_SCALE:-1.0}
+      --max-packets ${MAX_PACKETS:-0}
+      "

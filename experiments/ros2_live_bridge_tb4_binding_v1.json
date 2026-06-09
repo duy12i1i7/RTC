@@ -1,0 +1,54 @@
+{
+  "scenario": "ros2_live_bridge_tb4_binding_v1",
+  "sidecar": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "flush_period_ms": 20,
+  "include_feedback": true,
+  "link": {
+    "capacity_bytes_per_tick": 2400,
+    "rtt_ms": 40,
+    "jitter_ms": 5,
+    "loss": 0.01
+  },
+  "transport_binding": {
+    "summary": "results_ros2_live_bridge/profile_objective_selector_balanced_v1_summary.json",
+    "adaptive_profile": true,
+    "smoothing_alpha": 0.35,
+    "hysteresis_margin": 0.06,
+    "min_dwell_ticks": 2
+  },
+  "topics": [
+    {
+      "topic": "/robot_0000/cmd_vel",
+      "msg_type": "geometry_msgs/msg/Twist",
+      "robot_id": "robot_0000",
+      "qos": {
+        "reliability": "reliable",
+        "deadline_ms": 45,
+        "lifespan_ms": 90
+      }
+    },
+    {
+      "topic": "/robot_0000/odom",
+      "msg_type": "nav_msgs/msg/Odometry",
+      "robot_id": "robot_0000",
+      "qos": {
+        "reliability": "reliable",
+        "deadline_ms": 120,
+        "lifespan_ms": 350
+      }
+    },
+    {
+      "topic": "/robot_0000/scan",
+      "msg_type": "sensor_msgs/msg/LaserScan",
+      "robot_id": "robot_0000",
+      "qos": {
+        "reliability": "best_effort",
+        "deadline_ms": 160,
+        "lifespan_ms": 300
+      }
+    }
+  ]
+}

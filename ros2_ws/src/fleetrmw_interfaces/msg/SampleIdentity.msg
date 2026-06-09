@@ -1,0 +1,14 @@
+string schema_version
+string contract_id
+string source_sample_id
+bool has_event_id
+uint64 event_id
+string robot_id
+string flow_id
+string source_topic
+string projection_kind
+string projection_topic
+string projection_msg_type
+string projection_signature_version
+string projection_signature_algorithm
+string projection_signature

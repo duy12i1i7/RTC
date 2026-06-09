@@ -1,0 +1,46 @@
+services:
+  subscriber:
+    platform: ${ROS2_NETEM_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-perf/Dockerfile
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    environment:
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-81}
+      APEX_PERFORMANCE_TEST: ${APEX_PERFORMANCE_TEST_SUB:-{}}
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        source /opt/performance_test_ws/install/setup.bash &&
+        ${PERF_SUB_COMMAND:-echo PERF_SUB_COMMAND not set}
+
+  publisher:
+    platform: ${ROS2_NETEM_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-perf/Dockerfile
+    depends_on:
+      - subscriber
+    cap_add:
+      - NET_ADMIN
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    environment:
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-81}
+      APEX_PERFORMANCE_TEST: ${APEX_PERFORMANCE_TEST_PUB:-{}}
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        source /opt/performance_test_ws/install/setup.bash &&
+        (tc qdisc replace dev eth0 root netem
+        delay ${NETEM_DELAY_MS:-20}ms ${NETEM_JITTER_MS:-5}ms
+        loss ${NETEM_LOSS_PERCENT:-1}%
+        rate ${NETEM_RATE_MBIT:-20}mbit ||
+        echo 'warning: failed to apply netem') &&
+        sleep ${SUBSCRIBER_WARMUP_S:-2} &&
+        ${PERF_PUB_COMMAND:-echo PERF_PUB_COMMAND not set}

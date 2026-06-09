@@ -1,0 +1,85 @@
+services:
+  receiver:
+    platform: ${DOCKER_DEFAULT_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/docker-netem/Dockerfile
+      args:
+        BASE_IMAGE: ${DOCKER_NETEM_BASE_IMAGE:-python:3.12-slim}
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    command: >
+      python3 -m scripts.udp_trace_receiver
+      --output /work/${RESULT_FILE:-results_sidecar_netem/received.jsonl}
+      --port 9100
+      --idle-timeout-s ${IDLE_TIMEOUT_S:-3}
+      --max-runtime-s ${MAX_RUNTIME_S:-120}
+
+  sidecar:
+    platform: ${DOCKER_DEFAULT_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/docker-netem/Dockerfile
+      args:
+        BASE_IMAGE: ${DOCKER_NETEM_BASE_IMAGE:-python:3.12-slim}
+    depends_on:
+      - receiver
+    cap_add:
+      - NET_ADMIN
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    environment:
+      SIDECAR_POLICY_LABEL: ${SIDECAR_POLICY_LABEL:-}
+      SIDECAR_LAGRANGIAN_DEADLINE_RISK_BUDGET: ${SIDECAR_LAGRANGIAN_DEADLINE_RISK_BUDGET:-}
+      SIDECAR_LAGRANGIAN_INITIAL_DEADLINE_LAMBDA: ${SIDECAR_LAGRANGIAN_INITIAL_DEADLINE_LAMBDA:-}
+      SIDECAR_LAGRANGIAN_RISK_BARRIER_START: ${SIDECAR_LAGRANGIAN_RISK_BARRIER_START:-}
+      SIDECAR_LAGRANGIAN_RISK_BARRIER_SCALE: ${SIDECAR_LAGRANGIAN_RISK_BARRIER_SCALE:-}
+      SIDECAR_LAGRANGIAN_DEADLINE_DROP_RISK: ${SIDECAR_LAGRANGIAN_DEADLINE_DROP_RISK:-}
+    command: >
+      sh -lc "
+      tc qdisc replace dev eth0 root netem
+      delay ${NETEM_DELAY_MS:-20}ms ${NETEM_JITTER_MS:-5}ms
+      loss ${NETEM_LOSS_PERCENT:-1}%
+      rate ${NETEM_RATE_MBIT:-20}mbit
+      || echo 'warning: failed to apply netem; missing NET_ADMIN or unsupported runtime';
+      python3 -m scripts.run_sidecar_runtime
+      --listen-host 0.0.0.0
+      --listen-port 8765
+      --udp-host receiver
+      --udp-port 9100
+      --policy ${SIDECAR_POLICY:-fleetqox_predictive}
+      --decision-log /work/${DECISION_FILE:-results_sidecar_netem/decisions.jsonl}
+      --idle-timeout-s ${SIDECAR_IDLE_TIMEOUT_S:-30}
+      --max-runtime-s ${SIDECAR_MAX_RUNTIME_S:-120}
+      "
+
+  feeder:
+    platform: ${DOCKER_DEFAULT_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/docker-netem/Dockerfile
+      args:
+        BASE_IMAGE: ${DOCKER_NETEM_BASE_IMAGE:-python:3.12-slim}
+    depends_on:
+      - sidecar
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    command: >
+      sh -lc "
+      sleep ${FEEDER_START_DELAY_S:-2};
+      python3 -m ${SIDECAR_FEEDER_MODULE:-scripts.feed_sidecar_synthetic}
+      --host sidecar
+      --port 8765
+      --scenario ${SIDECAR_SCENARIO:-sidecar_netem}
+      --robots ${SIDECAR_ROBOTS:-10}
+      --seconds ${SIDECAR_SECONDS:-2}
+      --seed ${SIDECAR_SEED:-7}
+      --capacity-bytes-per-second ${SIDECAR_CAPACITY_BYTES_PER_SECOND:-120000}
+      --link-rtt-ms ${SIDECAR_LINK_RTT_MS:-40}
+      --link-jitter-ms ${SIDECAR_LINK_JITTER_MS:-5}
+      --link-loss ${SIDECAR_LINK_LOSS:-0.01}
+      --json
+      "

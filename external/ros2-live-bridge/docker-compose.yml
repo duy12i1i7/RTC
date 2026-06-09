@@ -1,0 +1,298 @@
+services:
+  receiver:
+    platform: ${ROS2_LIVE_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-live-bridge/Dockerfile
+      args:
+        ROS_IMAGE: ${ROS2_LIVE_BASE_IMAGE:-ros:jazzy-ros-base}
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        source /opt/fleetrmw_ws/install/fleetrmw_interfaces/share/fleetrmw_interfaces/local_setup.bash &&
+        python3 -m scripts.udp_trace_receiver
+        --output /work/${RESULT_FILE:-results_ros2_live_bridge/received.jsonl}
+        --port 9100
+        --idle-timeout-s ${IDLE_TIMEOUT_S:-4}
+        --max-runtime-s ${MAX_RUNTIME_S:-120}
+
+  egress:
+    platform: ${ROS2_LIVE_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-live-bridge/Dockerfile
+      args:
+        ROS_IMAGE: ${ROS2_LIVE_BASE_IMAGE:-ros:jazzy-ros-base}
+    depends_on:
+      - receiver
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-91}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        source /opt/fleetrmw_ws/install/fleetrmw_interfaces/share/fleetrmw_interfaces/local_setup.bash &&
+        python3 -m scripts.run_ros2_egress_bridge
+        --listen-host 0.0.0.0
+        --listen-port 9100
+        --forward-host receiver
+        --forward-port 9100
+        --publication-log /work/${EGRESS_PUBLICATION_FILE:-results_ros2_live_bridge/egress_publications.jsonl}
+        --feedback-sidecar-host ${EGRESS_FEEDBACK_SIDECAR_HOST:-}
+        --feedback-sidecar-port ${EGRESS_FEEDBACK_SIDECAR_PORT:-8765}
+        --feedback-every-packets ${EGRESS_FEEDBACK_EVERY_PACKETS:-12}
+        ${EGRESS_FEEDBACK_CONTROL_LEASE_ACK_IMMEDIATE_FLAG:-}
+        --feedback-control-lease-ack-window-events ${EGRESS_FEEDBACK_CONTROL_LEASE_ACK_WINDOW_EVENTS:-0}
+        ${EGRESS_FEEDBACK_CONTROL_LEASE_ACK_ADAPTIVE_FLAG:-}
+        --feedback-control-lease-ack-adaptive-min-events ${EGRESS_FEEDBACK_CONTROL_LEASE_ACK_ADAPTIVE_MIN_EVENTS:-8}
+        --feedback-control-lease-ack-adaptive-max-events ${EGRESS_FEEDBACK_CONTROL_LEASE_ACK_ADAPTIVE_MAX_EVENTS:-48}
+        --feedback-control-lease-ack-adaptive-success-step ${EGRESS_FEEDBACK_CONTROL_LEASE_ACK_ADAPTIVE_SUCCESS_STEP:-1}
+        --feedback-control-lease-ack-adaptive-failure-multiplier ${EGRESS_FEEDBACK_CONTROL_LEASE_ACK_ADAPTIVE_FAILURE_MULTIPLIER:-2.0}
+        --feedback-control-lease-ack-adaptive-max-age-ms ${EGRESS_FEEDBACK_CONTROL_LEASE_ACK_ADAPTIVE_MAX_AGE_MS:-120.0}
+        ${EGRESS_FEEDBACK_CONTROL_LEASE_ACK_ADAPTIVE_NO_PIGGYBACK_FIRST_FLAG:-}
+        --publish-typed
+        --projection-quality-delivery-mode ${PROJECTION_QUALITY_DELIVERY_MODE:-wrapper}
+        --projection-quality-payload-mode ${PROJECTION_QUALITY_PAYLOAD_MODE:-compact}
+        --projection-quality-message-mode ${PROJECTION_QUALITY_MESSAGE_MODE:-typed}
+        --idle-timeout-s ${IDLE_TIMEOUT_S:-4}
+        --max-runtime-s ${MAX_RUNTIME_S:-120}
+
+  local_controller:
+    platform: ${ROS2_LIVE_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-live-bridge/Dockerfile
+      args:
+        ROS_IMAGE: ${ROS2_LIVE_BASE_IMAGE:-ros:jazzy-ros-base}
+    depends_on:
+      - egress
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-91}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        source /opt/fleetrmw_ws/install/fleetrmw_interfaces/share/fleetrmw_interfaces/local_setup.bash &&
+        python3 -m scripts.run_ros2_local_controller_lease
+        --robot-id ${ROS2_TEST_ROBOT_ID:-robot_0000}
+        --robot-count ${ROS2_TEST_ROBOT_COUNT:-1}
+        --lease-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/control_lease
+        --typed-cmd-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/local_cmd_vel
+        --safe-cmd-topic /${ROS2_TEST_ROBOT_ID:-robot_0000}/cmd_vel_fleetrmw
+        --decision-log /work/${LEASE_DECISION_FILE:-results_ros2_live_bridge/lease_decisions.jsonl}
+        --profile-config /work/${LEASE_PROFILE_CONFIG:-experiments/local_controller_profiles_v1.json}
+        --controller-profile ${LEASE_CONTROLLER_PROFILE:-tb4_lite_safe_v1}
+        --feedback-sidecar-host ${LOCAL_FEEDBACK_SIDECAR_HOST:-}
+        --feedback-sidecar-port ${LOCAL_FEEDBACK_SIDECAR_PORT:-8765}
+        --feedback-every-decisions ${LOCAL_FEEDBACK_EVERY_DECISIONS:-12}
+        --idle-timeout-s ${IDLE_TIMEOUT_S:-4}
+        --max-runtime-s ${MAX_RUNTIME_S:-120}
+
+  quality_gate:
+    platform: ${ROS2_LIVE_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-live-bridge/Dockerfile
+      args:
+        ROS_IMAGE: ${ROS2_LIVE_BASE_IMAGE:-ros:jazzy-ros-base}
+    depends_on:
+      - egress
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-91}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        source /opt/fleetrmw_ws/install/fleetrmw_interfaces/share/fleetrmw_interfaces/local_setup.bash &&
+        python3 -m scripts.run_ros2_projection_quality_gate
+        --robot-id ${ROS2_TEST_ROBOT_ID:-robot_0000}
+        --robot-count ${ROS2_TEST_ROBOT_COUNT:-1}
+        --quality-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/projection_quality
+        --odom-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/local_odom
+        --scan-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/local_scan
+        --qualified-odom-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/qualified_odom
+        --qualified-scan-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/qualified_scan
+        --accepted-odom-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/accepted_odom
+        --accepted-scan-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/accepted_scan
+        --identity-mode ${QUALITY_GATE_IDENTITY_MODE:-wrapper}
+        --quality-message-mode ${QUALITY_GATE_MESSAGE_MODE:-typed}
+        --decision-log /work/${QUALITY_GATE_DECISION_FILE:-results_ros2_live_bridge/projection_quality_gate.jsonl}
+        --feedback-sidecar-host ${QUALITY_FEEDBACK_SIDECAR_HOST:-}
+        --feedback-sidecar-port ${QUALITY_FEEDBACK_SIDECAR_PORT:-8765}
+        --feedback-every-decisions ${QUALITY_FEEDBACK_EVERY_DECISIONS:-12}
+        --idle-timeout-s ${IDLE_TIMEOUT_S:-4}
+        --max-runtime-s ${MAX_RUNTIME_S:-120}
+
+  monitor:
+    platform: ${ROS2_LIVE_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-live-bridge/Dockerfile
+      args:
+        ROS_IMAGE: ${ROS2_LIVE_BASE_IMAGE:-ros:jazzy-ros-base}
+    depends_on:
+      - local_controller
+      - quality_gate
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-91}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        source /opt/fleetrmw_ws/install/fleetrmw_interfaces/share/fleetrmw_interfaces/local_setup.bash &&
+        python3 -m scripts.run_ros2_string_monitor
+        --output /work/${EGRESS_MONITOR_FILE:-results_ros2_live_bridge/egress_monitor.jsonl}
+        --robot-id ${ROS2_TEST_ROBOT_ID:-robot_0000}
+        --robot-count ${ROS2_TEST_ROBOT_COUNT:-1}
+        --topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/control_lease
+        --topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/degraded
+        --topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/native_trace
+        --topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/semantic_delta
+        --twist-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/local_cmd_vel
+        --twist-topic /${ROS2_TEST_ROBOT_ID:-robot_0000}/cmd_vel_fleetrmw
+        --odom-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/local_odom
+        --odom-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/accepted_odom
+        --qualified-odom-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/qualified_odom
+        --scan-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/local_scan
+        --scan-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/accepted_scan
+        --qualified-scan-topic /fleetrmw/${ROS2_TEST_ROBOT_ID:-robot_0000}/qualified_scan
+        --idle-timeout-s ${IDLE_TIMEOUT_S:-4}
+        --max-runtime-s ${MAX_RUNTIME_S:-120}
+
+  sidecar:
+    platform: ${ROS2_LIVE_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-live-bridge/Dockerfile
+      args:
+        ROS_IMAGE: ${ROS2_LIVE_BASE_IMAGE:-ros:jazzy-ros-base}
+    depends_on:
+      - monitor
+    cap_add:
+      - NET_ADMIN
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    environment:
+      SIDECAR_POLICY_LABEL: ${SIDECAR_POLICY_LABEL:-}
+      SIDECAR_TRANSPORT_VOLATILITY_PROBE_MAX_PER_TICK: ${SIDECAR_TRANSPORT_VOLATILITY_PROBE_MAX_PER_TICK:-}
+      SIDECAR_TRANSPORT_VOLATILITY_PROBE_QUOTA_SCALE: ${SIDECAR_TRANSPORT_VOLATILITY_PROBE_QUOTA_SCALE:-}
+      SIDECAR_TRANSPORT_VOLATILITY_PROBE_MAX_PER_ROBOT_PER_TICK: ${SIDECAR_TRANSPORT_VOLATILITY_PROBE_MAX_PER_ROBOT_PER_TICK:-}
+      SIDECAR_CONTROL_LEASE_ADAPTIVE_REDUNDANCY: ${SIDECAR_CONTROL_LEASE_ADAPTIVE_REDUNDANCY:-auto}
+      SIDECAR_CONTROL_LEASE_ADAPTIVE_MAX_REDUNDANCY: ${SIDECAR_CONTROL_LEASE_ADAPTIVE_MAX_REDUNDANCY:-}
+      SIDECAR_CONTROL_LEASE_ADAPTIVE_EXTRA_MAX_PER_TICK: ${SIDECAR_CONTROL_LEASE_ADAPTIVE_EXTRA_MAX_PER_TICK:-}
+      SIDECAR_CONTROL_LEASE_ADAPTIVE_EXTRA_QUOTA_SCALE: ${SIDECAR_CONTROL_LEASE_ADAPTIVE_EXTRA_QUOTA_SCALE:-}
+      SIDECAR_CONTROL_LEASE_RESIDUAL_LOSS_BUDGET: ${SIDECAR_CONTROL_LEASE_RESIDUAL_LOSS_BUDGET:-}
+      SIDECAR_CONTROL_LEASE_DRAIN_GRACE_S: ${SIDECAR_CONTROL_LEASE_DRAIN_GRACE_S:-}
+      SIDECAR_CONTROL_LEASE_TERMINAL_REPLAY_ATTEMPTS: ${SIDECAR_CONTROL_LEASE_TERMINAL_REPLAY_ATTEMPTS:-}
+      SIDECAR_CONTROL_LEASE_TERMINAL_REPLAY_INTERVAL_S: ${SIDECAR_CONTROL_LEASE_TERMINAL_REPLAY_INTERVAL_S:-}
+      SIDECAR_CONTROL_LEASE_TERMINAL_REPLAY_HISTORY_PER_ROBOT: ${SIDECAR_CONTROL_LEASE_TERMINAL_REPLAY_HISTORY_PER_ROBOT:-}
+      SIDECAR_CONTROL_LEASE_ACK_RETRANSMIT: ${SIDECAR_CONTROL_LEASE_ACK_RETRANSMIT:-off}
+      SIDECAR_CONTROL_LEASE_ACK_RETRANSMIT_MAX_ATTEMPTS: ${SIDECAR_CONTROL_LEASE_ACK_RETRANSMIT_MAX_ATTEMPTS:-}
+      SIDECAR_CONTROL_LEASE_ACK_RETRANSMIT_MAX_PER_TICK: ${SIDECAR_CONTROL_LEASE_ACK_RETRANSMIT_MAX_PER_TICK:-}
+      SIDECAR_CONTROL_LEASE_ACK_RETRANSMIT_TIMEOUT_MS: ${SIDECAR_CONTROL_LEASE_ACK_RETRANSMIT_TIMEOUT_MS:-}
+      SIDECAR_CONTROL_LEASE_ACK_RETRANSMIT_HORIZON_MS: ${SIDECAR_CONTROL_LEASE_ACK_RETRANSMIT_HORIZON_MS:-}
+      SIDECAR_CONTROL_LEASE_ACK_HISTORY_PER_ROBOT: ${SIDECAR_CONTROL_LEASE_ACK_HISTORY_PER_ROBOT:-}
+      SIDECAR_CONTROL_LEASE_TRANSITION_GUARD: ${SIDECAR_CONTROL_LEASE_TRANSITION_GUARD:-on}
+      SIDECAR_CONTROL_LEASE_TRANSITION_GUARD_MIN_CONFIDENCE: ${SIDECAR_CONTROL_LEASE_TRANSITION_GUARD_MIN_CONFIDENCE:-}
+      SIDECAR_CONTROL_LEASE_TRANSITION_GUARD_MIN_MARGIN: ${SIDECAR_CONTROL_LEASE_TRANSITION_GUARD_MIN_MARGIN:-}
+      SIDECAR_CONTROL_LEASE_TRANSITION_GUARD_MAX_DWELL_TICKS: ${SIDECAR_CONTROL_LEASE_TRANSITION_GUARD_MAX_DWELL_TICKS:-}
+      SIDECAR_CONTROL_LEASE_TRANSITION_GUARD_REDUNDANCY: ${SIDECAR_CONTROL_LEASE_TRANSITION_GUARD_REDUNDANCY:-}
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        source /opt/fleetrmw_ws/install/fleetrmw_interfaces/share/fleetrmw_interfaces/local_setup.bash &&
+        if [ -n "${NETEM_TRANSITION_SCHEDULE:-}" ]; then
+          python3 -m scripts.apply_netem_transition --dev eth0 --schedule "${NETEM_TRANSITION_SCHEDULE}" --start-delay-s ${NETEM_TRANSITION_START_DELAY_S:-5} --log /work/${NETEM_TRANSITION_LOG:-results_ros2_live_bridge/netem_transition.jsonl} &
+        else
+          (tc qdisc replace dev eth0 root netem
+          delay ${NETEM_DELAY_MS:-80}ms ${NETEM_JITTER_MS:-25}ms
+          loss ${NETEM_LOSS_PERCENT:-3}%
+          rate ${NETEM_RATE_MBIT:-5}mbit ||
+          echo 'warning: failed to apply netem');
+        fi &&
+        python3 -m scripts.run_sidecar_runtime
+        --listen-host 0.0.0.0
+        --listen-port 8765
+        --udp-host egress
+        --udp-port 9100
+        --policy ${SIDECAR_POLICY:-fleetqox_semantic_contract_adaptive}
+        --decision-log /work/${DECISION_FILE:-results_ros2_live_bridge/decisions.jsonl}
+        --packet-format ${SIDECAR_PACKET_FORMAT:-event_json}
+        --idle-timeout-s ${SIDECAR_IDLE_TIMEOUT_S:-8}
+        --max-runtime-s ${SIDECAR_MAX_RUNTIME_S:-120}
+
+  bridge:
+    platform: ${ROS2_LIVE_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-live-bridge/Dockerfile
+      args:
+        ROS_IMAGE: ${ROS2_LIVE_BASE_IMAGE:-ros:jazzy-ros-base}
+    depends_on:
+      - sidecar
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-91}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        source /opt/fleetrmw_ws/install/fleetrmw_interfaces/share/fleetrmw_interfaces/local_setup.bash &&
+        sleep ${BRIDGE_START_DELAY_S:-2} &&
+        python3 -m scripts.run_ros2_live_bridge
+        --config /work/${BRIDGE_CONFIG:-experiments/ros2_live_bridge_tb4_v1.json}
+        --sidecar-host sidecar
+        --sidecar-port 8765
+        --max-batches ${BRIDGE_MAX_BATCHES:-20}
+        --idle-timeout-s ${BRIDGE_IDLE_TIMEOUT_S:-4}
+        --max-runtime-s ${BRIDGE_MAX_RUNTIME_S:-120}
+        --stop-sidecar
+
+  publisher:
+    platform: ${ROS2_LIVE_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-live-bridge/Dockerfile
+      args:
+        ROS_IMAGE: ${ROS2_LIVE_BASE_IMAGE:-ros:jazzy-ros-base}
+    depends_on:
+      - bridge
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-91}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        source /opt/fleetrmw_ws/install/fleetrmw_interfaces/share/fleetrmw_interfaces/local_setup.bash &&
+        sleep ${PUBLISHER_START_DELAY_S:-5} &&
+        python3 -m scripts.run_ros2_test_publisher
+        --robot-id ${ROS2_TEST_ROBOT_ID:-robot_0000}
+        --robot-count ${ROS2_TEST_ROBOT_COUNT:-1}
+        --seconds ${ROS2_TEST_SECONDS:-2}
+        --rate-hz ${ROS2_TEST_RATE_HZ:-20}
+        --seed ${ROS2_TEST_SEED:-7}
+        --cmd-topic ${ROS2_TEST_CMD_TOPIC:-/robot_0000/cmd_vel}
+        --odom-topic ${ROS2_TEST_ODOM_TOPIC:-/robot_0000/odom}
+        --scan-topic ${ROS2_TEST_SCAN_TOPIC:-/robot_0000/scan}
+        --camera-topic ${ROS2_TEST_CAMERA_TOPIC:-/robot_0000/front_camera/image_raw/compressed}

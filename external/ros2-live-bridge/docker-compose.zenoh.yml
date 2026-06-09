@@ -1,0 +1,85 @@
+services:
+  zenoh-router:
+    platform: ${ROS2_LIVE_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-live-bridge/Dockerfile
+      args:
+        ROS_IMAGE: ${ROS2_LIVE_BASE_IMAGE:-ros:jazzy-ros-base}
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        timeout ${ZENOH_ROUTER_MAX_RUNTIME_S:-45} ros2 run rmw_zenoh_cpp rmw_zenohd;
+        status=$$?;
+        if [ "$$status" = "124" ]; then exit 0; fi;
+        exit "$$status"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          python3 -c "import socket;
+          s=socket.create_connection(('127.0.0.1', 7447), 1.0);
+          s.close()"
+      interval: 1s
+      timeout: 2s
+      retries: 20
+      start_period: 2s
+
+  egress:
+    depends_on:
+      receiver:
+        condition: service_started
+      zenoh-router:
+        condition: service_healthy
+    environment:
+      ZENOH_SESSION_CONFIG_URI: ${ZENOH_SESSION_CONFIG_URI:-/work/external/ros2-netem/zenoh/session-router.json5}
+
+  local_controller:
+    depends_on:
+      egress:
+        condition: service_started
+      zenoh-router:
+        condition: service_healthy
+    environment:
+      ZENOH_SESSION_CONFIG_URI: ${ZENOH_SESSION_CONFIG_URI:-/work/external/ros2-netem/zenoh/session-router.json5}
+
+  quality_gate:
+    depends_on:
+      egress:
+        condition: service_started
+      zenoh-router:
+        condition: service_healthy
+    environment:
+      ZENOH_SESSION_CONFIG_URI: ${ZENOH_SESSION_CONFIG_URI:-/work/external/ros2-netem/zenoh/session-router.json5}
+
+  monitor:
+    depends_on:
+      local_controller:
+        condition: service_started
+      quality_gate:
+        condition: service_started
+      zenoh-router:
+        condition: service_healthy
+    environment:
+      ZENOH_SESSION_CONFIG_URI: ${ZENOH_SESSION_CONFIG_URI:-/work/external/ros2-netem/zenoh/session-router.json5}
+
+  bridge:
+    depends_on:
+      sidecar:
+        condition: service_started
+      zenoh-router:
+        condition: service_healthy
+    environment:
+      ZENOH_SESSION_CONFIG_URI: ${ZENOH_SESSION_CONFIG_URI:-/work/external/ros2-netem/zenoh/session-router.json5}
+
+  publisher:
+    depends_on:
+      bridge:
+        condition: service_started
+      zenoh-router:
+        condition: service_healthy
+    environment:
+      ZENOH_SESSION_CONFIG_URI: ${ZENOH_SESSION_CONFIG_URI:-/work/external/ros2-netem/zenoh/session-router.json5}

@@ -1,0 +1,29 @@
+services:
+  zenoh-router:
+    platform: ${ROS2_NETEM_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: external/ros2-perf/Dockerfile
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    command:
+      - >
+        source /opt/ros/jazzy/setup.bash &&
+        ros2 run rmw_zenoh_cpp rmw_zenohd
+
+  subscriber:
+    depends_on:
+      zenoh-router:
+        condition: service_started
+    environment:
+      ZENOH_SESSION_CONFIG_URI: ${ZENOH_SESSION_CONFIG_URI:-/work/external/ros2-netem/zenoh/session-router.json5}
+
+  publisher:
+    depends_on:
+      subscriber:
+        condition: service_started
+      zenoh-router:
+        condition: service_started
+    environment:
+      ZENOH_SESSION_CONFIG_URI: ${ZENOH_SESSION_CONFIG_URI:-/work/external/ros2-netem/zenoh/session-router.json5}

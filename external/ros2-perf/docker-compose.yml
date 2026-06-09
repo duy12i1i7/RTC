@@ -1,0 +1,15 @@
+services:
+  ros2-perf:
+    build:
+      context: ../..
+      dockerfile: external/ros2-perf/Dockerfile
+    network_mode: host
+    ipc: host
+    working_dir: /work
+    volumes:
+      - ../..:/work
+    command: >
+      "source /opt/ros/jazzy/setup.bash &&
+       source /opt/performance_test_ws/install/setup.bash &&
+       python3 -m scripts.run_t1_ros2_perf
+       ${T1_ARGS:---scenario small_messages_many_endpoints --run --output results_t1/metrics.jsonl}"

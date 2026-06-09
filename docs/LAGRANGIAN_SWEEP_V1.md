@@ -1,0 +1,51 @@
+# Lagrangian Parameter Sweep V1
+
+## Inputs
+
+- Records: `results_lagrangian_sweep/lagrangian_sweep_v1_records.jsonl`
+- Summary: `results_lagrangian_sweep/lagrangian_sweep_v1_summary.json`
+- Metric rows: `108`
+- Control miss target: `0.0500`
+
+## Ranking
+
+| candidate | policy | runs | target | pareto | score | utility | control miss | qoe | stale | defer | drop | compact | params |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `fleetqox_predictive` | `fleetqox_predictive` | 4 | yes | yes | 7.5204 | 6.0397 +/- 0.2358 | 0.0026 +/- 0.0003 | 0.6722 +/- 0.0624 | 0.0216 +/- 0.0011 | 0.0072 +/- 0.0082 | 0.0857 +/- 0.0238 | 0.7320 +/- 0.0736 | `-` |
+| `fleetqox_predictive_guarded` | `fleetqox_predictive_guarded` | 4 | yes | yes | 7.3054 | 5.9745 +/- 0.1949 | 0.0026 +/- 0.0003 | 0.7352 +/- 0.0831 | 0.0216 +/- 0.0017 | 0.0029 +/- 0.0035 | 0.2889 +/- 0.0164 | 0.5400 +/- 0.0650 | `-` |
+| `lag_015` | `fleetqox_lagrangian` | 4 | yes | yes | 6.9963 | 5.8747 +/- 0.1772 | 0.0060 +/- 0.0012 | 0.7377 +/- 0.0698 | 0.0210 +/- 0.0018 | 0.0341 +/- 0.0069 | 0.3754 +/- 0.0125 | 0.3642 +/- 0.0443 | `deadline_risk_budget=0.0800, initial_deadline_lambda=1.8000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.4500` |
+| `lag_012` | `fleetqox_lagrangian` | 4 | yes | yes | 6.9602 | 5.8956 +/- 0.1837 | 0.0056 +/- 0.0012 | 0.7157 +/- 0.0671 | 0.0210 +/- 0.0018 | 0.0309 +/- 0.0069 | 0.3908 +/- 0.0131 | 0.3541 +/- 0.0430 | `deadline_risk_budget=0.0800, initial_deadline_lambda=1.8000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.4500` |
+| `lag_021` | `fleetqox_lagrangian` | 4 | yes | yes | 6.9532 | 5.8645 +/- 0.1677 | 0.0061 +/- 0.0012 | 0.7487 +/- 0.0655 | 0.0210 +/- 0.0018 | 0.0363 +/- 0.0079 | 0.4108 +/- 0.0111 | 0.3225 +/- 0.0402 | `deadline_risk_budget=0.0800, initial_deadline_lambda=3.0000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.4500` |
+| `lag_009` | `fleetqox_lagrangian` | 4 | yes | yes | 6.9267 | 5.8557 +/- 0.1666 | 0.0062 +/- 0.0010 | 0.7515 +/- 0.0633 | 0.0210 +/- 0.0018 | 0.0375 +/- 0.0080 | 0.4258 +/- 0.0103 | 0.3077 +/- 0.0389 | `deadline_risk_budget=0.0400, initial_deadline_lambda=3.0000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.4500` |
+| `lag_016` | `fleetqox_lagrangian` | 4 | yes | yes | 6.9224 | 5.8465 +/- 0.1754 | 0.0107 +/- 0.0027 | 0.7391 +/- 0.0687 | 0.0210 +/- 0.0018 | 0.0916 +/- 0.0078 | 0.3286 +/- 0.0109 | 0.3635 +/- 0.0437 | `deadline_risk_budget=0.0800, initial_deadline_lambda=1.8000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.5500` |
+| `lag_000` | `fleetqox_lagrangian` | 4 | yes | yes | 6.9095 | 5.8798 +/- 0.1805 | 0.0060 +/- 0.0012 | 0.7171 +/- 0.0661 | 0.0210 +/- 0.0018 | 0.0351 +/- 0.0071 | 0.4107 +/- 0.0125 | 0.3282 +/- 0.0385 | `deadline_risk_budget=0.0400, initial_deadline_lambda=1.8000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.4500` |
+| `lag_018` | `fleetqox_lagrangian` | 4 | yes | yes | 6.8999 | 5.8709 +/- 0.1757 | 0.0060 +/- 0.0012 | 0.7240 +/- 0.0629 | 0.0210 +/- 0.0018 | 0.0340 +/- 0.0065 | 0.4231 +/- 0.0108 | 0.3200 +/- 0.0404 | `deadline_risk_budget=0.0800, initial_deadline_lambda=3.0000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.4500` |
+| `lag_013` | `fleetqox_lagrangian` | 4 | yes | yes | 6.8983 | 5.8736 +/- 0.1814 | 0.0097 +/- 0.0024 | 0.7171 +/- 0.0661 | 0.0210 +/- 0.0018 | 0.0834 +/- 0.0076 | 0.3471 +/- 0.0107 | 0.3528 +/- 0.0423 | `deadline_risk_budget=0.0800, initial_deadline_lambda=1.8000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.5500` |
+| `lag_022` | `fleetqox_lagrangian` | 4 | yes | yes | 6.8632 | 5.8303 +/- 0.1648 | 0.0120 +/- 0.0029 | 0.7515 +/- 0.0633 | 0.0210 +/- 0.0018 | 0.1042 +/- 0.0085 | 0.3564 +/- 0.0086 | 0.3213 +/- 0.0401 | `deadline_risk_budget=0.0800, initial_deadline_lambda=3.0000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.5500` |
+| `lag_001` | `fleetqox_lagrangian` | 4 | yes | yes | 6.8371 | 5.8508 +/- 0.1776 | 0.0110 +/- 0.0027 | 0.7212 +/- 0.0651 | 0.0210 +/- 0.0018 | 0.0949 +/- 0.0076 | 0.3620 +/- 0.0108 | 0.3277 +/- 0.0384 | `deadline_risk_budget=0.0400, initial_deadline_lambda=1.8000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.5500` |
+| `lag_010` | `fleetqox_lagrangian` | 4 | yes | yes | 6.8349 | 5.8217 +/- 0.1665 | 0.0122 +/- 0.0024 | 0.7529 +/- 0.0623 | 0.0210 +/- 0.0018 | 0.1098 +/- 0.0082 | 0.3658 +/- 0.0087 | 0.3066 +/- 0.0392 | `deadline_risk_budget=0.0400, initial_deadline_lambda=3.0000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.5500` |
+| `fleetqox_csds` | `fleetqox_csds` | 4 | yes | yes | 6.0150 | 6.0692 +/- 0.2526 | 0.0074 +/- 0.0062 | 0.1153 +/- 0.1366 | 0.0337 +/- 0.0108 | 0.1009 +/- 0.0721 | 0.0570 +/- 0.0089 | 0.0000 +/- 0.0000 | `-` |
+| `lag_003` | `fleetqox_lagrangian` | 4 | yes | no | 6.9578 | 5.8675 +/- 0.1710 | 0.0061 +/- 0.0012 | 0.7363 +/- 0.0705 | 0.0210 +/- 0.0018 | 0.0362 +/- 0.0076 | 0.3936 +/- 0.0118 | 0.3454 +/- 0.0407 | `deadline_risk_budget=0.0400, initial_deadline_lambda=1.8000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.4500` |
+| `lag_004` | `fleetqox_lagrangian` | 4 | yes | no | 6.8690 | 5.8340 +/- 0.1684 | 0.0120 +/- 0.0031 | 0.7391 +/- 0.0687 | 0.0210 +/- 0.0018 | 0.1023 +/- 0.0073 | 0.3404 +/- 0.0095 | 0.3444 +/- 0.0406 | `deadline_risk_budget=0.0400, initial_deadline_lambda=1.8000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.5500` |
+| `lag_006` | `fleetqox_lagrangian` | 4 | yes | no | 6.8608 | 5.8592 +/- 0.1711 | 0.0062 +/- 0.0010 | 0.7254 +/- 0.0636 | 0.0210 +/- 0.0018 | 0.0364 +/- 0.0074 | 0.4413 +/- 0.0107 | 0.3007 +/- 0.0375 | `deadline_risk_budget=0.0400, initial_deadline_lambda=3.0000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.4500` |
+| `lag_019` | `fleetqox_lagrangian` | 4 | yes | no | 6.8218 | 5.8418 +/- 0.1714 | 0.0113 +/- 0.0027 | 0.7268 +/- 0.0623 | 0.0210 +/- 0.0018 | 0.0949 +/- 0.0080 | 0.3739 +/- 0.0074 | 0.3192 +/- 0.0409 | `deadline_risk_budget=0.0800, initial_deadline_lambda=3.0000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.5500` |
+| `lag_007` | `fleetqox_lagrangian` | 4 | yes | no | 6.7669 | 5.8235 +/- 0.1679 | 0.0122 +/- 0.0023 | 0.7268 +/- 0.0629 | 0.0210 +/- 0.0018 | 0.1052 +/- 0.0072 | 0.3852 +/- 0.0074 | 0.2998 +/- 0.0375 | `deadline_risk_budget=0.0400, initial_deadline_lambda=3.0000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.5500` |
+| `lag_017` | `fleetqox_lagrangian` | 4 | no | yes | 5.2138 | 5.7843 +/- 0.1694 | 0.2144 +/- 0.0098 | 0.7499 +/- 0.0726 | 0.0210 +/- 0.0018 | 0.2350 +/- 0.0090 | 0.2171 +/- 0.0093 | 0.3482 +/- 0.0428 | `deadline_risk_budget=0.0800, initial_deadline_lambda=1.8000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.9600` |
+| `lag_014` | `fleetqox_lagrangian` | 4 | no | yes | 5.2123 | 5.8051 +/- 0.1718 | 0.2081 +/- 0.0090 | 0.7240 +/- 0.0644 | 0.0212 +/- 0.0015 | 0.2306 +/- 0.0076 | 0.2361 +/- 0.0080 | 0.3329 +/- 0.0398 | `deadline_risk_budget=0.0800, initial_deadline_lambda=1.8000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.9600` |
+| `lag_023` | `fleetqox_lagrangian` | 4 | no | yes | 4.9705 | 5.7506 +/- 0.1567 | 0.2354 +/- 0.0098 | 0.7571 +/- 0.0600 | 0.0210 +/- 0.0018 | 0.2563 +/- 0.0078 | 0.2364 +/- 0.0082 | 0.3095 +/- 0.0367 | `deadline_risk_budget=0.0800, initial_deadline_lambda=3.0000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.9600` |
+| `lag_005` | `fleetqox_lagrangian` | 4 | no | no | 5.0271 | 5.7614 +/- 0.1634 | 0.2302 +/- 0.0089 | 0.7460 +/- 0.0647 | 0.0210 +/- 0.0018 | 0.2507 +/- 0.0073 | 0.2240 +/- 0.0087 | 0.3310 +/- 0.0384 | `deadline_risk_budget=0.0400, initial_deadline_lambda=1.8000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.9600` |
+| `lag_002` | `fleetqox_lagrangian` | 4 | no | no | 4.9832 | 5.7675 +/- 0.1754 | 0.2283 +/- 0.0097 | 0.7282 +/- 0.0623 | 0.0212 +/- 0.0015 | 0.2498 +/- 0.0084 | 0.2454 +/- 0.0085 | 0.3078 +/- 0.0365 | `deadline_risk_budget=0.0400, initial_deadline_lambda=1.8000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.9600` |
+| `lag_020` | `fleetqox_lagrangian` | 4 | no | no | 4.9469 | 5.7566 +/- 0.1635 | 0.2320 +/- 0.0088 | 0.7379 +/- 0.0614 | 0.0212 +/- 0.0015 | 0.2523 +/- 0.0074 | 0.2541 +/- 0.0070 | 0.2990 +/- 0.0348 | `deadline_risk_budget=0.0800, initial_deadline_lambda=3.0000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.9600` |
+| `lag_011` | `fleetqox_lagrangian` | 4 | no | no | 4.8404 | 5.7301 +/- 0.1563 | 0.2460 +/- 0.0082 | 0.7557 +/- 0.0607 | 0.0210 +/- 0.0018 | 0.2669 +/- 0.0070 | 0.2419 +/- 0.0072 | 0.2953 +/- 0.0375 | `deadline_risk_budget=0.0400, initial_deadline_lambda=3.0000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.9600` |
+| `lag_008` | `fleetqox_lagrangian` | 4 | no | no | 4.7592 | 5.7288 +/- 0.1600 | 0.2468 +/- 0.0099 | 0.7324 +/- 0.0615 | 0.0214 +/- 0.0011 | 0.2682 +/- 0.0083 | 0.2613 +/- 0.0068 | 0.2820 +/- 0.0335 | `deadline_risk_budget=0.0400, initial_deadline_lambda=3.0000, risk_barrier_start=0.6200, risk_barrier_scale=12.00, deadline_drop_risk=0.9600` |
+
+## Pareto Frontier
+
+- Non-dominated candidates: `fleetqox_predictive`, `fleetqox_predictive_guarded`, `lag_015`, `lag_012`, `lag_021`, `lag_009`, `lag_016`, `lag_000`, `lag_018`, `lag_013`, `lag_022`, `lag_001`, `lag_010`, `fleetqox_csds`, `lag_017`, `lag_014`, `lag_023`.
+
+## Interpretation
+
+- Best ranked candidate: `fleetqox_predictive` with score `7.5204` and control miss `0.0026`.
+- Best Lagrangian candidate: `lag_015` with params `deadline_risk_budget=0.0800, initial_deadline_lambda=1.8000, risk_barrier_start=0.7000, risk_barrier_scale=12.00, deadline_drop_risk=0.4500`.
+- `19` of `27` candidates satisfy the control miss target.
+- Risk-reset threshold signal: `deadline_drop_risk=0.4500` has the best mean Lagrangian score `6.9330` with control miss `0.0060`.

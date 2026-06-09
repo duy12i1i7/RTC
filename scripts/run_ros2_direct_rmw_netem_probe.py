@@ -1,0 +1,596 @@
+"""Run a direct ROS 2 RMW pub/sub baseline under Docker tc-netem."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.run_rmw_docker_multi_robot_live_telemetry_plan_probe import (
+    CONTROL_TOPIC,
+    DEFAULT_IMAGE,
+    NETEM_SCHEMA_VERSION,
+    NETEM_SEED_SEMANTICS,
+    STATE_TOPIC,
+    netem_config_for_path,
+    netem_shell_prefix,
+    profile_by_name,
+)
+
+
+SCHEMA_VERSION = "fleetrmw.ros2_direct_rmw_netem_probe.v1"
+DEFAULT_RMWS = "rmw_fastrtps_cpp,rmw_cyclonedds_cpp,rmw_zenoh_cpp"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--rmw", default="rmw_fastrtps_cpp")
+    parser.add_argument("--profile", default="wifi")
+    parser.add_argument("--enable-netem", action="store_true")
+    parser.add_argument("--require-netem", action="store_true")
+    parser.add_argument("--netem-loss-scale", type=float, default=0.0)
+    parser.add_argument("--repetition-seed", type=int, default=None)
+    parser.add_argument("--samples", type=int, default=3)
+    parser.add_argument("--robot-count", type=int, default=1)
+    parser.add_argument("--publish-interval-ms", type=int, default=500)
+    parser.add_argument("--timeout-s", type=float, default=15.0)
+    parser.add_argument(
+        "--summary-json",
+        type=Path,
+        default=Path("results_rmw_socket/ros2_direct_rmw_netem_probe_summary.json"),
+    )
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    summary = run_probe(
+        root=ROOT,
+        image=args.image,
+        rmw=args.rmw,
+        profile=args.profile,
+        enable_netem=args.enable_netem,
+        require_netem=args.require_netem,
+        netem_loss_scale=args.netem_loss_scale,
+        repetition_seed=args.repetition_seed,
+        samples=args.samples,
+        robot_count=args.robot_count,
+        publish_interval_ms=args.publish_interval_ms,
+        timeout_s=args.timeout_s,
+    )
+    args.summary_json.parent.mkdir(parents=True, exist_ok=True)
+    args.summary_json.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.json:
+        print(json.dumps(summary, sort_keys=True))
+    else:
+        print("ros2-direct-rmw-netem-probe")
+        print(f"  status: {summary['status']}")
+        print(f"  rmw: {summary['rmw']}")
+        print(f"  profile: {summary['profile']}")
+        print(f"  control/state: {summary.get('control_payload_count')}/{summary.get('state_payload_count')}")
+    return 0 if summary["status"] in {"ok", "skipped"} else 1
+
+
+def run_probe(
+    *,
+    root: Path,
+    image: str,
+    rmw: str,
+    profile: str,
+    enable_netem: bool,
+    require_netem: bool,
+    netem_loss_scale: float,
+    repetition_seed: int | None,
+    samples: int,
+    robot_count: int = 1,
+    publish_interval_ms: int,
+    timeout_s: float,
+) -> dict[str, Any]:
+    if samples <= 0:
+        raise ValueError("samples must be positive")
+    if robot_count <= 0:
+        raise ValueError("robot_count must be positive")
+    if publish_interval_ms < 0:
+        raise ValueError("publish_interval_ms must be non-negative")
+    if timeout_s <= 0:
+        raise ValueError("timeout_s must be positive")
+    if netem_loss_scale < 0.0:
+        raise ValueError("netem_loss_scale must be non-negative")
+    telemetry_profile = profile_by_name(profile)
+    topic_specs = topic_specs_for_robot_count(robot_count)
+    expected_control_count = samples * sum(1 for spec in topic_specs if spec["kind"] == "control")
+    expected_state_count = samples * sum(1 for spec in topic_specs if spec["kind"] == "state")
+    availability = probe_rmw_available(image, rmw)
+    if not availability["available"]:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "skipped",
+            "reason": "rmw_unavailable",
+            "image": image,
+            "rmw": rmw,
+            "profile": profile,
+            "robot_count": robot_count,
+            "rmw_probe": availability,
+        }
+
+    suffix = str(os.getpid())
+    domain_id = 120 + (os.getpid() % 80)
+    network = f"fleetrmw-ros2-direct-net-{suffix}"
+    subscriber_name = f"fleetrmw-ros2-direct-sub-{suffix}"
+    publisher_name = f"fleetrmw-ros2-direct-pub-{suffix}"
+    work_dir = root / f".tmp_fleetrmw_ros2_direct_{suffix}"
+    subscriber_script = work_dir / "subscriber.py"
+    publisher_script = work_dir / "publisher.py"
+    publisher_netem_status = work_dir / "publisher_netem_status.json"
+    publisher_netem_status_container = f"/work/{publisher_netem_status.relative_to(root)}"
+    netem = netem_config_for_path(
+        telemetry_profile,
+        path_id="primary_wifi",
+        loss_scale=netem_loss_scale,
+        repetition_seed=repetition_seed,
+    )
+    try:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        write_probe_scripts(
+            subscriber_script=subscriber_script,
+            publisher_script=publisher_script,
+            samples=samples,
+            topic_specs=topic_specs,
+            publish_interval_ms=publish_interval_ms,
+            timeout_s=timeout_s,
+        )
+        run(["docker", "network", "create", network])
+        start_container(
+            root=root,
+            image=image,
+            name=subscriber_name,
+            network=network,
+            command=ros_command(
+                rmw=rmw,
+                domain_id=domain_id,
+                python_path=f"/work/{subscriber_script.relative_to(root)}",
+            ),
+        )
+        time.sleep(1.0)
+        publisher_prefix = (
+            netem_shell_prefix(
+                netem,
+                status_file=publisher_netem_status_container,
+                require=require_netem,
+            )
+            if enable_netem
+            else ""
+        )
+        start_container(
+            root=root,
+            image=image,
+            name=publisher_name,
+            network=network,
+            command=publisher_prefix
+            + ros_command(
+                rmw=rmw,
+                domain_id=domain_id,
+                python_path=f"/work/{publisher_script.relative_to(root)}",
+            ),
+            extra_args=("--cap-add", "NET_ADMIN") if enable_netem else (),
+        )
+        publisher_returncode = int(run(["docker", "wait", publisher_name]).stdout.strip())
+        subscriber_returncode = int(run(["docker", "wait", subscriber_name]).stdout.strip())
+        publisher_log = run(["docker", "logs", publisher_name]).stdout.strip()
+        subscriber_log = run(["docker", "logs", subscriber_name]).stdout.strip()
+        publisher_result = parse_last_json(publisher_log)
+        subscriber_result = parse_last_json(subscriber_log)
+        netem_status = {
+            "direct_pub": read_json(publisher_netem_status),
+        }
+        netem_ok = netem_status_ok(netem_status, enabled=enable_netem, required=require_netem)
+        control_count = int(subscriber_result.get("control_payload_count", 0))
+        state_count = int(subscriber_result.get("state_payload_count", 0))
+        delivery_ok = control_count >= expected_control_count and state_count >= expected_state_count
+        status = (
+            publisher_returncode == 0
+            and subscriber_returncode == 0
+            and publisher_result.get("status") == "ok"
+            and subscriber_result.get("status") == "ok"
+            and delivery_ok
+            and netem_ok
+        )
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok" if status else "failed",
+            "image": image,
+            "rmw": rmw,
+            "profile": profile,
+            "profile_config": telemetry_profile.as_dict(),
+            "topics": [spec["topic"] for spec in topic_specs],
+            "topic_specs": topic_specs,
+            "topic_count": len(topic_specs),
+            "robot_count": robot_count,
+            "samples": samples,
+            "samples_per_topic": samples,
+            "repetition_seed": repetition_seed,
+            "netem_enabled": enable_netem,
+            "netem_required": require_netem,
+            "netem_loss_scale": netem_loss_scale,
+            "netem": netem,
+            "netem_status": netem_status,
+            "netem_schema_version": NETEM_SCHEMA_VERSION,
+            "netem_seed_semantics": NETEM_SEED_SEMANTICS if enable_netem else "",
+            "rmw_probe": availability,
+            "publisher_returncode": publisher_returncode,
+            "subscriber_returncode": subscriber_returncode,
+            "publisher": publisher_result,
+            "subscriber": subscriber_result,
+            "control_payload_count": control_count,
+            "state_payload_count": state_count,
+            "control_expected_count": expected_control_count,
+            "state_expected_count": expected_state_count,
+            "control_delivery_ratio": control_count / expected_control_count,
+            "state_delivery_ratio": state_count / expected_state_count,
+            "control_latency_ms_mean": _float(subscriber_result.get("control_latency_ms_mean")),
+            "state_latency_ms_mean": _float(subscriber_result.get("state_latency_ms_mean")),
+            "control_latency_ms_p95": _float(subscriber_result.get("control_latency_ms_p95")),
+            "state_latency_ms_p95": _float(subscriber_result.get("state_latency_ms_p95")),
+            "min_topic_delivery_ratio": _float(subscriber_result.get("min_topic_delivery_ratio")),
+            "per_topic_payload_count": subscriber_result.get("per_topic_payload_count", {}),
+            "per_topic_delivery_ratio": subscriber_result.get("per_topic_delivery_ratio", {}),
+        }
+    except subprocess.CalledProcessError as exc:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "failed",
+            "reason": "harness_exception",
+            "image": image,
+            "rmw": rmw,
+            "profile": profile,
+            "returncode": exc.returncode,
+            "stdout_excerpt": excerpt(exc.stdout),
+            "stderr_excerpt": excerpt(exc.stderr),
+        }
+    finally:
+        for name in (publisher_name, subscriber_name):
+            subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True, text=True)
+        subprocess.run(["docker", "network", "rm", network], check=False, capture_output=True, text=True)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def write_probe_scripts(
+    *,
+    subscriber_script: Path,
+    publisher_script: Path,
+    samples: int,
+    topic_specs: list[dict[str, str]] | None = None,
+    publish_interval_ms: int,
+    timeout_s: float,
+) -> None:
+    topic_specs = topic_specs or topic_specs_for_robot_count(1)
+    topic_specs_json = json.dumps(topic_specs, sort_keys=True)
+    subscriber_script.write_text(
+        SUBSCRIBER_SCRIPT.replace("__SAMPLES__", str(samples))
+        .replace("__TIMEOUT_S__", repr(timeout_s))
+        .replace("__TOPIC_SPECS_JSON__", topic_specs_json),
+        encoding="utf-8",
+    )
+    publisher_script.write_text(
+        PUBLISHER_SCRIPT.replace("__SAMPLES__", str(samples)).replace(
+            "__PUBLISH_INTERVAL_S__",
+            repr(publish_interval_ms / 1000.0),
+        ).replace("__TOPIC_SPECS_JSON__", topic_specs_json),
+        encoding="utf-8",
+    )
+
+
+def topic_specs_for_robot_count(robot_count: int) -> list[dict[str, str]]:
+    if robot_count <= 0:
+        raise ValueError("robot_count must be positive")
+    if robot_count == 1:
+        return [
+            {"topic": CONTROL_TOPIC, "kind": "control", "flow": "robot_0000/cmd_vel"},
+            {"topic": STATE_TOPIC, "kind": "state", "flow": "robot_0001/odom"},
+        ]
+    specs = []
+    for robot_index in range(robot_count):
+        robot = f"robot_{robot_index:04d}"
+        specs.append({"topic": f"/{robot}/cmd_vel", "kind": "control", "flow": f"{robot}/cmd_vel"})
+        specs.append({"topic": f"/{robot}/odom", "kind": "state", "flow": f"{robot}/odom"})
+    return specs
+
+
+def probe_rmw_available(image: str, rmw: str) -> dict[str, object]:
+    docker = shutil.which("docker")
+    if not docker:
+        return {"available": False, "reason": "docker_not_found", "docker": None}
+    completed = subprocess.run(
+        [
+            docker,
+            "run",
+            "--rm",
+            image,
+            f"source /opt/ros/jazzy/setup.bash && ros2 pkg prefix {rmw}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return {
+        "available": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": excerpt(completed.stderr),
+    }
+
+
+def ros_command(*, rmw: str, domain_id: int, python_path: str) -> str:
+    return (
+        "source /opt/ros/jazzy/setup.bash && "
+        f"export RMW_IMPLEMENTATION={rmw} ROS_DOMAIN_ID={domain_id} && "
+        f"python3 {python_path}"
+    )
+
+
+def start_container(
+    *,
+    root: Path,
+    image: str,
+    name: str,
+    network: str,
+    command: str,
+    extra_args: tuple[str, ...] = (),
+) -> None:
+    run(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--network",
+            network,
+            *extra_args,
+            "-v",
+            f"{root}:/work",
+            "-w",
+            "/work",
+            image,
+            command,
+        ]
+    )
+
+
+def netem_status_ok(
+    statuses: dict[str, object],
+    *,
+    enabled: bool,
+    required: bool,
+) -> bool:
+    if not enabled:
+        return True
+    status = statuses.get("direct_pub")
+    if not isinstance(status, dict):
+        return not required
+    if required:
+        return status.get("status") == "applied"
+    return status.get("status") in {"applied", "skipped", "missing_tc", "failed"}
+
+
+def parse_last_json(text: str) -> dict[str, object]:
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return {"status": "parse_failed", "raw_tail": excerpt(text)}
+
+
+def read_json(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {"status": "missing"}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {"status": "parse_failed", "error": str(exc)}
+    return value if isinstance(value, dict) else {"status": "parse_failed"}
+
+
+def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, check=check, capture_output=True, text=True)
+
+
+def excerpt(value: object, *, max_chars: int = 800) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3] + "..."
+
+
+def _float(value: object) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+SUBSCRIBER_SCRIPT = r'''
+import json
+import statistics
+import time
+
+import rclpy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from std_msgs.msg import String
+
+TOPIC_SPECS = __TOPIC_SPECS_JSON__
+SAMPLES = __SAMPLES__
+TIMEOUT_S = __TIMEOUT_S__
+
+
+def percentile(values, percentile):
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * percentile / 100.0
+    lower = int(index)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = index - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+rclpy.init()
+node = rclpy.create_node("fleetrmw_direct_baseline_subscriber")
+qos = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+    reliability=ReliabilityPolicy.RELIABLE,
+)
+payloads = {spec["topic"]: [] for spec in TOPIC_SPECS}
+latencies = {spec["topic"]: [] for spec in TOPIC_SPECS}
+
+
+def make_callback(topic):
+    def callback(msg):
+        now = time.time_ns()
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            payload = {"raw": msg.data}
+        payloads[topic].append(payload)
+        sent_ns = int(payload.get("sent_ns", 0) or 0)
+        if sent_ns > 0:
+            latencies[topic].append((now - sent_ns) / 1_000_000.0)
+    return callback
+
+
+subscriptions = [
+    node.create_subscription(String, spec["topic"], make_callback(spec["topic"]), qos)
+    for spec in TOPIC_SPECS
+]
+deadline = time.time() + TIMEOUT_S
+while time.time() < deadline:
+    rclpy.spin_once(node, timeout_sec=0.1)
+    if all(len(payloads[topic]) >= SAMPLES for topic in payloads):
+        break
+
+control_topics = [spec["topic"] for spec in TOPIC_SPECS if spec["kind"] == "control"]
+state_topics = [spec["topic"] for spec in TOPIC_SPECS if spec["kind"] == "state"]
+control_latencies = [value for topic in control_topics for value in latencies[topic]]
+state_latencies = [value for topic in state_topics for value in latencies[topic]]
+per_topic_payload_count = {topic: len(values) for topic, values in payloads.items()}
+per_topic_delivery_ratio = {
+    topic: min(1.0, len(values) / SAMPLES)
+    for topic, values in payloads.items()
+}
+
+result = {
+    "status": "ok" if all(len(payloads[topic]) >= SAMPLES for topic in payloads) else "failed",
+    "control_payload_count": sum(len(payloads[topic]) for topic in control_topics),
+    "state_payload_count": sum(len(payloads[topic]) for topic in state_topics),
+    "control_expected_count": SAMPLES * len(control_topics),
+    "state_expected_count": SAMPLES * len(state_topics),
+    "control_latency_ms_mean": statistics.mean(control_latencies) if control_latencies else 0.0,
+    "state_latency_ms_mean": statistics.mean(state_latencies) if state_latencies else 0.0,
+    "control_latency_ms_p95": percentile(control_latencies, 95),
+    "state_latency_ms_p95": percentile(state_latencies, 95),
+    "min_topic_delivery_ratio": min(per_topic_delivery_ratio.values()) if per_topic_delivery_ratio else 0.0,
+    "per_topic_payload_count": per_topic_payload_count,
+    "per_topic_delivery_ratio": per_topic_delivery_ratio,
+    "payloads": payloads,
+}
+print(json.dumps(result, sort_keys=True))
+node.destroy_node()
+rclpy.shutdown()
+raise SystemExit(0 if result["status"] == "ok" else 1)
+'''
+
+
+PUBLISHER_SCRIPT = r'''
+import json
+import time
+
+import rclpy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from std_msgs.msg import String
+
+TOPIC_SPECS = __TOPIC_SPECS_JSON__
+SAMPLES = __SAMPLES__
+PUBLISH_INTERVAL_S = __PUBLISH_INTERVAL_S__
+
+rclpy.init()
+node = rclpy.create_node("fleetrmw_direct_baseline_publisher")
+qos = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+    reliability=ReliabilityPolicy.RELIABLE,
+)
+publishers = {
+    spec["topic"]: node.create_publisher(String, spec["topic"], qos)
+    for spec in TOPIC_SPECS
+}
+deadline = time.time() + 5.0
+while time.time() < deadline:
+    rclpy.spin_once(node, timeout_sec=0.1)
+    if all(pub.get_subscription_count() > 0 for pub in publishers.values()):
+        break
+
+sent = {"control": 0, "state": 0}
+sent_by_topic = {spec["topic"]: 0 for spec in TOPIC_SPECS}
+for seq in range(1, SAMPLES + 1):
+    now = time.time_ns()
+    for spec in TOPIC_SPECS:
+        msg = String()
+        msg.data = json.dumps(
+            {
+                "flow": spec["flow"],
+                "kind": spec["kind"],
+                "seq": seq,
+                "sent_ns": now,
+                "topic": spec["topic"],
+            },
+            sort_keys=True,
+        )
+        publishers[spec["topic"]].publish(msg)
+        sent[spec["kind"]] += 1
+        sent_by_topic[spec["topic"]] += 1
+    rclpy.spin_once(node, timeout_sec=0.05)
+    time.sleep(PUBLISH_INTERVAL_S)
+
+time.sleep(0.5)
+subscription_counts = {
+    topic: pub.get_subscription_count()
+    for topic, pub in publishers.items()
+}
+result = {
+    "status": "ok",
+    "control_sent": sent["control"],
+    "state_sent": sent["state"],
+    "sent_by_topic": sent_by_topic,
+    "subscription_counts": subscription_counts,
+    "control_subscription_count": sum(
+        subscription_counts[spec["topic"]] for spec in TOPIC_SPECS if spec["kind"] == "control"
+    ),
+    "state_subscription_count": sum(
+        subscription_counts[spec["topic"]] for spec in TOPIC_SPECS if spec["kind"] == "state"
+    ),
+    "min_subscription_count": min(subscription_counts.values()) if subscription_counts else 0,
+}
+print(json.dumps(result, sort_keys=True))
+node.destroy_node()
+rclpy.shutdown()
+'''
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
