@@ -15,6 +15,7 @@ constexpr const char * kAckNackSchemaVersion = "fleetrmw.ack_nack.v1";
 constexpr const char * kRouteAdvertisementSchemaVersion = "fleetrmw.route_advertisement.v1";
 constexpr const char * kGraphAdvertisementSchemaVersion = "fleetrmw.graph_advertisement.v1";
 constexpr const char * kServiceFrameSchemaVersion = "fleetrmw.service_frame.v1";
+constexpr const char * kActionFrameSchemaVersion = "fleetrmw.action_frame.v1";
 constexpr const char * kDataFrameMagic = "FRMW1\n";
 
 struct DataFrame
@@ -111,6 +112,19 @@ struct ServiceFrame
   std::vector<std::uint8_t> serialized_payload;
 };
 
+struct ActionFrame
+{
+  std::string role;
+  std::string action_name;
+  std::string type_name;
+  std::string endpoint_id;
+  std::string goal_id;
+  std::int64_t sequence_id = 0;
+  std::int64_t source_timestamp_ns = 0;
+  std::int64_t lifespan_ns = 0;
+  std::vector<std::uint8_t> serialized_payload;
+};
+
 std::string stream_key(const DataFrame & frame);
 
 std::string encode_data_frame(const DataFrame & frame);
@@ -130,6 +144,12 @@ std::string encode_service_frame(const ServiceFrame & frame);
 std::optional<ServiceFrame> decode_service_frame(const std::string & payload);
 
 bool service_frame_expired(const ServiceFrame & frame, std::int64_t now_ns);
+
+std::string encode_action_frame(const ActionFrame & frame);
+
+std::optional<ActionFrame> decode_action_frame(const std::string & payload);
+
+bool action_frame_expired(const ActionFrame & frame, std::int64_t now_ns);
 
 AckNackFeedback observe_frame(SequenceState & state, const DataFrame & frame);
 

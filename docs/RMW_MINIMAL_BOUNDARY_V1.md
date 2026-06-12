@@ -83,14 +83,32 @@ Implemented in `fleetqox/rmw_boundary.py`:
     `ros2 topic pub` and `ros2 topic echo --once` can exchange a
     `std_msgs/msg/String` through `rmw_fleetqox_cpp`;
   - includes `scripts/run_rmw_docker_ros2_cli_message_matrix.py`, proving ROS
-    CLI pub/echo works for `std_msgs/msg/String`, `geometry_msgs/msg/Twist`,
-    `sensor_msgs/msg/LaserScan`, and `nav_msgs/msg/Odometry` through the same
-    introspection-C serialization path;
+    CLI pub/echo works for `std_msgs/msg/String`,
+    `builtin_interfaces/msg/Time`, `builtin_interfaces/msg/Duration`,
+    `geometry_msgs/msg/Twist`, `geometry_msgs/msg/PoseStamped`,
+    `sensor_msgs/msg/LaserScan`, `nav_msgs/msg/Odometry`, and
+    `nav_msgs/msg/Path` through the same introspection-C serialization path;
   - exports service/client handle lifecycle plus service/client graph
     registration, remote graph advertisements, by-node service/client graph
     queries, and graph-derived service availability;
   - sends service requests and responses as `fleetrmw.service_frame.v1` frames,
     reusing the introspection-C serializer for request/response message bodies;
+  - builds `fleetrmw_service_qos_probe` and includes
+    `scripts/run_rmw_docker_service_qos_probe.py`, proving stale service
+    request and response frames are dropped before `rmw_take_request` or
+    `rmw_take_response` can deliver them;
+  - builds `fleetrmw_service_error_probe` and includes
+    `scripts/run_rmw_docker_service_error_probe.py`, proving no-response takes
+    report `taken=false`, malformed response payloads return a controlled error
+    without delivery, and invalid service frames are rejected;
+  - includes `scripts/run_rmw_docker_ros2_service_timeout_probe.py`, proving a
+    delayed `rcl` service response makes `ros2 service call` time out without a
+    fabricated response while the server still records the request;
+  - defines `fleetrmw.action_frame.v1` and builds
+    `fleetrmw_action_frame_probe` plus
+    `scripts/run_rmw_docker_action_frame_probe.py`, proving the minimal goal,
+    feedback, status, result, and cancel roles round-trip with lifespan checks
+    before real `rcl_action` APIs are wired in;
   - exports explicit optional-surface ABI stubs for loaned messages, services,
     events, dynamic messages, network-flow endpoints, callbacks,
     and serialization-support hooks, keeping `rcl` loader symbol resolution
@@ -171,6 +189,14 @@ fleetrmw.rmw_std_msgs_string_probe.v1
 fleetrmw.rmw_geometry_twist_probe.v1
 fleetrmw.rmw_qos_probe.v1
 fleetrmw.rmw_docker_qos_probe.v1
+fleetrmw.rmw_service_qos_probe.v1
+fleetrmw.rmw_docker_service_qos_probe.v1
+fleetrmw.rmw_service_error_probe.v1
+fleetrmw.rmw_docker_service_error_probe.v1
+fleetrmw.rmw_ros2_service_timeout_probe.v1
+fleetrmw.action_frame.v1
+fleetrmw.rmw_action_frame_probe.v1
+fleetrmw.rmw_docker_action_frame_probe.v1
 fleetrmw.rmw_reliability_probe.v1
 fleetrmw.rmw_docker_reliability_probe.v1
 fleetrmw.rmw_reliable_interprocess_probe.v1
@@ -416,10 +442,13 @@ and the RELIABLE/KEEP_LAST/VOLATILE QoS profile.
 
 The ROS CLI message-matrix artifact
 `results_rmw_socket/docker_ros2_cli_message_matrix_summary.json` verifies
-`4/4` CLI pub/echo cases over `rmw_fleetqox_cpp`: `std_msgs/msg/String`,
-`geometry_msgs/msg/Twist`, `sensor_msgs/msg/LaserScan`, and
-`nav_msgs/msg/Odometry`.  This covers ROS strings, nested messages, fixed
-covariance arrays, and dynamic float sequences (`ranges`/`intensities`) through
+CLI pub/echo cases over `rmw_fleetqox_cpp`: `std_msgs/msg/String`,
+`builtin_interfaces/msg/Time`, `builtin_interfaces/msg/Duration`,
+`geometry_msgs/msg/Twist`, `geometry_msgs/msg/PoseStamped`,
+`sensor_msgs/msg/LaserScan`, `nav_msgs/msg/Odometry`, and
+`nav_msgs/msg/Path`.  This covers ROS strings, signed/unsigned time fields,
+nested messages, fixed covariance arrays, dynamic float sequences
+(`ranges`/`intensities`), and dynamic sequences of nested pose messages through
 the current introspection-C serializer.
 
 The ROS CLI node-info artifact
@@ -540,12 +569,14 @@ publisher session. The subscriber path now writes
 timestamp metadata, and the controller converts those records into robot QoE
 state. The live RMW probe now covers two robots/topics with divergent
 control-vs-state path rules, and the controller-scale probe covers N robots and
-2N topics without Docker. Redundant-path duplicate data frames are counted and
-de-duplicated before application delivery. A multi-robot profile matrix now
-repeats the Docker RMW path over `wifi`, `wan`, and `roaming`
-router-telemetry profiles. It does not yet own actions, full sequence/C++
-type-support coverage, full service QoS semantics, or scaled end-to-end
-`tc netem` QoE/robot-SLO telemetry over many topics and robots.
+ 2N topics without Docker. Redundant-path duplicate data frames are counted and
+ de-duplicated before application delivery. A multi-robot profile matrix now
+ repeats the Docker RMW path over `wifi`, `wan`, and `roaming`
+ router-telemetry profiles. It now has a dependency-light
+ `fleetrmw.action_frame.v1` contract for action role payloads, but it does not
+ yet own real `rcl_action` APIs, full sequence/C++ type-support coverage,
+ broader service cancellation/error semantics, or scaled end-to-end `tc netem`
+ QoE/robot-SLO telemetry over many topics and robots.
 The dependency-free Python boundary and the C++ socket reference now prove the
 same frame/ACK contract, including Docker ROS build coverage.  The Python
 sidecar runtime can consume
@@ -566,4 +597,5 @@ minimal RMW ABI layer:
    `FLEETQOX_RMW_FLEET_PATH_PLAN_FILE` is driven by end-to-end fleet health;
 4. expand from the current ROS CLI topic/service graph, pub/echo, and SetBool
    service-call smokes to richer messages, sequence/C++ type-support coverage,
-   action transport APIs, and measured service QoS semantics.
+   deadline-aware concurrent action scheduling, Nav2/RMF action workloads, and
+   caller-visible service cancellation/error semantics.

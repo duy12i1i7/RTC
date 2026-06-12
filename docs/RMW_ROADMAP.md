@@ -361,9 +361,12 @@ Implemented sub-milestones:
   `ros2 topic echo --once` receives through `rmw_fleetqox_cpp`. The ROS CLI
   message-matrix artifact
   `results_rmw_socket/docker_ros2_cli_message_matrix_summary.json` extends this
-  to `std_msgs/msg/String`, `geometry_msgs/msg/Twist`,
-  `sensor_msgs/msg/LaserScan`, and `nav_msgs/msg/Odometry`, covering nested
-  messages, fixed arrays, and dynamic sequences. The RMW now
+  to `std_msgs/msg/String`, `builtin_interfaces/msg/Time`,
+  `builtin_interfaces/msg/Duration`, `geometry_msgs/msg/Twist`,
+  `geometry_msgs/msg/PoseStamped`, `sensor_msgs/msg/LaserScan`,
+  `nav_msgs/msg/Odometry`, and `nav_msgs/msg/Path`, covering signed/unsigned
+  time fields, nested messages, fixed arrays, dynamic primitive sequences, and
+  dynamic sequences of nested pose messages. The RMW now
   dispatches
   generic `rosidl_typesupport_c` maps into introspection-C handles and exposes
   service/client handle lifecycle and service graph support for node startup
@@ -381,6 +384,47 @@ Implemented sub-milestones:
   same service call when server and client peer only with
   `fleetrmw_udp_router_probe`; the router learns service/client routes from
   graph advertisements and forwards the request/response frames. The QoS
+  service freshness artifact
+  `results_rmw_socket/docker_rmw_service_qos_probe_summary.json` proves stale
+  request and response service frames are counted as expired and skipped before
+  `rmw_take_request` / `rmw_take_response` delivery. The service error artifact
+  `results_rmw_socket/docker_rmw_service_error_probe_summary.json` proves empty
+  response queues do not fabricate responses, malformed response payloads return
+  controlled errors with `taken=false`, and invalid service frames are rejected
+  without creating a response. The ROS CLI service-timeout artifact
+  `results_rmw_socket/docker_ros2_service_timeout_probe_summary.json` proves a
+  real `ros2 service call` sends a request through FleetRMW, the server sees it,
+  the response is intentionally delayed, and the CLI exits with timeout code
+  `124` without printing a success response. The action-frame contract
+  artifact `results_rmw_socket/docker_rmw_action_frame_probe_summary.json`
+  proves `fleetrmw.action_frame.v1` round-trips goal, feedback, status, result,
+  and cancel roles with lifespan checks and rejects service-frame schema input.
+  The router-mediated action artifact
+  `results_rmw_socket/docker_rmw_router_action_frame_probe_summary.json` proves
+  `fleetrmw_udp_router_probe` learns `action_server` and `action_client` graph
+  routes, forwards `goal/cancel` toward the server, and forwards
+  `feedback/status/result` toward the client.
+  The first real action API artifact
+  `results_rmw_socket/docker_rmw_rclpy_action_probe_summary.json` proves a
+  same-process `rclpy.action.ActionServer` and `ActionClient` can discover a
+  `tf2_msgs/action/LookupTransform` server, accept a goal, execute it, and
+  receive a GetResult response through `rmw_fleetqox_cpp`.
+  The router-mediated real action artifact
+  `results_rmw_socket/docker_rmw_router_rclpy_action_probe_summary.json` proves
+  the same action client/server operation completes across separate Docker
+  containers that peer only with `fleetrmw_udp_router_probe`; the router
+  observes ten action service frames and forwards all ten. The client observes
+  `ActionClient.server_is_ready()` before send and after result, feedback for
+  both success and cancel goals, status samples through `CANCELING` and
+  `CANCELED`, success status `4`, and canceled status `5`.
+  The action QoS artifact
+  `results_rmw_socket/docker_rmw_router_rclpy_action_qos_probe_summary.json`
+  proves graph-advertised lifespan admission on real feedback and status: a
+  fresh row delivers both streams, while an expired row drops two feedback and
+  seven status frames without breaking goal/cancel/result completion. Its
+  deadline row scopes a three-frame burst to the action topic prefix and
+  forwards feedback deadline `5 ms` before status deadline `100 ms`.
+  The QoS
   artifact `results_rmw_socket/docker_rmw_qos_probe_summary.json` proves the
   first measured queue QoS subset: `KEEP_LAST depth=1` keeps only the newest
   serialized sample, and subscription `lifespan` drops an expired frame before
@@ -405,7 +449,7 @@ Implemented sub-milestones:
   network-flow endpoints, callbacks, and dynamic serialization support;
   unsupported surfaces return controlled `RMW_RET_UNSUPPORTED` instead of
   unresolved loader symbols. Broader service QoS semantics, sequence/C++
-  type-support coverage, and actions are still open ABI work.
+  type-support coverage, and real `rcl_action` APIs are still open ABI work.
 - ROS 2 egress ACK/NACK piggyback. The live egress bridge now tracks received
   source sequences with `RmwAckNackTracker` and attaches `fleetrmw.ack_nack.v1`
   records to regular feedback windows. This means the same gap signal generated
@@ -486,6 +530,26 @@ Implemented first:
 - first service QoS freshness subset where `fleetrmw.service_frame.v1` carries
   request/response lifespan metadata from client/service QoS and the RMW drops
   stale RPC frames before service/client delivery;
+- first service error subset where empty response queues return `taken=false`,
+  malformed response payloads return a controlled error without delivery, and
+  invalid service frames are rejected before a client-visible response appears;
+- first ROS CLI service-timeout subset where a delayed `rcl` service response
+  causes `ros2 service call` to time out after sending the request and before
+  receiving any fabricated response;
+- dependency-light action-frame contract where `fleetrmw.action_frame.v1`
+  carries goal, feedback, status, result, and cancel role payloads with source
+  timestamp, lifespan, endpoint id, goal id, and serialized payload metadata;
+- router-mediated action-frame transport where `action_server` and
+  `action_client` endpoints are learned from graph advertisements and the
+  router forwards `goal/cancel/feedback/status/result` role frames;
+- same-process real `rclpy.action` smoke where a
+  `tf2_msgs/action/LookupTransform` client/server pair completes server
+  discovery, SendGoal, execution, and GetResult over `rmw_fleetqox_cpp`;
+- router-mediated real `rclpy.action` operation where the client and server run
+  in separate containers and exchange SendGoal, CancelGoal, GetResult,
+  feedback, and status only through `fleetrmw_udp_router_probe`;
+- real action observation lifespan admission plus scoped deadline ordering,
+  while action command/result services remain complete;
 - router-mediated service request/response where service/client endpoints are
   learned from graph advertisements and the router forwards both RPC frames;
 - first measured QoS subset for local subscription queues: `KEEP_LAST` depth
@@ -570,8 +634,128 @@ Implemented first:
 - router-level `lifespan` admission where the data-plane router learns
   publisher QoS from graph advertisements and drops expired frames before
   forwarding;
+- service-level `lifespan` admission where stale
+  `fleetrmw.service_frame.v1` request and response frames are counted as
+  expired and skipped before `rmw_take_request` / `rmw_take_response` delivery;
+- service-level error handling where empty response queues report `taken=false`,
+  malformed response payloads are popped with `RMW_RET_UNSUPPORTED` and
+  `taken=false`, and invalid service frames are rejected without queueing a
+  response;
+- ROS CLI service-timeout handling where `ros2 service call` sends a request,
+  the service node observes it, response delay exceeds the client timeout, and
+  the CLI exits with timeout code `124` without a success response;
+- action-frame role contract where `fleetrmw_action_frame_probe` round-trips
+  goal, feedback, status, result, and cancel frames, verifies action lifespan
+  boundaries, and rejects service-frame schema input before real `rcl_action`
+  APIs are wired in;
+- router-mediated action-frame transport where `fleetrmw_action_router_probe`
+  sends the five minimal roles through `fleetrmw_udp_router_probe`, yielding
+  server-visible `goal/cancel` and client-visible `feedback/status/result`;
+- real `rclpy.action` goal/result smoke where
+  `run_rmw_docker_rclpy_action_probe.py` uses
+  `tf2_msgs/action/LookupTransform` and verifies server discovery, accepted
+  goal, execute callback, and GetResult status `SUCCEEDED`;
+- router-mediated real `rclpy.action` lifecycle smoke where
+  `run_rmw_docker_router_rclpy_action_probe.py` separates the client and server
+  into different Docker containers and verifies availability, success and
+  cancel goals, feedback callbacks, status samples, `SUCCEEDED` and `CANCELED`
+  results, and ten forwarded action service frames;
 - opt-in router deadline scheduler window where the data plane snapshots
   learned deadline QoS and prioritizes earlier-deadline frames in a burst;
+- publisher-provided fleet identity plus per-robot deadline-success and queue
+  telemetry, with a real multi-robot control/state FIFO comparison;
+- online deadline-gated scheduling with paced non-urgent drain under
+  Wi-Fi/WAN/roaming `tc netem`;
+- first adaptive admission evidence for deadline-gated holdback, where the
+  Wi-Fi/WAN/roaming netem wrapper chooses FIFO when holdback hurts control p95
+  and chooses `deadline_gated_holdback` only for admitted profiles, preserving
+  zero deadline misses and per-robot fairness `1.0`;
+- live router admission with `slo_service_epoch`, where the router estimates
+  each non-urgent frame's SLO-normalized link service cost, smooths it with
+  EWMA, and uses enter/exit thresholds plus epoch dwell before deciding inside
+  the running scheduler whether to queue or bypass holdback;
+- first repeated-loss smoke for live adaptive admission, where Wi-Fi/roaming
+  run under explicit `tc netem loss 0.02%`, both admission branches execute,
+  and stochastic row failure is surfaced as `partial` evidence instead of being
+  hidden;
+- scheduled ACK/NACK repair where a router scheduler window, an intentional
+  source-sequence drop, forwarded ACK/NACK feedback, and publisher
+  retransmission recover the missing payload through the scheduled data path;
+- repeated-loss scheduled ACK/NACK repair under Wi-Fi and roaming qdiscs, with
+  `2/2` first-smoke rows recovering all payloads and a post-satisfaction drain
+  horizon that prevents terminal router counters from racing kernel netem
+  delivery;
+- concurrent four-robot scheduled ACK/NACK repair under a roaming qdisc, with
+  independent per-publisher drops, full payload recovery, `8`
+  retransmissions, zero scheduler deadline misses, and fairness `1.0`;
+- real mixed action/control/state operation on one roaming-profile router,
+  where action success/cancel and `4/4` repaired data flows pass, fresh
+  deadline misses remain zero, and late repair misses are separately
+  attributable by topic, robot, sequence, and lateness;
+- proactive deadline diversity where `adaptive_qos` duplicates critical
+  control samples over roaming and Wi-Fi paths; the repeated-loss matrix passes
+  `2/2`, keeps every sample below `100 ms`, and requires no retransmission;
+- concurrent four-robot proactive diversity, repeated `2/2`, with all per-robot
+  samples on time, fairness `1.0`, maximum latency `56.163 ms`, and measured
+  `2x` path-transmission overhead;
+- failure-domain-aware redundancy budgeting in the fleet optimizer: a
+  four-robot deterministic probe protects the two fairness-debt robots, keeps
+  two flows unicast, drops none, and cuts path transmissions from `8` to `6`;
+- live budgeted fleet-plan actuation across four concurrent ROS 2 robots: the
+  optimizer's failure-domain-diverse decisions reach the C++ RMW publisher,
+  all samples meet the `100 ms` deadline with fairness `1.0`, and measured
+  path transmissions fall from `24` to `18` with zero retransmissions;
+- active-publisher fleet-plan epoch transition: after frame `1`, two robots
+  move from redundant to unicast transmission without restarting their ROS 2
+  publishers; the run keeps `4/4` deadlines and reduces the session from `24`
+  to `20` path transmissions;
+- subscriber-QoE-driven closed-loop budgeting: the controller waits for live
+  delivery telemetry from every robot, derives robot debt without seeded
+  state, protects the measured lower-QoE pair, keeps `4/4` diagnostic
+  deadlines, and reduces path transmissions from `24` to `16`; its first
+  repeated netem matrix passes `2/2` with zero retransmissions;
+- measured-QoE protection migration across two live qdisc epochs: redundancy
+  moves from robot `0000/0001` to `0002/0003` without restarting publishers,
+  while preserving `4/4` diagnostic deadlines and `16/24` transmissions;
+- live protection-migration scaling at `4`, `8`, and `16` robots: all rows move the
+  redundancy budget to the expected lower-QoE half, keep fairness `1.0`, avoid
+  retransmissions, and reduce aggregate transmissions from `616` to `420`;
+  event-triggered publisher barriers and sequential confidence stopping remove
+  the fixed sampling timer, telemetry-to-plan convergence stays below
+  `486.958 ms`, and controller actuation stays below `56.761 ms` including
+  plan visibility settling;
+- repeated sequential-QoE protection migration: `6/6` rows across `4/8/16`
+  robots and repetition IDs `7,13` pass, all `12/12` QoE epochs stop by
+  confidence separation, maximum convergence is `465.783 ms`, and aggregate
+  transmissions fall from `1232` to `840`;
+- harsh-loss sequential-QoE protection migration: the `8/16` robot matrix at
+  `0.2%`, `0.5%`, and `1.0%` loss completes `5/6` rows OK, with explicit
+  `failure_mode_counts={ok:5, confidence_not_separated:1}`. The remaining
+  failure is not a router timeout; it is the first measured policy boundary
+  where telemetry confidence does not separate before the sample cap under high
+  loss and tail latency;
+- confidence-fallback actuation: when sequential QoE does not separate, the
+  controller can now protect the union of previous and candidate low-QoE robots,
+  temporarily expand fallback redundancy budget, and write that plan to live
+  C++ RMW publishers. A forced four-robot Docker/RMW smoke applies fallback in
+  both epochs, protects all four robots, passes `4/4`, keeps zero
+  retransmissions, and uses `20/24` full-redundancy transmissions. A companion
+  matrix smoke preserves strict confidence accounting by reporting
+  `failure_mode=confidence_fallback_applied` instead of counting fallback as a
+  confident migration success. The first harsh fallback matrix passes `3/6`
+  strict rows and exposes the next boundary: fallback can actuate and sometimes
+  preserve delivery, but high tail loss still needs recovery-window repair and
+  feedback-timeout safe mode at `8/16` robots;
+- post-fallback recovery-window accounting: after fallback, the Docker/RMW probe
+  can release explicit recovery frames and audit those frames separately from
+  strict confidence success. A forced four-robot smoke recovers `4/4` robots
+  over three recovery frames, and the harsh `8/16` robot matrix passes `4/6`
+  strict rows while all `6/6` rows pass the recovery window. The remaining gap
+  is targeted replay/repair of missing source sequences, not just confirmation
+  traffic after fallback;
+- router-mediated ROS CLI service timeout: separate client/server containers
+  exchange request/response through FleetRMW, the caller times out cleanly
+  without a fabricated response, and the router accounts for both frames;
 - waitable subscription registry so `rmw_wait` supports both full
   `rmw_subscription_t *` handles and implementation-data pointers used by
   `rclpy`;
@@ -583,14 +767,19 @@ Next implement:
 
 - C++ type-support-backed serialization/deserialization beyond the current
   introspection-C CLI matrix;
-- broader service timeout/error semantics and action transport;
+- caller-visible malformed-service-response diagnostics beyond timeout;
+- targeted post-fallback repair/replay for missing source sequences, using the
+  recovery-window audit as the acceptance gate;
+- a `32`-robot strategy that separates middleware scale from Docker Desktop
+  resource limits;
 - running the current N-topic controller-scale workload through live
   Docker router/subscriber probes with real `tc netem` shaping, larger-N
   duplicate/de-duplication, QoE, robot-level SLO feedback, and repeatable
   ns-3/OMNeT++ benchmark matrices.
 
-Target: C++ type-support coverage, service/action transport, live optimizer
-actuation, and measured network-aware QoS/QoE at fleet scale.
+Target: C++ type-support coverage, caller-visible service cancellation/error
+semantics, multi-container real `rcl_action` transport, live optimizer actuation, and measured
+network-aware QoS/QoE at fleet scale.
 
 ## Milestone 3: Services And Actions
 

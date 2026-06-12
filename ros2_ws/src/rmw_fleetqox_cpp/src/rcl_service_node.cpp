@@ -90,6 +90,7 @@ int main(int argc, char ** argv)
 
   const std::string service_name = string_arg(argc, argv, "--service", "/fleetqox/set_bool");
   const int hold_ms = int_arg(argc, argv, "--hold-ms", 5500);
+  const int response_delay_ms = int_arg(argc, argv, "--response-delay-ms", 0);
 
   rcl_allocator_t allocator = rcl_get_default_allocator();
   rcl_init_options_t init_options = rcl_get_zero_initialized_init_options();
@@ -143,6 +144,9 @@ int main(int argc, char ** argv)
     }
     const rcl_ret_t take_ret = rcl_take_request(&service, &request_header, &request);
     if (take_ret == RCL_RET_OK) {
+      if (response_delay_ms > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(response_delay_ms));
+      }
       std_srvs__srv__SetBool_Response response;
       if (!std_srvs__srv__SetBool_Response__init(&response)) {
         std_srvs__srv__SetBool_Request__fini(&request);
@@ -180,6 +184,7 @@ int main(int argc, char ** argv)
   std::cout << "\"status\":\"" << (ok ? "ok" : "failed") << "\",";
   std::cout << "\"service\":\"" << json_escape(service_name) << "\",";
   std::cout << "\"type\":\"std_srvs/srv/SetBool\",";
+  std::cout << "\"response_delay_ms\":" << response_delay_ms << ",";
   std::cout << "\"request_count\":" << request_count << "}" << std::endl;
 
   cleanup_rcl(&service, &node, &context, &init_options);

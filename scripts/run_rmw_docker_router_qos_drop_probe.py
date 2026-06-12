@@ -114,10 +114,11 @@ def run_probe(
             [
                 "docker", "run", "--rm",
                 "--network", network,
+                "--entrypoint", "bash",
                 "-v", f"{root}:/work",
                 "-w", "/work",
                 image,
-                "bash", "-lc",
+                "-lc",
                 (
                     f"source /opt/ros/jazzy/setup.bash && source {install_base}/setup.bash && "
                     f"FLEETQOX_RMW_BIND=0.0.0.0:0 FLEETQOX_RMW_PEERS={router_name}:48320 "
@@ -131,9 +132,9 @@ def run_probe(
         router_log = run(["docker", "logs", router_name]).stdout.strip()
         subscriber_log = run(["docker", "logs", subscriber_name]).stdout.strip()
 
-        publisher_result = json.loads(publisher.stdout)
-        router_result = json.loads(router_log)
-        subscriber_result = json.loads(subscriber_log)
+        publisher_result = parse_last_json(publisher.stdout + "\n" + publisher.stderr)
+        router_result = parse_last_json(router_log)
+        subscriber_result = parse_last_json(subscriber_log)
         status = (
             publisher.returncode == 0 and
             router_returncode == 0 and
@@ -155,6 +156,8 @@ def run_probe(
             "lifespan_ms": lifespan_ms,
             "forward_delay_ms": forward_delay_ms,
             "publisher_returncode": publisher.returncode,
+            "publisher_stdout": publisher.stdout,
+            "publisher_stderr": publisher.stderr,
             "router_returncode": router_returncode,
             "subscriber_returncode": subscriber_returncode,
             "publisher": publisher_result,
@@ -180,6 +183,18 @@ def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[st
     return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check)
 
 
+def parse_last_json(output: str) -> dict[str, Any]:
+    for line in reversed(output.splitlines()):
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            return {"status": "parse_failed", "raw": stripped}
+    return {"status": "missing", "raw": output}
+
+
 def docker_shell(
   root: Path,
   image: str,
@@ -189,10 +204,11 @@ def docker_shell(
 ) -> subprocess.CompletedProcess[str]:
     return run([
         "docker", "run", "--rm",
+        "--entrypoint", "bash",
         "-v", f"{root}:/work",
         "-w", "/work",
         image,
-        "bash", "-lc", command,
+        "-lc", command,
     ], check=check)
 
 
@@ -201,10 +217,11 @@ def start_container(*, root: Path, image: str, name: str, network: str, command:
         "docker", "run", "-d",
         "--name", name,
         "--network", network,
+        "--entrypoint", "bash",
         "-v", f"{root}:/work",
         "-w", "/work",
         image,
-        "bash", "-lc", command,
+        "-lc", command,
     ])
     return result.stdout.strip()
 

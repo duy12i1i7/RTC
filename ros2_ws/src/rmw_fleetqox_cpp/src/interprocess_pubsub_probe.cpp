@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -20,6 +21,8 @@ extern "C" std::uint64_t rmw_fleetqox_cpp_socket_frames_sent();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_frames_received();
 extern "C" const char * rmw_fleetqox_cpp_socket_bound_endpoint();
 extern "C" size_t rmw_fleetqox_cpp_socket_peer_count();
+extern "C" std::int64_t rmw_fleetqox_cpp_last_take_source_timestamp_ns();
+extern "C" std::int64_t rmw_fleetqox_cpp_last_take_timestamp_ns();
 
 namespace
 {
@@ -29,9 +32,13 @@ struct ProbeConfig
   std::string mode{"subscriber"};
   std::string topic{"/fleetqox/interprocess_probe"};
   std::string payload{"fleetqox-interprocess-cdr"};
+  int payload_size{0};
+  std::string payload_fill{"x"};
   int timeout_ms{2000};
   int lifespan_ms{0};
   int deadline_ms{0};
+  int pre_publish_ms{0};
+  int payload_output_limit{256};
   bool expect_taken{true};
 };
 
@@ -67,14 +74,30 @@ ProbeConfig parse_args(int argc, char ** argv)
       config.topic = argv[++i];
     } else if (arg == "--payload" && i + 1 < argc) {
       config.payload = argv[++i];
+    } else if (arg == "--payload-size" && i + 1 < argc) {
+      config.payload_size = std::max(0, std::stoi(argv[++i]));
+    } else if (arg == "--payload-fill" && i + 1 < argc) {
+      config.payload_fill = argv[++i];
     } else if (arg == "--lifespan-ms" && i + 1 < argc) {
       config.lifespan_ms = std::stoi(argv[++i]);
     } else if (arg == "--deadline-ms" && i + 1 < argc) {
       config.deadline_ms = std::stoi(argv[++i]);
+    } else if (arg == "--pre-publish-ms" && i + 1 < argc) {
+      config.pre_publish_ms = std::max(0, std::stoi(argv[++i]));
+    } else if (arg == "--payload-output-limit" && i + 1 < argc) {
+      config.payload_output_limit = std::max(0, std::stoi(argv[++i]));
     } else if (arg == "--expect-taken" && i + 1 < argc) {
       config.expect_taken = parse_bool(argv[++i]);
     } else if (arg == "--timeout-ms" && i + 1 < argc) {
       config.timeout_ms = std::stoi(argv[++i]);
+    }
+  }
+  if (config.payload_size > 0) {
+    const char fill = config.payload_fill.empty() ? 'x' : config.payload_fill[0];
+    if (static_cast<size_t>(config.payload_size) <= config.payload.size()) {
+      config.payload.resize(static_cast<size_t>(config.payload_size));
+    } else {
+      config.payload.append(static_cast<size_t>(config.payload_size) - config.payload.size(), fill);
     }
   }
   return config;
@@ -118,14 +141,19 @@ void print_json_result(
   std::uint64_t socket_frames_received,
   bool taken,
   size_t bytes,
-  const std::string & payload)
+  const std::string & payload,
+  double take_age_ms)
 {
+  const size_t output_limit = static_cast<size_t>(config.payload_output_limit);
+  const bool payload_truncated = payload.size() > output_limit;
+  const std::string output_payload = payload_truncated ? payload.substr(0, output_limit) : payload;
   std::cout << "{\"schema_version\":\"fleetrmw.rmw_interprocess_pubsub_endpoint.v1\",";
   std::cout << "\"status\":\"" << status << "\",";
   std::cout << "\"mode\":\"" << config.mode << "\",";
   std::cout << "\"topic\":\"" << json_escape(config.topic) << "\",";
   std::cout << "\"lifespan_ms\":" << config.lifespan_ms << ",";
   std::cout << "\"deadline_ms\":" << config.deadline_ms << ",";
+  std::cout << "\"payload_size\":" << config.payload.size() << ",";
   std::cout << "\"expect_taken\":" << (config.expect_taken ? "true" : "false") << ",";
   std::cout << "\"endpoint\":\"" << json_escape(endpoint) << "\",";
   std::cout << "\"peer_count\":" << peer_count << ",";
@@ -133,7 +161,9 @@ void print_json_result(
   std::cout << "\"socket_frames_received\":" << socket_frames_received << ",";
   std::cout << "\"taken\":" << (taken ? "true" : "false") << ",";
   std::cout << "\"bytes\":" << bytes << ",";
-  std::cout << "\"payload\":\"" << json_escape(payload) << "\"}" << std::endl;
+  std::cout << "\"take_age_ms\":" << take_age_ms << ",";
+  std::cout << "\"payload_truncated\":" << (payload_truncated ? "true" : "false") << ",";
+  std::cout << "\"payload\":\"" << json_escape(output_payload) << "\"}" << std::endl;
 }
 
 int run_publisher(const ProbeConfig & config)
@@ -172,6 +202,9 @@ int run_publisher(const ProbeConfig & config)
   }
 
   const std::uint64_t sent_before = rmw_fleetqox_cpp_socket_frames_sent();
+  if (config.pre_publish_ms > 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(config.pre_publish_ms));
+  }
   const rmw_ret_t publish_ret = publisher != nullptr && message_init_ok ?
     rmw_publish_serialized_message(publisher, &outgoing, nullptr) : RMW_RET_ERROR;
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -188,7 +221,8 @@ int run_publisher(const ProbeConfig & config)
     0,
     false,
     outgoing.buffer_length,
-    config.payload);
+    config.payload,
+    0.0);
 
   if (message_init_ok) {
     const rmw_ret_t message_fini_ret = rmw_serialized_message_fini(&outgoing);
@@ -258,6 +292,11 @@ int run_subscriber(const ProbeConfig & config)
     rmw_fleetqox_cpp_socket_frames_received() - received_before;
   const std::string endpoint = rmw_fleetqox_cpp_socket_bound_endpoint();
   const size_t peer_count = rmw_fleetqox_cpp_socket_peer_count();
+  const std::int64_t source_timestamp_ns =
+    rmw_fleetqox_cpp_last_take_source_timestamp_ns();
+  const std::int64_t take_timestamp_ns = rmw_fleetqox_cpp_last_take_timestamp_ns();
+  const double take_age_ms = taken && take_timestamp_ns >= source_timestamp_ns ?
+    static_cast<double>(take_timestamp_ns - source_timestamp_ns) / 1000000.0 : 0.0;
   const bool ok = take_ret == RMW_RET_OK &&
                   ((config.expect_taken && taken && received_payload == config.payload &&
                   received_delta >= 1) ||
@@ -272,7 +311,8 @@ int run_subscriber(const ProbeConfig & config)
     received_delta,
     taken,
     incoming.buffer_length,
-    received_payload);
+    received_payload,
+    take_age_ms);
 
   if (message_init_ok) {
     const rmw_ret_t message_fini_ret = rmw_serialized_message_fini(&incoming);

@@ -28,9 +28,12 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertIn("src/rmw_wait.cpp", cmake)
         self.assertIn("fleetrmw_transport_loop_smoke", cmake)
         self.assertIn("fleetrmw_frame_probe", cmake)
+        self.assertIn("fleetrmw_action_frame_probe", cmake)
         self.assertIn("fleetrmw_lifecycle_probe", cmake)
         self.assertIn("fleetrmw_serialized_pubsub_probe", cmake)
         self.assertIn("fleetrmw_qos_probe", cmake)
+        self.assertIn("fleetrmw_service_qos_probe", cmake)
+        self.assertIn("fleetrmw_service_error_probe", cmake)
         self.assertIn("fleetrmw_reliability_probe", cmake)
         self.assertIn("fleetrmw_reliable_interprocess_probe", cmake)
         self.assertIn("fleetrmw_typed_pubsub_probe", cmake)
@@ -58,7 +61,10 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertIn("fleetrmw.route_advertisement.v1", header)
         self.assertIn("fleetrmw.graph_advertisement.v1", header)
         self.assertIn("fleetrmw.service_frame.v1", header)
+        self.assertIn("fleetrmw.action_frame.v1", header)
         self.assertIn("AckNackFrame", header)
+        self.assertIn("ActionFrame", header)
+        self.assertIn("decode_action_frame", header)
         self.assertIn("decode_ack_nack", header)
         self.assertIn("initialized", header)
 
@@ -431,6 +437,107 @@ int main()
             )
         self.assertEqual(result.stdout.strip(), "request:/fleetqox/set_bool")
 
+    def test_cpp_action_frame_round_trips(self) -> None:
+        compiler = shutil.which("c++")
+        if compiler is None:
+            self.skipTest("c++ compiler is not available")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "action_frame_roundtrip.cpp"
+            source.write_text(
+                r'''
+#include "rmw_fleetqox_cpp/data_frame.hpp"
+
+#include <iostream>
+#include <string>
+
+int main()
+{
+  rmw_fleetqox_cpp::ActionFrame frame{
+    "feedback",
+    "/fleetqox/navigate_to_pose",
+    "nav2_msgs/action/NavigateToPose",
+    "action-endpoint-1",
+    "goal-00112233",
+    42,
+    12345,
+    5000000,
+    {0x42, 0xA0, 0x5A}};
+  const std::string encoded = rmw_fleetqox_cpp::encode_action_frame(frame);
+  const auto decoded = rmw_fleetqox_cpp::decode_action_frame(encoded);
+  if (!decoded || decoded->role != frame.role ||
+    decoded->action_name != frame.action_name ||
+    decoded->type_name != frame.type_name ||
+    decoded->endpoint_id != frame.endpoint_id ||
+    decoded->goal_id != frame.goal_id ||
+    decoded->sequence_id != frame.sequence_id ||
+    decoded->lifespan_ns != frame.lifespan_ns ||
+    decoded->serialized_payload != frame.serialized_payload)
+  {
+    return 1;
+  }
+  if (rmw_fleetqox_cpp::action_frame_expired(frame, frame.source_timestamp_ns + 4999999)) {
+    return 2;
+  }
+  if (!rmw_fleetqox_cpp::action_frame_expired(frame, frame.source_timestamp_ns + 5000001)) {
+    return 3;
+  }
+  const std::string legacy = std::string(rmw_fleetqox_cpp::kDataFrameMagic) +
+    "{\"schema_version\":\"fleetrmw.action_frame.v1\",\"kind\":\"action_frame\","
+    "\"role\":\"result\",\"action_name\":\"/fleetqox/navigate_to_pose\","
+    "\"type_name\":\"nav2_msgs/action/NavigateToPose\","
+    "\"endpoint_id\":\"action-endpoint-1\",\"goal_id\":\"goal-00112233\","
+    "\"sequence_id\":43,\"source_timestamp_ns\":12345}";
+  const auto legacy_decoded = rmw_fleetqox_cpp::decode_action_frame(legacy);
+  if (!legacy_decoded || legacy_decoded->lifespan_ns != 0 ||
+    rmw_fleetqox_cpp::action_frame_expired(*legacy_decoded, 999999999))
+  {
+    return 4;
+  }
+  const bool rejects_service_schema = !rmw_fleetqox_cpp::decode_action_frame(
+    rmw_fleetqox_cpp::encode_service_frame(
+      rmw_fleetqox_cpp::ServiceFrame{
+        "request",
+        "/fleetqox/set_bool",
+        "std_srvs/srv/SetBool",
+        "client-1",
+        "service-1",
+        1,
+        1000000,
+        5000000,
+        {0x01}}));
+  if (!rejects_service_schema) {
+    return 5;
+  }
+  std::cout << decoded->role << ":" << decoded->action_name << std::endl;
+  return 0;
+}
+''',
+                encoding="utf-8",
+            )
+            binary = Path(tmp) / "action_frame_roundtrip"
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c++17",
+                    "-I",
+                    str(PKG / "include"),
+                    str(PKG / "src" / "data_frame.cpp"),
+                    str(source),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+                cwd=ROOT,
+            )
+            result = subprocess.run(
+                [str(binary)],
+                check=True,
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+            )
+        self.assertEqual(result.stdout.strip(), "feedback:/fleetqox/navigate_to_pose")
+
     def test_rmw_pubsub_uses_socket_backed_data_frame_transport(self) -> None:
         source = (PKG / "src" / "rmw_pubsub.cpp").read_text()
         self.assertIn("LoopbackSocketTransport", source)
@@ -514,6 +621,11 @@ int main()
         self.assertIn("--telemetry-deadline-miss-ratio", router_source)
         self.assertIn("expected_ack_nack_forwarded", router_source)
         self.assertIn("--expected-ack-nack-forwarded", router_source)
+        self.assertIn("drop_topic_prefix", router_source)
+        self.assertIn("--drop-topic-prefix", router_source)
+        self.assertIn("scheduler_fresh_deadline_misses", router_source)
+        self.assertIn("scheduler_repair_deadline_misses", router_source)
+        self.assertIn("scheduler_deadline_miss_frames", router_source)
         self.assertIn("append_router_path_telemetry", router_source)
         self.assertIn("rmw_fleetqox_cpp_handle_service_frame", source)
         self.assertIn("rmw_fleetqox_cpp_serialize_introspection_message", source)
@@ -555,6 +667,8 @@ int main()
         self.assertIn("rcl_service_init", rcl_service_node_source)
         self.assertIn("rcl_take_request", rcl_service_node_source)
         self.assertIn("rcl_send_response", rcl_service_node_source)
+        self.assertIn("--response-delay-ms", rcl_service_node_source)
+        self.assertIn("response_delay_ms", rcl_service_node_source)
         self.assertIn("std_srvs/srv/SetBool", rcl_service_node_source)
         graph_source = (PKG / "src" / "rmw_graph.cpp").read_text()
         self.assertIn("purge_expired_remote_graph_locked", graph_source)
@@ -571,7 +685,14 @@ int main()
         self.assertIn("rmw_count_services", graph_source)
         self.assertIn("rmw_count_clients", graph_source)
         self.assertIn("rmw_fleetqox_cpp_graph_service_count", graph_source)
+        self.assertIn("rmw_fleetqox_cpp_graph_publisher_count", graph_source)
+        self.assertIn("rmw_fleetqox_cpp_graph_subscription_count", graph_source)
         self.assertIn("rmw_topic_endpoint_info_set_qos_profile", graph_source)
+        pubsub_source = (PKG / "src" / "rmw_pubsub.cpp").read_text()
+        self.assertIn("rmw_publisher_count_matched_subscriptions", pubsub_source)
+        self.assertIn("rmw_subscription_count_matched_publishers", pubsub_source)
+        self.assertIn("rmw_fleetqox_cpp_graph_publisher_count", pubsub_source)
+        self.assertIn("rmw_fleetqox_cpp_graph_subscription_count", pubsub_source)
         stub_source = (PKG / "src" / "rmw_stubs.cpp").read_text()
         self.assertIn("rmw_init_publisher_allocation", stub_source)
         self.assertIn("rmw_create_client", stub_source)
@@ -584,9 +705,12 @@ int main()
         self.assertIn("rmw_take_response", stub_source)
         self.assertIn("rmw_fleetqox_cpp_handle_service_frame", stub_source)
         self.assertIn("rmw_fleetqox_cpp_service_expired_frames_dropped", stub_source)
+        self.assertIn("rmw_fleetqox_cpp_service_endpoint_id", stub_source)
+        self.assertIn("rmw_fleetqox_cpp_client_endpoint_id", stub_source)
         self.assertIn("drop_if_expired_service_frame", stub_source)
         self.assertIn("service_frame_expired(frame, monotonic_timestamp_ns())", stub_source)
         self.assertIn("qos_duration_ns(data->qos.lifespan)", stub_source)
+        self.assertIn("frame = rmw_fleetqox_cpp::ServiceFrame{};", stub_source)
         self.assertIn("response_queue", stub_source)
         self.assertIn("request_queue", stub_source)
         self.assertIn("rmw_fleetqox_cpp_graph_register_service_endpoint", stub_source)
@@ -621,7 +745,12 @@ int main()
         self.assertIn("drop_source_sequences", router)
         self.assertIn("forward_delay_ms", router)
         self.assertIn("scheduler_window_ms", router)
+        self.assertIn("scheduler_expected_frames", router)
+        self.assertIn("scheduler_topic_prefix", router)
+        self.assertIn("scheduler_batch_ready", router)
         self.assertIn("qos_dropped_frames", router)
+        self.assertIn("qos_dropped_topic_counts", router)
+        self.assertIn("increment_topic_count", router)
         self.assertIn("forwarded_topics", router)
         self.assertIn("frame_exceeds_learned_lifespan", router)
         self.assertIn("absolute_deadline_ns_for_frame", router)
@@ -678,6 +807,8 @@ int main()
         self.assertIn("app_repair_cycle_count", reliable_interprocess_source)
         self.assertIn("tail_repair_repeat_count", reliable_interprocess_source)
         self.assertIn("publish_interval_ms", reliable_interprocess_source)
+        self.assertIn("--payload-sequence", reliable_interprocess_source)
+        self.assertIn("split_payloads(config.payload_sequence)", reliable_interprocess_source)
         self.assertIn("--pre-publish-wait-ms", reliable_interprocess_source)
         self.assertIn("--pre-payload-warmup-count", reliable_interprocess_source)
         self.assertIn("--pre-payload-warmup-payload", reliable_interprocess_source)
@@ -756,8 +887,12 @@ int main()
         self.assertTrue(docker_cli_matrix_script.exists())
         docker_cli_matrix_source = docker_cli_matrix_script.read_text()
         self.assertIn("fleetrmw.rmw_ros2_cli_message_matrix.v1", docker_cli_matrix_source)
+        self.assertIn("builtin_interfaces/msg/Time", docker_cli_matrix_source)
+        self.assertIn("builtin_interfaces/msg/Duration", docker_cli_matrix_source)
+        self.assertIn("geometry_msgs/msg/PoseStamped", docker_cli_matrix_source)
         self.assertIn("sensor_msgs/msg/LaserScan", docker_cli_matrix_source)
         self.assertIn("nav_msgs/msg/Odometry", docker_cli_matrix_source)
+        self.assertIn("nav_msgs/msg/Path", docker_cli_matrix_source)
         self.assertIn("ros2\", \"topic\", \"echo", docker_cli_matrix_source)
         docker_node_info_script = ROOT / "scripts" / "run_rmw_docker_ros2_node_info_probe.py"
         self.assertTrue(docker_node_info_script.exists())
@@ -778,6 +913,14 @@ int main()
         self.assertIn("fleetrmw.rmw_ros2_service_call_probe.v1", docker_service_call_source)
         self.assertIn("ros2 service call", docker_service_call_source)
         self.assertIn("fleetqox set_bool accepted", docker_service_call_source)
+        docker_service_timeout_script = ROOT / "scripts" / "run_rmw_docker_ros2_service_timeout_probe.py"
+        self.assertTrue(docker_service_timeout_script.exists())
+        docker_service_timeout_source = docker_service_timeout_script.read_text()
+        self.assertIn("fleetrmw.rmw_ros2_service_timeout_probe.v1", docker_service_timeout_source)
+        self.assertIn("--response-delay-ms", docker_service_timeout_source)
+        self.assertIn("service_call_returncode", docker_service_timeout_source)
+        self.assertIn("timed_out", docker_service_timeout_source)
+        self.assertIn("server_saw_request", docker_service_timeout_source)
         docker_router_service_call_script = ROOT / "scripts" / "run_rmw_docker_router_service_call_probe.py"
         self.assertTrue(docker_router_service_call_script.exists())
         docker_router_service_call_source = docker_router_service_call_script.read_text()
@@ -791,6 +934,133 @@ int main()
         self.assertIn("fleetrmw_qos_probe", docker_qos_source)
         self.assertIn("depth_received", docker_qos_source)
         self.assertIn("lifespan_taken", docker_qos_source)
+        service_qos_probe = PKG / "src" / "service_qos_probe.cpp"
+        self.assertTrue(service_qos_probe.exists())
+        service_qos_source = service_qos_probe.read_text()
+        self.assertIn("fleetrmw.rmw_service_qos_probe.v1", service_qos_source)
+        self.assertIn("rmw_send_request", service_qos_source)
+        self.assertIn("rmw_take_request", service_qos_source)
+        self.assertIn("rmw_send_response", service_qos_source)
+        self.assertIn("rmw_take_response", service_qos_source)
+        self.assertIn("rmw_fleetqox_cpp_service_expired_frames_dropped", service_qos_source)
+        self.assertIn("stale_request_taken", service_qos_source)
+        self.assertIn("stale_response_taken", service_qos_source)
+        self.assertIn("unknown_response_error", service_qos_source)
+        self.assertIn("unknown_response_sent_delta", service_qos_source)
+        docker_service_qos_script = ROOT / "scripts" / "run_rmw_docker_service_qos_probe.py"
+        self.assertTrue(docker_service_qos_script.exists())
+        docker_service_qos_source = docker_service_qos_script.read_text()
+        self.assertIn("fleetrmw.rmw_docker_service_qos_probe.v1", docker_service_qos_source)
+        self.assertIn("fleetrmw_service_qos_probe", docker_service_qos_source)
+        self.assertIn("expired_frames_dropped_delta", docker_service_qos_source)
+        self.assertIn("unknown_response_error", docker_service_qos_source)
+        service_error_probe = PKG / "src" / "service_error_probe.cpp"
+        self.assertTrue(service_error_probe.exists())
+        service_error_source = service_error_probe.read_text()
+        self.assertIn("fleetrmw.rmw_service_error_probe.v1", service_error_source)
+        self.assertIn("rmw_fleetqox_cpp_handle_service_frame", service_error_source)
+        self.assertIn("rmw_fleetqox_cpp_client_endpoint_id", service_error_source)
+        self.assertIn("empty_response_taken", service_error_source)
+        self.assertIn("malformed_response_error", service_error_source)
+        self.assertIn("invalid_frame_rejected", service_error_source)
+        docker_service_error_script = ROOT / "scripts" / "run_rmw_docker_service_error_probe.py"
+        self.assertTrue(docker_service_error_script.exists())
+        docker_service_error_source = docker_service_error_script.read_text()
+        self.assertIn("fleetrmw.rmw_docker_service_error_probe.v1", docker_service_error_source)
+        self.assertIn("fleetrmw_service_error_probe", docker_service_error_source)
+        self.assertIn("malformed_response_error", docker_service_error_source)
+        self.assertIn("after_invalid_response_taken", docker_service_error_source)
+        action_probe = PKG / "src" / "action_frame_probe.cpp"
+        self.assertTrue(action_probe.exists())
+        action_probe_source = action_probe.read_text()
+        self.assertIn("fleetrmw.rmw_action_frame_probe.v1", action_probe_source)
+        self.assertIn("encode_action_frame", action_probe_source)
+        self.assertIn("decode_action_frame", action_probe_source)
+        self.assertIn("goal\", \"feedback\", \"status\", \"result\", \"cancel", action_probe_source)
+        self.assertIn("action_frame_expired", action_probe_source)
+        self.assertIn("rejects_service_schema", action_probe_source)
+        docker_action_script = ROOT / "scripts" / "run_rmw_docker_action_frame_probe.py"
+        self.assertTrue(docker_action_script.exists())
+        docker_action_source = docker_action_script.read_text()
+        self.assertIn("fleetrmw.rmw_docker_action_frame_probe.v1", docker_action_source)
+        self.assertIn("fleetrmw_action_frame_probe", docker_action_source)
+        self.assertIn("expected_roles", docker_action_source)
+        self.assertIn("rejects_service_schema", docker_action_source)
+        action_router_probe = PKG / "src" / "action_router_probe.cpp"
+        self.assertTrue(action_router_probe.exists())
+        action_router_probe_source = action_router_probe.read_text()
+        self.assertIn("fleetrmw.rmw_action_router_probe.v1", action_router_probe_source)
+        self.assertIn("action_server", action_router_probe_source)
+        self.assertIn("action_client", action_router_probe_source)
+        self.assertIn("server_received_roles", action_router_probe_source)
+        self.assertIn("client_received_roles", action_router_probe_source)
+        docker_action_router_script = ROOT / "scripts" / "run_rmw_docker_router_action_frame_probe.py"
+        self.assertTrue(docker_action_router_script.exists())
+        docker_action_router_source = docker_action_router_script.read_text()
+        self.assertIn("fleetrmw.rmw_docker_router_action_frame_probe.v1", docker_action_router_source)
+        self.assertIn("fleetrmw_action_router_probe", docker_action_router_source)
+        self.assertIn("expected-action-frames", docker_action_router_source)
+        self.assertIn("action_forwarded", docker_action_router_source)
+        udp_router_source = (PKG / "src" / "udp_router_probe.cpp").read_text()
+        self.assertIn("expected_action_frames", udp_router_source)
+        self.assertIn("decode_action_frame", udp_router_source)
+        self.assertIn("ActionRoute", udp_router_source)
+        self.assertIn("graph_action_servers", udp_router_source)
+        self.assertIn("graph_action_clients", udp_router_source)
+        self.assertIn("action_forwarded", udp_router_source)
+        cmake_source = (PKG / "CMakeLists.txt").read_text()
+        self.assertIn("fleetrmw_action_router_probe", cmake_source)
+        docker_rclpy_action_script = ROOT / "scripts" / "run_rmw_docker_rclpy_action_probe.py"
+        self.assertTrue(docker_rclpy_action_script.exists())
+        docker_rclpy_action_source = docker_rclpy_action_script.read_text()
+        self.assertIn("fleetrmw.rmw_docker_rclpy_action_probe.v1", docker_rclpy_action_source)
+        self.assertIn("ActionServer", docker_rclpy_action_source)
+        self.assertIn("ActionClient", docker_rclpy_action_source)
+        self.assertIn("LookupTransform", docker_rclpy_action_source)
+        self.assertIn("spin_until", docker_rclpy_action_source)
+        self.assertIn("result_status", docker_rclpy_action_source)
+        self.assertIn("result_child_frame", docker_rclpy_action_source)
+        docker_router_rclpy_action_script = ROOT / "scripts" / "run_rmw_docker_router_rclpy_action_probe.py"
+        self.assertTrue(docker_router_rclpy_action_script.exists())
+        docker_router_rclpy_action_source = docker_router_rclpy_action_script.read_text()
+        self.assertIn("fleetrmw.rmw_docker_router_rclpy_action_probe.v1", docker_router_rclpy_action_source)
+        self.assertIn("ActionServer", docker_router_rclpy_action_source)
+        self.assertIn("ActionClient", docker_router_rclpy_action_source)
+        self.assertIn("expected-service-frames 10", docker_router_rclpy_action_source)
+        self.assertIn("service_forwarded", docker_router_rclpy_action_source)
+        self.assertIn("graph_services", docker_router_rclpy_action_source)
+        self.assertIn("graph_clients", docker_router_rclpy_action_source)
+        self.assertIn("available_before_send", docker_router_rclpy_action_source)
+        self.assertIn("available_after_result", docker_router_rclpy_action_source)
+        self.assertIn("status_subscribers", docker_router_rclpy_action_source)
+        self.assertIn("feedback_subscribers", docker_router_rclpy_action_source)
+        self.assertIn("feedback_callbacks", docker_router_rclpy_action_source)
+        self.assertIn("cancel_goal_async", docker_router_rclpy_action_source)
+        self.assertIn("cancel_result_status", docker_router_rclpy_action_source)
+        self.assertIn("GoalStatusArray", docker_router_rclpy_action_source)
+        self.assertIn("status_observed", docker_router_rclpy_action_source)
+        self.assertIn("feedback_pub_qos_profile", docker_router_rclpy_action_source)
+        self.assertIn("status_pub_qos_profile", docker_router_rclpy_action_source)
+        self.assertIn("feedback_lifespan_ms", docker_router_rclpy_action_source)
+        self.assertIn("feedback_deadline_ms", docker_router_rclpy_action_source)
+        self.assertIn("scheduler_window_ms", docker_router_rclpy_action_source)
+        self.assertIn("scheduler-expected-frames", docker_router_rclpy_action_source)
+        self.assertIn("scheduler-topic-prefix", docker_router_rclpy_action_source)
+        self.assertIn("expected_data_frames", docker_router_rclpy_action_source)
+        docker_router_rclpy_action_qos_script = (
+            ROOT / "scripts" / "run_rmw_docker_router_rclpy_action_qos_probe.py"
+        )
+        self.assertTrue(docker_router_rclpy_action_qos_script.exists())
+        docker_router_rclpy_action_qos_source = docker_router_rclpy_action_qos_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_docker_router_rclpy_action_qos_probe.v1",
+            docker_router_rclpy_action_qos_source,
+        )
+        self.assertIn("expired_observation", docker_router_rclpy_action_qos_source)
+        self.assertIn("deadline_priority", docker_router_rclpy_action_qos_source)
+        self.assertIn("qos_dropped_topic_counts", docker_router_rclpy_action_qos_source)
+        self.assertIn("drop_topics_verified", docker_router_rclpy_action_qos_source)
+        self.assertIn("deadline_order_verified", docker_router_rclpy_action_qos_source)
         docker_reliability_script = ROOT / "scripts" / "run_rmw_docker_reliability_probe.py"
         self.assertTrue(docker_reliability_script.exists())
         docker_reliability_source = docker_reliability_script.read_text()
@@ -805,6 +1075,294 @@ int main()
         self.assertIn("expected-ack-nack-frames", docker_router_reliability_source)
         self.assertIn("drop-source-sequences", docker_router_reliability_source)
         self.assertIn("ack_nack_forwarded", docker_router_reliability_source)
+        docker_router_scheduled_reliability_script = (
+            ROOT / "scripts" / "run_rmw_docker_router_scheduled_reliability_probe.py"
+        )
+        self.assertTrue(docker_router_scheduled_reliability_script.exists())
+        docker_router_scheduled_reliability_source = (
+            docker_router_scheduled_reliability_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_scheduled_reliability_probe.v1",
+            docker_router_scheduled_reliability_source,
+        )
+        self.assertIn("--scheduler-window-ms 150", docker_router_scheduled_reliability_source)
+        self.assertIn("--scheduler-expected-frames 2", docker_router_scheduled_reliability_source)
+        self.assertIn("--drop-source-sequences 2", docker_router_scheduled_reliability_source)
+        self.assertIn("scheduler_forwarded_frames", docker_router_scheduled_reliability_source)
+        self.assertIn("nack_retransmissions", docker_router_scheduled_reliability_source)
+        self.assertIn("NETEM_PROFILES", docker_router_scheduled_reliability_source)
+        self.assertIn("netem_loss_percent", docker_router_scheduled_reliability_source)
+        self.assertIn("netem_qdisc", docker_router_scheduled_reliability_source)
+        self.assertIn('"--cap-add", "NET_ADMIN"', docker_router_scheduled_reliability_source)
+        self.assertIn("post_satisfaction_ms", docker_router_scheduled_reliability_source)
+        docker_router_scheduled_repeated_loss_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_scheduled_reliability_repeated_loss_matrix.py"
+        )
+        self.assertTrue(docker_router_scheduled_repeated_loss_script.exists())
+        docker_router_scheduled_repeated_loss_source = (
+            docker_router_scheduled_repeated_loss_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_scheduled_reliability_repeated_loss_matrix.v1",
+            docker_router_scheduled_repeated_loss_source,
+        )
+        self.assertIn("SEED_SEMANTICS", docker_router_scheduled_repeated_loss_source)
+        self.assertIn("loss_percents", docker_router_scheduled_repeated_loss_source)
+        self.assertIn('"partial"', docker_router_scheduled_repeated_loss_source)
+        self.assertIn("run_probe(", docker_router_scheduled_repeated_loss_source)
+        self.assertIn(
+            "netem_loss_percent=loss_percent",
+            docker_router_scheduled_repeated_loss_source,
+        )
+        docker_router_multi_robot_scheduled_reliability_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_multi_robot_scheduled_reliability_probe.py"
+        )
+        self.assertTrue(
+            docker_router_multi_robot_scheduled_reliability_script.exists()
+        )
+        docker_router_multi_robot_scheduled_reliability_source = (
+            docker_router_multi_robot_scheduled_reliability_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_scheduled_reliability_probe.v1",
+            docker_router_multi_robot_scheduled_reliability_source,
+        )
+        self.assertIn(
+            "FLEETQOX_RMW_ROBOT_ID",
+            docker_router_multi_robot_scheduled_reliability_source,
+        )
+        self.assertIn(
+            "--drop-source-sequences 2",
+            docker_router_multi_robot_scheduled_reliability_source,
+        )
+        self.assertIn(
+            "scheduler_per_robot",
+            docker_router_multi_robot_scheduled_reliability_source,
+        )
+        self.assertIn(
+            "total_nack_retransmissions",
+            docker_router_multi_robot_scheduled_reliability_source,
+        )
+        docker_router_mixed_workload_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_mixed_action_control_state_probe.py"
+        )
+        self.assertTrue(docker_router_mixed_workload_script.exists())
+        docker_router_mixed_workload_source = (
+            docker_router_mixed_workload_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_mixed_action_control_state_probe.v1",
+            docker_router_mixed_workload_source,
+        )
+        self.assertIn("mixed_robot_count", docker_router_mixed_workload_source)
+        self.assertIn("scheduler_urgent_frames", docker_router_mixed_workload_source)
+        self.assertIn("/fleetqox/mixed/", docker_router_mixed_workload_source)
+        docker_router_proactive_diversity_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_proactive_deadline_diversity_probe.py"
+        )
+        self.assertTrue(docker_router_proactive_diversity_script.exists())
+        docker_router_proactive_diversity_source = (
+            docker_router_proactive_diversity_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_proactive_deadline_diversity_probe.v1",
+            docker_router_proactive_diversity_source,
+        )
+        self.assertIn("FLEETQOX_RMW_PEER_POLICY=adaptive_qos", docker_router_proactive_diversity_source)
+        self.assertIn("on_time_sequences", docker_router_proactive_diversity_source)
+        self.assertIn("subscriber-deadline-ms", docker_router_proactive_diversity_source)
+        docker_router_proactive_repeated_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_proactive_deadline_diversity_repeated_loss_matrix.py"
+        )
+        self.assertTrue(docker_router_proactive_repeated_script.exists())
+        docker_router_proactive_repeated_source = (
+            docker_router_proactive_repeated_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_proactive_deadline_diversity_repeated_loss_matrix.v1",
+            docker_router_proactive_repeated_source,
+        )
+        self.assertIn("SEED_SEMANTICS", docker_router_proactive_repeated_source)
+        self.assertIn("max_observed_latency_ms", docker_router_proactive_repeated_source)
+        docker_router_multi_proactive_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_multi_robot_proactive_deadline_diversity_probe.py"
+        )
+        self.assertTrue(docker_router_multi_proactive_script.exists())
+        docker_router_multi_proactive_source = (
+            docker_router_multi_proactive_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_proactive_deadline_diversity_probe.v1",
+            docker_router_multi_proactive_source,
+        )
+        self.assertIn("deadline_success_jain_index", docker_router_multi_proactive_source)
+        self.assertIn("proactive_path_transmissions", docker_router_multi_proactive_source)
+        self.assertIn("FLEETQOX_RMW_PEER_POLICY=adaptive_qos", docker_router_multi_proactive_source)
+        docker_router_budgeted_fleet_plan_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_multi_robot_budgeted_fleet_plan_probe.py"
+        )
+        self.assertTrue(docker_router_budgeted_fleet_plan_script.exists())
+        docker_router_budgeted_fleet_plan_source = (
+            docker_router_budgeted_fleet_plan_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_budgeted_fleet_plan_probe.v1",
+            docker_router_budgeted_fleet_plan_source,
+        )
+        self.assertIn("redundancy_budget_bytes_per_tick", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("failure_domain=\"private_5g_core\"", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("FLEETQOX_RMW_PEER_POLICY=fleet_plan", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("path_transmission_reduction_ratio", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("sequential_confidence_fallback", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("sequential_separation_margin", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("confidence_fallback_actuations", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("feedback_safe_mode_count", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("fallback_recovery_samples", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("fallback_recovery", docker_router_budgeted_fleet_plan_source)
+        docker_router_budgeted_epoch_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_multi_robot_budgeted_fleet_plan_epoch_probe.py"
+        )
+        self.assertTrue(docker_router_budgeted_epoch_script.exists())
+        docker_router_budgeted_epoch_source = docker_router_budgeted_epoch_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_budgeted_fleet_plan_epoch_probe.v1",
+            docker_router_budgeted_epoch_source,
+        )
+        self.assertIn("epoch_transition=True", docker_router_budgeted_epoch_source)
+        self.assertIn("actual_path_transmissions", docker_router_budgeted_epoch_source)
+        docker_router_qoe_feedback_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_multi_robot_qoe_feedback_budget_probe.py"
+        )
+        self.assertTrue(docker_router_qoe_feedback_script.exists())
+        docker_router_qoe_feedback_source = docker_router_qoe_feedback_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_qoe_feedback_budget_probe.v1",
+            docker_router_qoe_feedback_source,
+        )
+        self.assertIn("qoe_feedback=True", docker_router_qoe_feedback_source)
+        self.assertIn("protected_robots", docker_router_qoe_feedback_source)
+        docker_router_qoe_feedback_matrix_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_multi_robot_qoe_feedback_budget_repeated_matrix.py"
+        )
+        self.assertTrue(docker_router_qoe_feedback_matrix_script.exists())
+        docker_router_qoe_feedback_matrix_source = (
+            docker_router_qoe_feedback_matrix_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_qoe_feedback_budget_repeated_matrix.v1",
+            docker_router_qoe_feedback_matrix_source,
+        )
+        self.assertIn("SEED_SEMANTICS", docker_router_qoe_feedback_matrix_source)
+        self.assertIn("total_actual_path_transmissions", docker_router_qoe_feedback_matrix_source)
+        docker_router_qoe_migration_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_multi_robot_qoe_protection_migration_probe.py"
+        )
+        self.assertTrue(docker_router_qoe_migration_script.exists())
+        docker_router_qoe_migration_source = docker_router_qoe_migration_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_qoe_protection_migration_probe.v1",
+            docker_router_qoe_migration_source,
+        )
+        self.assertIn("qoe_migration=True", docker_router_qoe_migration_source)
+        self.assertIn("epoch_path_plans", docker_router_qoe_migration_source)
+        self.assertIn("max_epoch_convergence_ms", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("protected_set_churn", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("--publish-trigger-file", reliable_interprocess_source)
+        self.assertIn("wait_for_publish_trigger", reliable_interprocess_source)
+        self.assertIn("--publisher-ready-file", reliable_interprocess_source)
+        self.assertIn("mark_publisher_ready", reliable_interprocess_source)
+        docker_router_qoe_migration_scale_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_qoe_protection_migration_scale_matrix.py"
+        )
+        self.assertTrue(docker_router_qoe_migration_scale_script.exists())
+        docker_router_qoe_migration_scale_source = (
+            docker_router_qoe_migration_scale_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_qoe_protection_migration_scale_matrix.v1",
+            docker_router_qoe_migration_scale_source,
+        )
+        self.assertIn("--robot-counts", docker_router_qoe_migration_scale_source)
+        self.assertIn("aggregate_path_transmission_reduction_ratio", docker_router_qoe_migration_scale_source)
+        self.assertIn("total_protection_migrations", docker_router_qoe_migration_scale_source)
+        self.assertIn("event_triggered_feedback=True", docker_router_qoe_migration_scale_source)
+        self.assertIn("sequential_qoe_feedback=True", docker_router_qoe_migration_scale_source)
+        docker_router_qoe_migration_repeated_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_qoe_protection_migration_sequential_repeated_matrix.py"
+        )
+        self.assertTrue(docker_router_qoe_migration_repeated_script.exists())
+        docker_router_qoe_migration_repeated_source = (
+            docker_router_qoe_migration_repeated_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_qoe_protection_migration_sequential_repeated_matrix.v1",
+            docker_router_qoe_migration_repeated_source,
+        )
+        self.assertIn("SEED_SEMANTICS", docker_router_qoe_migration_repeated_source)
+        self.assertIn("confidence_epoch_ratio", docker_router_qoe_migration_repeated_source)
+        self.assertIn("failure_mode_counts", docker_router_qoe_migration_repeated_source)
+        self.assertIn("confidence_not_separated", docker_router_qoe_migration_repeated_source)
+        self.assertIn("confidence_fallback_applied", docker_router_qoe_migration_repeated_source)
+        self.assertIn("confidence_fallback_run_count", docker_router_qoe_migration_repeated_source)
+        self.assertIn("confidence_fallback_delivery_failure", docker_router_qoe_migration_repeated_source)
+        self.assertIn("confidence_fallback_recovered_window", docker_router_qoe_migration_repeated_source)
+        self.assertIn("feedback_safe_mode_delivery_failure", docker_router_qoe_migration_repeated_source)
+        self.assertIn("feedback_safe_mode_run_count", docker_router_qoe_migration_repeated_source)
+        self.assertIn("fallback_recovery_ok_run_count", docker_router_qoe_migration_repeated_source)
+        self.assertIn("sequential_separation_margin", docker_router_qoe_migration_repeated_source)
+        docker_router_service_timeout_script = (
+            ROOT / "scripts" / "run_rmw_docker_router_ros2_service_timeout_probe.py"
+        )
+        self.assertTrue(docker_router_service_timeout_script.exists())
+        docker_router_service_timeout_source = docker_router_service_timeout_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_router_ros2_service_timeout_probe.v1",
+            docker_router_service_timeout_source,
+        )
+        self.assertIn("--expected-service-frames 2", docker_router_service_timeout_source)
+        self.assertIn("timed_out", docker_router_service_timeout_source)
+        docker_router_multi_proactive_repeated_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_router_multi_robot_proactive_deadline_diversity_repeated_loss_matrix.py"
+        )
+        self.assertTrue(docker_router_multi_proactive_repeated_script.exists())
+        docker_router_multi_proactive_repeated_source = (
+            docker_router_multi_proactive_repeated_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_proactive_deadline_diversity_repeated_loss_matrix.v1",
+            docker_router_multi_proactive_repeated_source,
+        )
+        self.assertIn("min_deadline_success_jain_index", docker_router_multi_proactive_repeated_source)
+        self.assertIn("total_proactive_path_transmissions", docker_router_multi_proactive_repeated_source)
         docker_router_multihop_reliability_script = (
             ROOT / "scripts" / "run_rmw_docker_router_multihop_reliability_probe.py"
         )
@@ -1067,6 +1625,9 @@ int main()
         self.assertIn("expected-qos-drops", docker_router_qos_source)
         self.assertIn("forward-delay-ms", docker_router_qos_source)
         self.assertIn("--expect-taken false", docker_router_qos_source)
+        self.assertIn("--entrypoint", docker_router_qos_source)
+        self.assertIn("parse_last_json", docker_router_qos_source)
+        self.assertIn("publisher_stderr", docker_router_qos_source)
         docker_router_priority_script = ROOT / "scripts" / "run_rmw_docker_router_qos_priority_probe.py"
         self.assertTrue(docker_router_priority_script.exists())
         docker_router_priority_source = docker_router_priority_script.read_text()
@@ -1082,6 +1643,96 @@ int main()
         self.assertIn("fifo_baseline", docker_router_priority_matrix_source)
         self.assertIn("deadline_scheduler", docker_router_priority_matrix_source)
         self.assertIn("priority_improved", docker_router_priority_matrix_source)
+        multi_robot_qos_script = (
+            ROOT / "scripts" / "run_rmw_docker_router_multi_robot_qos_matrix.py"
+        )
+        self.assertTrue(multi_robot_qos_script.exists())
+        multi_robot_qos_source = multi_robot_qos_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_qos_matrix.v1",
+            multi_robot_qos_source,
+        )
+        self.assertIn("FLEETQOX_RMW_ROBOT_ID", multi_robot_qos_source)
+        self.assertIn("scheduler_deadline_success_jain_index", multi_robot_qos_source)
+        self.assertIn("per_robot_complete", multi_robot_qos_source)
+        multi_robot_qos_doc = ROOT / "docs" / "RMW_MULTI_ROBOT_QOS_SCHEDULER_V1.md"
+        self.assertTrue(multi_robot_qos_doc.exists())
+        rmw_pubsub_source = (PKG / "src" / "rmw_pubsub.cpp").read_text()
+        self.assertIn("FLEETQOX_RMW_ROBOT_ID", rmw_pubsub_source)
+        self.assertIn("local_robot_id()", rmw_pubsub_source)
+        self.assertIn("scheduler_per_robot", router_source)
+        self.assertIn("scheduler_deadline_misses", router_source)
+        self.assertIn("scheduler_queue_wait_ms_mean", router_source)
+        self.assertIn("scheduler_urgent_deadline_ms", router_source)
+        self.assertIn("scheduler_urgent_frames", router_source)
+        self.assertIn("scheduler_paced_frames", router_source)
+        self.assertIn("scheduler_drain_pacing_ms", router_source)
+        self.assertIn("scheduler_admission_policy", router_source)
+        self.assertIn("scheduler_admits_holdback", router_source)
+        self.assertIn("slo_service_time", router_source)
+        self.assertIn("slo_service_epoch", router_source)
+        self.assertIn("scheduler_admission_ewma_alpha", router_source)
+        self.assertIn("scheduler_admission_min_epoch_frames", router_source)
+        self.assertIn("scheduler_admission_switches", router_source)
+        self.assertIn("scheduler_admission_holdback_enabled", router_source)
+        self.assertIn("scheduler_admission_bypassed_frames", router_source)
+        self.assertIn("scheduler_admission_service_ratio_max", router_source)
+        self.assertIn("take_age_ms", multi_robot_qos_source)
+        self.assertIn("payload-size", multi_robot_qos_source)
+        self.assertIn("e2e_deadline_misses", multi_robot_qos_source)
+        self.assertIn("scheduler_admission_policy", multi_robot_qos_source)
+        self.assertIn("scheduler_admission_min_service_ratio", multi_robot_qos_source)
+        self.assertIn("netem_loss_percent", multi_robot_qos_source)
+        self.assertIn("netem_config_for_profile", multi_robot_qos_source)
+        multi_robot_netem_script = (
+            ROOT / "scripts" / "run_rmw_docker_router_multi_robot_qos_netem_matrix.py"
+        )
+        self.assertTrue(multi_robot_netem_script.exists())
+        multi_robot_netem_source = multi_robot_netem_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_qos_netem_matrix.v1",
+            multi_robot_netem_source,
+        )
+        self.assertIn("control_p95_reduction_ms", multi_robot_netem_source)
+        self.assertIn("adaptive_selected_policy", multi_robot_netem_source)
+        self.assertIn("adaptive_worse_profile_count", multi_robot_netem_source)
+        self.assertIn("adaptive_mean_control_p95_reduction_ms", multi_robot_netem_source)
+        self.assertIn("adaptive_mean_reduction > 0.0", multi_robot_netem_source)
+        self.assertIn("deadline_gated_holdback", multi_robot_netem_source)
+        self.assertIn("adaptive_selected_policy(", multi_robot_netem_source)
+        self.assertIn("scheduler_urgent_frames", multi_robot_netem_source)
+        self.assertIn("netem_qdisc", multi_robot_netem_source)
+        live_adaptive_script = (
+            ROOT / "scripts" / "run_rmw_docker_router_multi_robot_qos_live_adaptive_matrix.py"
+        )
+        self.assertTrue(live_adaptive_script.exists())
+        live_adaptive_source = live_adaptive_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_qos_live_adaptive_matrix.v1",
+            live_adaptive_source,
+        )
+        self.assertIn("slo_service_epoch", live_adaptive_source)
+        self.assertIn("queued_profile_count", live_adaptive_source)
+        self.assertIn("bypassed_profile_count", live_adaptive_source)
+        self.assertIn("control_p95_regression_count", live_adaptive_source)
+        self.assertIn("scheduler_admission_bypassed_frames", live_adaptive_source)
+        self.assertIn("scheduler_admission_epoch_samples", live_adaptive_source)
+        self.assertIn("scheduler_admission_switches", live_adaptive_source)
+        repeated_loss_script = (
+            ROOT / "scripts" /
+            "run_rmw_docker_router_multi_robot_qos_live_adaptive_repeated_loss_matrix.py"
+        )
+        self.assertTrue(repeated_loss_script.exists())
+        repeated_loss_source = repeated_loss_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_router_multi_robot_qos_live_adaptive_repeated_loss_matrix.v1",
+            repeated_loss_source,
+        )
+        self.assertIn("loss_percents", repeated_loss_source)
+        self.assertIn("SEED_SEMANTICS", repeated_loss_source)
+        self.assertIn("partial", repeated_loss_source)
+        self.assertIn("fail_on_row_failure", repeated_loss_source)
+        self.assertIn("netem_loss_percent=loss_percent", repeated_loss_source)
 
     def test_identifier_library_exports_initial_rmw_symbols(self) -> None:
         compiler = shutil.which("c++")

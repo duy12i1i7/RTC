@@ -35,6 +35,7 @@ struct RouterConfig
   std::string graph_peers;
   int expected_frames{1};
   int expected_service_frames{0};
+  int expected_action_frames{0};
   int expected_ack_nack_frames{0};
   int expected_ack_nack_forwarded{-1};
   int expected_route_advertisements{0};
@@ -43,8 +44,17 @@ struct RouterConfig
   std::vector<std::pair<std::string, std::uint64_t>> expected_forwarded_topic_source_sequences;
   int forward_delay_ms{0};
   int scheduler_window_ms{0};
+  int scheduler_expected_frames{0};
+  int scheduler_urgent_deadline_ms{0};
+  std::string scheduler_admission_policy{"always"};
+  double scheduler_admission_min_service_ratio{0.0};
+  double scheduler_admission_exit_service_ratio{0.0};
+  double scheduler_admission_ewma_alpha{0.5};
+  int scheduler_admission_min_epoch_frames{1};
+  std::string scheduler_topic_prefix;
   int post_satisfaction_ms{0};
   std::vector<std::uint64_t> drop_source_sequences;
+  std::string drop_topic_prefix;
   int timeout_ms{3000};
   std::string path_id{"router_path"};
   std::string telemetry_file;
@@ -67,6 +77,15 @@ struct ServiceRoute
 {
   std::string role;
   std::string service_name;
+  std::string endpoint_id;
+  sockaddr_in address{};
+  std::chrono::steady_clock::time_point expires_at{};
+};
+
+struct ActionRoute
+{
+  std::string role;
+  std::string action_name;
   std::string endpoint_id;
   sockaddr_in address{};
   std::chrono::steady_clock::time_point expires_at{};
@@ -96,6 +115,36 @@ struct QueuedDataFrame
   std::chrono::steady_clock::time_point enqueued_at{};
   std::int64_t absolute_deadline_ns = 0;
   std::uint64_t order = 0;
+  bool test_repair = false;
+};
+
+struct RobotSchedulerStats
+{
+  std::string robot_id;
+  int forwarded = 0;
+  int deadline_misses = 0;
+};
+
+struct SchedulerDeadlineMiss
+{
+  std::string topic;
+  std::string robot_id;
+  std::uint64_t source_sequence_number = 0;
+  bool test_repair = false;
+  double lateness_ms = 0.0;
+};
+
+struct SchedulerAdmissionState
+{
+  bool holdback_enabled = false;
+  bool ewma_initialized = false;
+  double service_ratio_ewma = 0.0;
+  double service_ratio_max = 0.0;
+  int samples = 0;
+  int frames_since_switch = 0;
+  int switches = 0;
+  int holdback_decisions = 0;
+  int bypass_decisions = 0;
 };
 
 std::string json_escape(const std::string & value)
@@ -284,6 +333,70 @@ void record_topic_source_sequence(
   }
 }
 
+void increment_topic_count(
+  std::vector<std::pair<std::string, int>> * counts,
+  const std::string & topic)
+{
+  if (counts == nullptr) {
+    return;
+  }
+  auto existing = std::find_if(
+    counts->begin(),
+    counts->end(),
+    [&](const std::pair<std::string, int> & item) {
+      return item.first == topic;
+    });
+  if (existing == counts->end()) {
+    counts->emplace_back(topic, 1);
+  } else {
+    ++existing->second;
+  }
+}
+
+void record_robot_scheduler_result(
+  std::vector<RobotSchedulerStats> * stats,
+  const std::string & robot_id,
+  bool deadline_missed)
+{
+  if (stats == nullptr) {
+    return;
+  }
+  auto existing = std::find_if(
+    stats->begin(),
+    stats->end(),
+    [&](const RobotSchedulerStats & item) {
+      return item.robot_id == robot_id;
+    });
+  if (existing == stats->end()) {
+    stats->push_back(RobotSchedulerStats{robot_id, 1, deadline_missed ? 1 : 0});
+  } else {
+    ++existing->forwarded;
+    if (deadline_missed) {
+      ++existing->deadline_misses;
+    }
+  }
+}
+
+double scheduler_deadline_success_jain_index(
+  const std::vector<RobotSchedulerStats> & stats)
+{
+  if (stats.empty()) {
+    return 1.0;
+  }
+  double success_sum = 0.0;
+  double success_square_sum = 0.0;
+  for (const RobotSchedulerStats & item : stats) {
+    const double success = static_cast<double>(item.forwarded - item.deadline_misses);
+    success_sum += success;
+    success_square_sum += success * success;
+  }
+  if (success_square_sum <= 0.0) {
+    return 0.0;
+  }
+  return success_sum * success_sum /
+         (static_cast<double>(stats.size()) * success_square_sum);
+}
+
 bool topic_source_sequence_expectations_satisfied(
   const std::vector<std::pair<std::string, std::uint64_t>> & expected,
   const std::vector<std::pair<std::string, std::uint64_t>> & observed)
@@ -359,6 +472,23 @@ void purge_expired_service_routes(
       route_table->begin(),
       route_table->end(),
       [&](const ServiceRoute & route) {
+        return route.expires_at <= now;
+      }),
+    route_table->end());
+}
+
+void purge_expired_action_routes(
+  std::vector<ActionRoute> * route_table,
+  std::chrono::steady_clock::time_point now)
+{
+  if (route_table == nullptr) {
+    return;
+  }
+  route_table->erase(
+    std::remove_if(
+      route_table->begin(),
+      route_table->end(),
+      [&](const ActionRoute & route) {
         return route.expires_at <= now;
       }),
     route_table->end());
@@ -466,6 +596,115 @@ std::int64_t absolute_deadline_ns_for_frame(
   return frame.source_timestamp_ns + deadline_ns;
 }
 
+double scheduler_service_ratio(
+  const RouterConfig & config,
+  size_t encoded_size)
+{
+  if (config.telemetry_capacity_bytes <= 0 || config.scheduler_urgent_deadline_ms <= 0) {
+    return 0.0;
+  }
+  const double service_ms =
+    static_cast<double>(encoded_size) * 1000.0 /
+    static_cast<double>(config.telemetry_capacity_bytes);
+  return service_ms / static_cast<double>(config.scheduler_urgent_deadline_ms);
+}
+
+bool scheduler_admits_holdback(
+  const RouterConfig & config,
+  size_t encoded_size,
+  SchedulerAdmissionState * state)
+{
+  if (config.scheduler_admission_policy.empty() ||
+    config.scheduler_admission_policy == "always")
+  {
+    if (state != nullptr) {
+      ++state->holdback_decisions;
+    }
+    return true;
+  }
+  if (config.scheduler_admission_policy == "never") {
+    if (state != nullptr) {
+      ++state->bypass_decisions;
+    }
+    return false;
+  }
+  const double service_ratio = scheduler_service_ratio(config, encoded_size);
+  if (config.scheduler_admission_policy == "slo_service_time") {
+    const bool admit = service_ratio >= config.scheduler_admission_min_service_ratio;
+    if (state != nullptr) {
+      ++state->samples;
+      state->service_ratio_max = std::max(state->service_ratio_max, service_ratio);
+      state->service_ratio_ewma = service_ratio;
+      state->ewma_initialized = true;
+      if (admit) {
+        ++state->holdback_decisions;
+      } else {
+        ++state->bypass_decisions;
+      }
+    }
+    return admit;
+  }
+  if (config.scheduler_admission_policy == "slo_service_epoch") {
+    if (state == nullptr) {
+      return service_ratio >= config.scheduler_admission_min_service_ratio;
+    }
+    const double alpha = std::max(
+      0.0,
+      std::min(1.0, config.scheduler_admission_ewma_alpha));
+    if (!state->ewma_initialized) {
+      state->service_ratio_ewma = service_ratio;
+      state->ewma_initialized = true;
+      state->frames_since_switch = std::max(
+        1,
+        config.scheduler_admission_min_epoch_frames);
+    } else {
+      state->service_ratio_ewma =
+        alpha * service_ratio + (1.0 - alpha) * state->service_ratio_ewma;
+      ++state->frames_since_switch;
+    }
+    ++state->samples;
+    state->service_ratio_max = std::max(state->service_ratio_max, service_ratio);
+    const int min_epoch_frames = std::max(1, config.scheduler_admission_min_epoch_frames);
+    const double exit_ratio =
+      config.scheduler_admission_exit_service_ratio > 0.0 ?
+      config.scheduler_admission_exit_service_ratio :
+      config.scheduler_admission_min_service_ratio;
+    if (state->frames_since_switch >= min_epoch_frames) {
+      if (!state->holdback_enabled &&
+        state->service_ratio_ewma >= config.scheduler_admission_min_service_ratio)
+      {
+        state->holdback_enabled = true;
+        state->frames_since_switch = 0;
+        ++state->switches;
+      } else if (state->holdback_enabled && state->service_ratio_ewma <= exit_ratio) {
+        state->holdback_enabled = false;
+        state->frames_since_switch = 0;
+        ++state->switches;
+      }
+    }
+    if (state->holdback_enabled) {
+      ++state->holdback_decisions;
+    } else {
+      ++state->bypass_decisions;
+    }
+    return state->holdback_enabled;
+  }
+  if (state != nullptr) {
+    ++state->holdback_decisions;
+  }
+  return true;
+}
+
+bool action_role_targets_server(const std::string & role)
+{
+  return role == "goal" || role == "cancel";
+}
+
+bool action_role_targets_client(const std::string & role)
+{
+  return role == "feedback" || role == "status" || role == "result";
+}
+
 int forward_data_frame(
   int fd,
   const std::string & encoded_frame,
@@ -559,6 +798,11 @@ bool should_drop_source_sequence_once(
   if (dropped_keys == nullptr || config.drop_source_sequences.empty()) {
     return false;
   }
+  if (!config.drop_topic_prefix.empty() &&
+    frame.topic.rfind(config.drop_topic_prefix, 0) != 0)
+  {
+    return false;
+  }
   const bool sequence_matches = std::find(
     config.drop_source_sequences.begin(),
     config.drop_source_sequences.end(),
@@ -573,6 +817,15 @@ bool should_drop_source_sequence_once(
   }
   dropped_keys->push_back(key);
   return true;
+}
+
+bool was_test_dropped(
+  const rmw_fleetqox_cpp::DataFrame & frame,
+  const std::vector<std::string> & dropped_keys)
+{
+  const std::string key =
+    frame.publisher_id + "|" + std::to_string(frame.source_sequence_number);
+  return std::find(dropped_keys.begin(), dropped_keys.end(), key) != dropped_keys.end();
 }
 
 RouterConfig parse_args(int argc, char ** argv)
@@ -590,6 +843,8 @@ RouterConfig parse_args(int argc, char ** argv)
       config.expected_frames = std::stoi(argv[++i]);
     } else if (arg == "--expected-service-frames" && i + 1 < argc) {
       config.expected_service_frames = std::stoi(argv[++i]);
+    } else if (arg == "--expected-action-frames" && i + 1 < argc) {
+      config.expected_action_frames = std::stoi(argv[++i]);
     } else if (arg == "--expected-ack-nack-frames" && i + 1 < argc) {
       config.expected_ack_nack_frames = std::stoi(argv[++i]);
     } else if (arg == "--expected-ack-nack-forwarded" && i + 1 < argc) {
@@ -607,10 +862,31 @@ RouterConfig parse_args(int argc, char ** argv)
       config.forward_delay_ms = std::stoi(argv[++i]);
     } else if (arg == "--scheduler-window-ms" && i + 1 < argc) {
       config.scheduler_window_ms = std::stoi(argv[++i]);
+    } else if (arg == "--scheduler-expected-frames" && i + 1 < argc) {
+      config.scheduler_expected_frames = std::stoi(argv[++i]);
+    } else if (arg == "--scheduler-urgent-deadline-ms" && i + 1 < argc) {
+      config.scheduler_urgent_deadline_ms = std::stoi(argv[++i]);
+    } else if (arg == "--scheduler-admission-policy" && i + 1 < argc) {
+      config.scheduler_admission_policy = argv[++i];
+    } else if (arg == "--scheduler-admission-min-service-ratio" && i + 1 < argc) {
+      config.scheduler_admission_min_service_ratio =
+        parse_double(argv[++i], config.scheduler_admission_min_service_ratio);
+    } else if (arg == "--scheduler-admission-exit-service-ratio" && i + 1 < argc) {
+      config.scheduler_admission_exit_service_ratio =
+        parse_double(argv[++i], config.scheduler_admission_exit_service_ratio);
+    } else if (arg == "--scheduler-admission-ewma-alpha" && i + 1 < argc) {
+      config.scheduler_admission_ewma_alpha =
+        parse_double(argv[++i], config.scheduler_admission_ewma_alpha);
+    } else if (arg == "--scheduler-admission-min-epoch-frames" && i + 1 < argc) {
+      config.scheduler_admission_min_epoch_frames = std::stoi(argv[++i]);
+    } else if (arg == "--scheduler-topic-prefix" && i + 1 < argc) {
+      config.scheduler_topic_prefix = argv[++i];
     } else if (arg == "--post-satisfaction-ms" && i + 1 < argc) {
       config.post_satisfaction_ms = std::stoi(argv[++i]);
     } else if (arg == "--drop-source-sequences" && i + 1 < argc) {
       config.drop_source_sequences = parse_sequence_list(argv[++i]);
+    } else if (arg == "--drop-topic-prefix" && i + 1 < argc) {
+      config.drop_topic_prefix = argv[++i];
     } else if (arg == "--timeout-ms" && i + 1 < argc) {
       config.timeout_ms = std::stoi(argv[++i]);
     } else if (arg == "--path-id" && i + 1 < argc) {
@@ -660,7 +936,37 @@ void print_router_json(
   const std::vector<std::string> & service_names,
   const std::vector<std::string> & topics,
   const std::vector<std::pair<std::string, std::uint64_t>> & forwarded_topic_source_sequences =
-    std::vector<std::pair<std::string, std::uint64_t>>())
+    std::vector<std::pair<std::string, std::uint64_t>>(),
+  int action_frames = 0,
+  int action_forwarded = 0,
+  int graph_action_servers = 0,
+  int graph_action_clients = 0,
+  const std::vector<std::string> & action_names = std::vector<std::string>(),
+  const std::vector<std::pair<std::string, int>> & qos_dropped_topic_counts =
+    std::vector<std::pair<std::string, int>>(),
+  int scheduler_queued_frames = 0,
+  int scheduler_urgent_frames = 0,
+  int scheduler_paced_frames = 0,
+  int scheduler_drain_pacing_ms = 0,
+  int scheduler_forwarded_frames = 0,
+  int scheduler_admission_bypassed_frames = 0,
+  int scheduler_deadline_misses = 0,
+  int scheduler_fresh_deadline_misses = 0,
+  int scheduler_repair_frames = 0,
+  int scheduler_repair_deadline_misses = 0,
+  double scheduler_queue_wait_ms_mean = 0.0,
+  double scheduler_queue_wait_ms_max = 0.0,
+  double scheduler_admission_service_ratio_max = 0.0,
+  double scheduler_admission_service_ratio_ewma = 0.0,
+  int scheduler_admission_epoch_samples = 0,
+  int scheduler_admission_switches = 0,
+  int scheduler_admission_holdback_decisions = 0,
+  int scheduler_admission_bypass_decisions = 0,
+  bool scheduler_admission_holdback_enabled = false,
+  const std::vector<RobotSchedulerStats> & robot_scheduler_stats =
+    std::vector<RobotSchedulerStats>(),
+  const std::vector<SchedulerDeadlineMiss> & scheduler_deadline_miss_frames =
+    std::vector<SchedulerDeadlineMiss>())
 {
   std::cout << "{\"schema_version\":\"fleetrmw.rmw_udp_router_probe.v1\",";
   std::cout << "\"status\":\"" << status << "\",";
@@ -669,6 +975,7 @@ void print_router_json(
   std::cout << "\"graph_peer_count\":" << endpoint_count(config.graph_peers) << ",";
   std::cout << "\"expected_frames\":" << config.expected_frames << ",";
   std::cout << "\"expected_service_frames\":" << config.expected_service_frames << ",";
+  std::cout << "\"expected_action_frames\":" << config.expected_action_frames << ",";
   std::cout << "\"expected_ack_nack_frames\":" << config.expected_ack_nack_frames << ",";
   std::cout << "\"expected_ack_nack_forwarded\":"
             << (config.expected_ack_nack_forwarded >= 0 ?
@@ -689,14 +996,102 @@ void print_router_json(
   std::cout << "],";
   std::cout << "\"forward_delay_ms\":" << config.forward_delay_ms << ",";
   std::cout << "\"scheduler_window_ms\":" << config.scheduler_window_ms << ",";
+  std::cout << "\"scheduler_expected_frames\":" << config.scheduler_expected_frames << ",";
+  std::cout << "\"scheduler_urgent_deadline_ms\":" <<
+    config.scheduler_urgent_deadline_ms << ",";
+  std::cout << "\"scheduler_admission_policy\":\"" <<
+    json_escape(config.scheduler_admission_policy) << "\",";
+  std::cout << "\"scheduler_admission_min_service_ratio\":" <<
+    config.scheduler_admission_min_service_ratio << ",";
+  std::cout << "\"scheduler_admission_exit_service_ratio\":" <<
+    config.scheduler_admission_exit_service_ratio << ",";
+  std::cout << "\"scheduler_admission_ewma_alpha\":" <<
+    config.scheduler_admission_ewma_alpha << ",";
+  std::cout << "\"scheduler_admission_min_epoch_frames\":" <<
+    config.scheduler_admission_min_epoch_frames << ",";
+  std::cout << "\"scheduler_topic_prefix\":\"" <<
+    json_escape(config.scheduler_topic_prefix) << "\",";
+  std::cout << "\"drop_topic_prefix\":\"" <<
+    json_escape(config.drop_topic_prefix) << "\",";
+  std::cout << "\"scheduler_queued_frames\":" << scheduler_queued_frames << ",";
+  std::cout << "\"scheduler_urgent_frames\":" << scheduler_urgent_frames << ",";
+  std::cout << "\"scheduler_paced_frames\":" << scheduler_paced_frames << ",";
+  std::cout << "\"scheduler_drain_pacing_ms\":" << scheduler_drain_pacing_ms << ",";
+  std::cout << "\"scheduler_forwarded_frames\":" << scheduler_forwarded_frames << ",";
+  std::cout << "\"scheduler_admission_bypassed_frames\":" <<
+    scheduler_admission_bypassed_frames << ",";
+  std::cout << "\"scheduler_deadline_misses\":" << scheduler_deadline_misses << ",";
+  std::cout << "\"scheduler_fresh_deadline_misses\":" <<
+    scheduler_fresh_deadline_misses << ",";
+  std::cout << "\"scheduler_repair_frames\":" << scheduler_repair_frames << ",";
+  std::cout << "\"scheduler_repair_deadline_misses\":" <<
+    scheduler_repair_deadline_misses << ",";
+  std::cout << "\"scheduler_deadline_miss_frames\":[";
+  for (size_t i = 0; i < scheduler_deadline_miss_frames.size(); ++i) {
+    if (i > 0) {
+      std::cout << ",";
+    }
+    const SchedulerDeadlineMiss & miss = scheduler_deadline_miss_frames[i];
+    std::cout << "{\"topic\":\"" << json_escape(miss.topic) << "\",";
+    std::cout << "\"robot_id\":\"" << json_escape(miss.robot_id) << "\",";
+    std::cout << "\"source_sequence_number\":" << miss.source_sequence_number << ",";
+    std::cout << "\"test_repair\":" << (miss.test_repair ? "true" : "false") << ",";
+    std::cout << "\"lateness_ms\":" << miss.lateness_ms << "}";
+  }
+  std::cout << "],";
+  std::cout << "\"scheduler_queue_wait_ms_mean\":" << scheduler_queue_wait_ms_mean << ",";
+  std::cout << "\"scheduler_queue_wait_ms_max\":" << scheduler_queue_wait_ms_max << ",";
+  std::cout << "\"scheduler_admission_service_ratio_max\":" <<
+    scheduler_admission_service_ratio_max << ",";
+  std::cout << "\"scheduler_admission_service_ratio_ewma\":" <<
+    scheduler_admission_service_ratio_ewma << ",";
+  std::cout << "\"scheduler_admission_epoch_samples\":" <<
+    scheduler_admission_epoch_samples << ",";
+  std::cout << "\"scheduler_admission_switches\":" <<
+    scheduler_admission_switches << ",";
+  std::cout << "\"scheduler_admission_holdback_decisions\":" <<
+    scheduler_admission_holdback_decisions << ",";
+  std::cout << "\"scheduler_admission_bypass_decisions\":" <<
+    scheduler_admission_bypass_decisions << ",";
+  std::cout << "\"scheduler_admission_holdback_enabled\":" <<
+    (scheduler_admission_holdback_enabled ? "true" : "false") << ",";
+  std::cout << "\"scheduler_deadline_success_jain_index\":" <<
+    scheduler_deadline_success_jain_index(robot_scheduler_stats) << ",";
+  std::cout << "\"scheduler_per_robot\":{";
+  for (size_t i = 0; i < robot_scheduler_stats.size(); ++i) {
+    if (i > 0) {
+      std::cout << ",";
+    }
+    const RobotSchedulerStats & item = robot_scheduler_stats[i];
+    std::cout << "\"" << json_escape(item.robot_id) << "\":{";
+    std::cout << "\"forwarded\":" << item.forwarded << ",";
+    std::cout << "\"deadline_misses\":" << item.deadline_misses << ",";
+    std::cout << "\"deadline_success_ratio\":" <<
+      (item.forwarded > 0 ?
+      static_cast<double>(item.forwarded - item.deadline_misses) /
+      static_cast<double>(item.forwarded) : 0.0);
+    std::cout << "}";
+  }
+  std::cout << "},";
   std::cout << "\"post_satisfaction_ms\":" << config.post_satisfaction_ms << ",";
   std::cout << "\"received_frames\":" << received << ",";
   std::cout << "\"service_frames\":" << service_frames << ",";
   std::cout << "\"ack_nack_frames\":" << ack_nack_frames << ",";
   std::cout << "\"forwarded_frames\":" << forwarded << ",";
   std::cout << "\"qos_dropped_frames\":" << qos_dropped << ",";
+  std::cout << "\"qos_dropped_topic_counts\":{";
+  for (size_t i = 0; i < qos_dropped_topic_counts.size(); ++i) {
+    if (i > 0) {
+      std::cout << ",";
+    }
+    std::cout << "\"" << json_escape(qos_dropped_topic_counts[i].first) << "\":" <<
+      qos_dropped_topic_counts[i].second;
+  }
+  std::cout << "},";
   std::cout << "\"test_dropped_frames\":" << test_dropped << ",";
   std::cout << "\"service_forwarded\":" << service_forwarded << ",";
+  std::cout << "\"action_frames\":" << action_frames << ",";
+  std::cout << "\"action_forwarded\":" << action_forwarded << ",";
   std::cout << "\"ack_nack_forwarded\":" << ack_nack_forwarded << ",";
   std::cout << "\"invalid_frames\":" << invalid << ",";
   std::cout << "\"route_advertisements\":" << route_advertisements << ",";
@@ -707,6 +1102,8 @@ void print_router_json(
   std::cout << "\"graph_subscriptions\":" << graph_subscriptions << ",";
   std::cout << "\"graph_services\":" << graph_services << ",";
   std::cout << "\"graph_clients\":" << graph_clients << ",";
+  std::cout << "\"graph_action_servers\":" << graph_action_servers << ",";
+  std::cout << "\"graph_action_clients\":" << graph_action_clients << ",";
   std::cout << "\"forwarded_topics\":[";
   for (size_t i = 0; i < forwarded_topics.size(); ++i) {
     if (i > 0) {
@@ -729,6 +1126,14 @@ void print_router_json(
       std::cout << ",";
     }
     std::cout << "\"" << json_escape(service_names[i]) << "\"";
+  }
+  std::cout << "],";
+  std::cout << "\"action_names\":[";
+  for (size_t i = 0; i < action_names.size(); ++i) {
+    if (i > 0) {
+      std::cout << ",";
+    }
+    std::cout << "\"" << json_escape(action_names[i]) << "\"";
   }
   std::cout << "],";
   std::cout << "\"topics\":[";
@@ -791,11 +1196,13 @@ int main(int argc, char ** argv)
 
   int received = 0;
   int service_frames = 0;
+  int action_frames = 0;
   int ack_nack_frames = 0;
   int forwarded = 0;
   int qos_dropped = 0;
   int test_dropped = 0;
   int service_forwarded = 0;
+  int action_forwarded = 0;
   int ack_nack_forwarded = 0;
   int invalid = 0;
   int route_advertisements = 0;
@@ -805,29 +1212,46 @@ int main(int argc, char ** argv)
   int graph_subscriptions = 0;
   int graph_services = 0;
   int graph_clients = 0;
+  int graph_action_servers = 0;
+  int graph_action_clients = 0;
   std::vector<std::string> topics;
   std::vector<std::string> forwarded_topics;
   std::vector<std::string> graph_topics;
   std::vector<std::string> service_names;
+  std::vector<std::string> action_names;
+  std::vector<std::pair<std::string, int>> qos_dropped_topic_counts;
   std::vector<TopicRoute> route_table;
   std::vector<PublisherRoute> publisher_route_table;
   std::vector<ServiceRoute> service_route_table;
+  std::vector<ActionRoute> action_route_table;
   std::vector<TopicQosLease> topic_qos_table;
   std::vector<std::string> dropped_source_sequence_keys;
   std::vector<QueuedDataFrame> queued_data_frames;
   std::vector<std::pair<std::string, std::uint64_t>> forwarded_topic_source_sequences;
+  std::vector<RobotSchedulerStats> robot_scheduler_stats;
+  int scheduler_queued_frames = 0;
+  int scheduler_urgent_frames = 0;
+  int scheduler_paced_frames = 0;
+  int scheduler_drain_pacing_ms = 0;
+  int scheduler_forwarded_frames = 0;
+  int scheduler_admission_bypassed_frames = 0;
+  int scheduler_deadline_misses = 0;
+  int scheduler_fresh_deadline_misses = 0;
+  int scheduler_repair_frames = 0;
+  int scheduler_repair_deadline_misses = 0;
+  std::vector<SchedulerDeadlineMiss> scheduler_deadline_miss_frames;
+  SchedulerAdmissionState scheduler_admission_state;
+  std::int64_t scheduler_queue_wait_ns_sum = 0;
+  std::int64_t scheduler_queue_wait_ns_max = 0;
   std::uint64_t next_queue_order = 0;
-  auto flush_queued_data_frames = [&]() {
-    std::stable_sort(
-      queued_data_frames.begin(),
-      queued_data_frames.end(),
-      [](const QueuedDataFrame & left, const QueuedDataFrame & right) {
-        if (left.absolute_deadline_ns != right.absolute_deadline_ns) {
-          return left.absolute_deadline_ns < right.absolute_deadline_ns;
-        }
-        return left.order < right.order;
-      });
-    for (const QueuedDataFrame & queued : queued_data_frames) {
+  auto forward_scheduled_data_frame = [&](const QueuedDataFrame & queued) {
+      const auto forwarding_time = std::chrono::steady_clock::now();
+      const std::int64_t forwarding_time_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+        forwarding_time.time_since_epoch()).count();
+      const std::int64_t queue_wait_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+        forwarding_time - queued.enqueued_at).count();
       const int forwarded_now = forward_data_frame(
         fd,
         queued.encoded_frame,
@@ -838,7 +1262,61 @@ int main(int argc, char ** argv)
         &forwarded_topics);
       forwarded += forwarded_now;
       if (forwarded_now > 0) {
+        const bool deadline_missed =
+          queued.absolute_deadline_ns != std::numeric_limits<std::int64_t>::max() &&
+          forwarding_time_ns > queued.absolute_deadline_ns;
+        ++scheduler_forwarded_frames;
+        if (queued.test_repair) {
+          ++scheduler_repair_frames;
+        }
+        if (deadline_missed) {
+          ++scheduler_deadline_misses;
+          scheduler_deadline_miss_frames.push_back(
+            SchedulerDeadlineMiss{
+              queued.frame.topic,
+              queued.frame.robot_id,
+              queued.frame.source_sequence_number,
+              queued.test_repair,
+              static_cast<double>(forwarding_time_ns - queued.absolute_deadline_ns) / 1000000.0});
+          if (queued.test_repair) {
+            ++scheduler_repair_deadline_misses;
+          } else {
+            ++scheduler_fresh_deadline_misses;
+          }
+        }
+        scheduler_queue_wait_ns_sum += queue_wait_ns;
+        scheduler_queue_wait_ns_max = std::max(scheduler_queue_wait_ns_max, queue_wait_ns);
+        record_robot_scheduler_result(
+          &robot_scheduler_stats, queued.frame.robot_id, deadline_missed);
         record_topic_source_sequence(&forwarded_topic_source_sequences, queued.frame);
+      }
+      append_router_path_telemetry(
+        config, queued.frame, queued.encoded_frame.size(), forwarded_now > 0);
+    };
+  auto flush_queued_data_frames = [&]() {
+    std::stable_sort(
+      queued_data_frames.begin(),
+      queued_data_frames.end(),
+      [](const QueuedDataFrame & left, const QueuedDataFrame & right) {
+        if (left.absolute_deadline_ns != right.absolute_deadline_ns) {
+          return left.absolute_deadline_ns < right.absolute_deadline_ns;
+        }
+        return left.order < right.order;
+      });
+    const int drain_pacing_ms =
+      config.scheduler_urgent_deadline_ms > 0 &&
+      config.scheduler_window_ms > 0 &&
+      queued_data_frames.size() > 1 ?
+      std::min(
+        100,
+        std::max(1, config.scheduler_window_ms / static_cast<int>(queued_data_frames.size()))) :
+      0;
+    scheduler_drain_pacing_ms = std::max(scheduler_drain_pacing_ms, drain_pacing_ms);
+    for (size_t i = 0; i < queued_data_frames.size(); ++i) {
+      forward_scheduled_data_frame(queued_data_frames[i]);
+      if (drain_pacing_ms > 0 && i + 1 < queued_data_frames.size()) {
+        ++scheduler_paced_frames;
+        std::this_thread::sleep_for(std::chrono::milliseconds(drain_pacing_ms));
       }
     }
     queued_data_frames.clear();
@@ -848,6 +1326,8 @@ int main(int argc, char ** argv)
   auto expectations_satisfied = [&]() {
     return received >= config.expected_frames &&
            service_frames >= config.expected_service_frames &&
+           action_frames >= config.expected_action_frames &&
+           action_forwarded >= config.expected_action_frames &&
            ack_nack_frames >= config.expected_ack_nack_frames &&
            qos_dropped >= config.expected_qos_drops &&
            route_advertisements >= config.expected_route_advertisements &&
@@ -880,9 +1360,14 @@ int main(int argc, char ** argv)
     purge_expired_routes(&route_table, now);
     purge_expired_publisher_routes(&publisher_route_table, now);
     purge_expired_service_routes(&service_route_table, now);
+    purge_expired_action_routes(&action_route_table, now);
     purge_expired_topic_qos(&topic_qos_table, now);
+    const bool scheduler_batch_ready =
+      config.scheduler_expected_frames > 0 ?
+      queued_data_frames.size() >= static_cast<size_t>(config.scheduler_expected_frames) :
+      received >= config.expected_frames;
     if (!queued_data_frames.empty() &&
-      (received >= config.expected_frames ||
+      (scheduler_batch_ready ||
       config.scheduler_window_ms <= 0 ||
       now - queued_data_frames.front().enqueued_at >= std::chrono::milliseconds(config.scheduler_window_ms)))
     {
@@ -944,6 +1429,10 @@ int main(int argc, char ** argv)
         ++graph_services;
       } else if (graph_advertisement->entity_kind == "client") {
         ++graph_clients;
+      } else if (graph_advertisement->entity_kind == "action_server") {
+        ++graph_action_servers;
+      } else if (graph_advertisement->entity_kind == "action_client") {
+        ++graph_action_clients;
       }
       if (!graph_advertisement->topic.empty() &&
         std::find(graph_topics.begin(), graph_topics.end(), graph_advertisement->topic) == graph_topics.end())
@@ -1016,11 +1505,50 @@ int main(int argc, char ** argv)
           }
         }
       }
+      const bool is_action_graph =
+        graph_advertisement->entity_kind == "action_server" ||
+        graph_advertisement->entity_kind == "action_client";
+      if (is_action_graph) {
+        if (graph_advertisement->action == "remove") {
+          action_route_table.erase(
+            std::remove_if(
+              action_route_table.begin(),
+              action_route_table.end(),
+              [&](const ActionRoute & route) {
+                return route.endpoint_id == graph_advertisement->endpoint_id;
+              }),
+            action_route_table.end());
+        } else {
+          auto already_known = std::find_if(
+            action_route_table.begin(),
+            action_route_table.end(),
+            [&](const ActionRoute & route) {
+              return route.endpoint_id == graph_advertisement->endpoint_id &&
+                     endpoints_match(route.address, source_address);
+            });
+          if (already_known == action_route_table.end()) {
+            action_route_table.push_back(
+              ActionRoute{
+                graph_advertisement->entity_kind,
+                graph_advertisement->topic,
+                graph_advertisement->endpoint_id,
+                source_address,
+                now + lease_duration(graph_advertisement->lease_ms)});
+          } else {
+            already_known->role = graph_advertisement->entity_kind;
+            already_known->action_name = graph_advertisement->topic;
+            already_known->expires_at = now + lease_duration(graph_advertisement->lease_ms);
+          }
+        }
+      }
       std::vector<sockaddr_in> graph_targets = peer_addresses;
       for (const sockaddr_in & peer : graph_peer_addresses) {
         append_unique_peer(&graph_targets, peer);
       }
       for (const ServiceRoute & route : service_route_table) {
+        append_unique_peer(&graph_targets, route.address);
+      }
+      for (const ActionRoute & route : action_route_table) {
         append_unique_peer(&graph_targets, route.address);
       }
       for (const sockaddr_in & peer : graph_targets) {
@@ -1074,6 +1602,47 @@ int main(int argc, char ** argv)
           sizeof(peer));
         if (sent >= 0 && static_cast<size_t>(sent) == encoded_frame.size()) {
           ++service_forwarded;
+        }
+      }
+      continue;
+    }
+
+    const auto action_frame = rmw_fleetqox_cpp::decode_action_frame(encoded_frame);
+    if (action_frame) {
+      ++action_frames;
+      if (std::find(action_names.begin(), action_names.end(), action_frame->action_name) ==
+        action_names.end())
+      {
+        action_names.push_back(action_frame->action_name);
+      }
+      std::vector<sockaddr_in> targets = peer_addresses;
+      for (const ActionRoute & route : action_route_table) {
+        if (action_role_targets_server(action_frame->role) &&
+          route.role == "action_server" &&
+          route.action_name == action_frame->action_name)
+        {
+          append_unique_peer(&targets, route.address);
+        } else if (action_role_targets_client(action_frame->role) &&
+          route.role == "action_client" &&
+          (route.endpoint_id == action_frame->endpoint_id ||
+          route.action_name == action_frame->action_name))
+        {
+          append_unique_peer(&targets, route.address);
+        }
+      }
+      for (const sockaddr_in & peer : targets) {
+        if (endpoints_match(peer, source_address)) {
+          continue;
+        }
+        const auto sent = ::sendto(
+          fd,
+          encoded_frame.data(),
+          encoded_frame.size(),
+          0,
+          reinterpret_cast<const sockaddr *>(&peer),
+          sizeof(peer));
+        if (sent >= 0 && static_cast<size_t>(sent) == encoded_frame.size()) {
+          ++action_forwarded;
         }
       }
       continue;
@@ -1136,16 +1705,53 @@ int main(int argc, char ** argv)
       append_router_path_telemetry(config, *decoded, encoded_frame.size(), false);
       continue;
     }
+    const bool test_repair = was_test_dropped(*decoded, dropped_source_sequence_keys);
     if (config.forward_delay_ms > 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(config.forward_delay_ms));
     }
     if (frame_exceeds_learned_lifespan(topic_qos_table, *decoded)) {
       ++qos_dropped;
+      increment_topic_count(&qos_dropped_topic_counts, decoded->topic);
       append_router_path_telemetry(config, *decoded, encoded_frame.size(), false);
       continue;
     }
 
-    if (config.scheduler_window_ms > 0) {
+    const bool scheduler_topic_matches =
+      config.scheduler_topic_prefix.empty() ||
+      decoded->topic.rfind(config.scheduler_topic_prefix, 0) == 0;
+    if (config.scheduler_window_ms > 0 && scheduler_topic_matches) {
+      const std::int64_t deadline_ns = learned_deadline_ns(topic_qos_table, decoded->topic);
+      const bool urgent_deadline =
+        config.scheduler_urgent_deadline_ms > 0 &&
+        deadline_ns > 0 &&
+        deadline_ns <= static_cast<std::int64_t>(config.scheduler_urgent_deadline_ms) * 1000000ll;
+      if (urgent_deadline) {
+        ++scheduler_urgent_frames;
+        forward_scheduled_data_frame(
+          QueuedDataFrame{
+            encoded_frame,
+            *decoded,
+            source_address,
+            std::chrono::steady_clock::now(),
+            absolute_deadline_ns_for_frame(topic_qos_table, *decoded),
+            next_queue_order++,
+            test_repair});
+        continue;
+      }
+      if (!scheduler_admits_holdback(config, encoded_frame.size(), &scheduler_admission_state)) {
+        ++scheduler_admission_bypassed_frames;
+        forward_scheduled_data_frame(
+          QueuedDataFrame{
+            encoded_frame,
+            *decoded,
+            source_address,
+            std::chrono::steady_clock::now(),
+            absolute_deadline_ns_for_frame(topic_qos_table, *decoded),
+            next_queue_order++,
+            test_repair});
+        continue;
+      }
+      ++scheduler_queued_frames;
       queued_data_frames.push_back(
         QueuedDataFrame{
           encoded_frame,
@@ -1153,7 +1759,8 @@ int main(int argc, char ** argv)
           source_address,
           std::chrono::steady_clock::now(),
           absolute_deadline_ns_for_frame(topic_qos_table, *decoded),
-          next_queue_order++});
+          next_queue_order++,
+          test_repair});
       continue;
     }
     const int forwarded_now = forward_data_frame(
@@ -1179,12 +1786,14 @@ int main(int argc, char ** argv)
     config.expected_frames == 0 ? 0 : std::min(received, config.expected_frames);
   const bool ok = received >= config.expected_frames &&
                   service_frames >= config.expected_service_frames &&
+                  action_frames >= config.expected_action_frames &&
                   ack_nack_frames >= config.expected_ack_nack_frames &&
                   qos_dropped >= config.expected_qos_drops &&
                   invalid == 0 &&
                   (config.expected_frames == 0 ||
                   forwarded + qos_dropped + test_dropped >= expected_accounted_frames) &&
                   service_forwarded >= config.expected_service_frames &&
+                  action_forwarded >= config.expected_action_frames &&
                   ack_nack_forwarded >= expected_ack_nack_forwarded &&
                   route_advertisements >= config.expected_route_advertisements &&
                   graph_advertisements >= config.expected_graph_advertisements &&
@@ -1193,7 +1802,7 @@ int main(int argc, char ** argv)
                     forwarded_topic_source_sequences) &&
                   (!peer_addresses.empty() || !graph_peer_addresses.empty() ||
                   !route_table.empty() || !publisher_route_table.empty() ||
-                  !service_route_table.empty());
+                  !service_route_table.empty() || !action_route_table.empty());
   print_router_json(
     ok ? "ok" : "failed",
     config,
@@ -1218,6 +1827,35 @@ int main(int argc, char ** argv)
     graph_topics,
     service_names,
     topics,
-    forwarded_topic_source_sequences);
+    forwarded_topic_source_sequences,
+    action_frames,
+    action_forwarded,
+    graph_action_servers,
+    graph_action_clients,
+    action_names,
+    qos_dropped_topic_counts,
+    scheduler_queued_frames,
+    scheduler_urgent_frames,
+    scheduler_paced_frames,
+    scheduler_drain_pacing_ms,
+    scheduler_forwarded_frames,
+    scheduler_admission_bypassed_frames,
+    scheduler_deadline_misses,
+    scheduler_fresh_deadline_misses,
+    scheduler_repair_frames,
+    scheduler_repair_deadline_misses,
+    scheduler_forwarded_frames > 0 ?
+    static_cast<double>(scheduler_queue_wait_ns_sum) /
+    static_cast<double>(scheduler_forwarded_frames) / 1000000.0 : 0.0,
+    static_cast<double>(scheduler_queue_wait_ns_max) / 1000000.0,
+    scheduler_admission_state.service_ratio_max,
+    scheduler_admission_state.service_ratio_ewma,
+    scheduler_admission_state.samples,
+    scheduler_admission_state.switches,
+    scheduler_admission_state.holdback_decisions,
+    scheduler_admission_state.bypass_decisions,
+    scheduler_admission_state.holdback_enabled,
+    robot_scheduler_stats,
+    scheduler_deadline_miss_frames);
   return ok ? 0 : 1;
 }

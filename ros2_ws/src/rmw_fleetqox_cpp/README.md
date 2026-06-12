@@ -35,9 +35,12 @@ smaller:
   `std_msgs/msg/String` and `ros2 topic echo --once` receives it through
   `rmw_fleetqox_cpp`;
 - pass a ROS CLI message matrix covering `std_msgs/msg/String`,
-  `geometry_msgs/msg/Twist`, `sensor_msgs/msg/LaserScan`, and
-  `nav_msgs/msg/Odometry`, exercising nested messages, fixed arrays, and
-  dynamic sequences through the introspection-C serializer;
+  `builtin_interfaces/msg/Time`, `builtin_interfaces/msg/Duration`,
+  `geometry_msgs/msg/Twist`, `geometry_msgs/msg/PoseStamped`,
+  `sensor_msgs/msg/LaserScan`, `nav_msgs/msg/Odometry`, and
+  `nav_msgs/msg/Path`, exercising signed/unsigned time fields, nested messages,
+  fixed arrays, dynamic primitive sequences, and dynamic sequences of nested
+  messages through the introspection-C serializer;
 - export explicit ABI stubs for optional or not-yet-supported RMW surfaces
   such as loaned messages, events, dynamic messages, network-flow endpoints,
   and callbacks, so `rcl` loader resolution is clean
@@ -51,6 +54,35 @@ smaller:
 - carry service request/response lifespan metadata in
   `fleetrmw.service_frame.v1` and drop stale RPC frames before service/client
   delivery;
+- pass a deterministic service QoS probe where a stale request and a stale
+  response are counted as expired and are not delivered by `rmw_take_request`
+  or `rmw_take_response`;
+- pass a service error probe where empty response queues report `taken=false`,
+  malformed response payloads return a controlled error without delivery, and
+  invalid service frames are rejected;
+- pass a ROS CLI service timeout probe where `ros2 service call` sends a real
+  request through FleetRMW, the service intentionally delays the response, and
+  the client times out without receiving a fabricated response;
+- define a dependency-light `fleetrmw.action_frame.v1` contract for goal,
+  feedback, status, result, and cancel role payloads, and pass an action-frame
+  probe that round-trips those roles with lifespan checks before real
+  `rcl_action` APIs are wired in;
+- route `fleetrmw.action_frame.v1` traffic through `fleetrmw_udp_router_probe`
+  after learning `action_server` and `action_client` graph advertisements,
+  with `goal/cancel` delivered to the server and `feedback/status/result`
+  delivered to the client;
+- pass a same-process real `rclpy.action` smoke where
+  `tf2_msgs/action/LookupTransform` server discovery, SendGoal, execute, and
+  GetResult complete over `rmw_fleetqox_cpp`;
+- pass a router-mediated real `rclpy.action` operation smoke where the action
+  client and server run in separate Docker containers, peer only with
+  `fleetrmw_udp_router_probe`, and complete success and cancel goals with
+  feedback, status, `SUCCEEDED`/`CANCELED` results, and
+  `ActionClient.server_is_ready()` true before send and after result;
+- pass a router-mediated real-action lifespan matrix where fresh
+  feedback/status is delivered and expired observation traffic is dropped by
+  topic without breaking goal/cancel/result completion, then verify scoped
+  deadline ordering places feedback before status in an action burst;
 - support env-configured inter-process UDP peers with
   `FLEETQOX_RMW_BIND=host:port` and `FLEETQOX_RMW_PEERS=host:port,...`;
 - support path-labeled inter-process peers with
@@ -88,6 +120,11 @@ smaller:
 - expose an opt-in router scheduler window that snapshots learned publisher
   deadline QoS and forwards earlier-deadline data frames before later-deadline
   frames within the same burst;
+- preserve fleet identity through `FLEETQOX_RMW_ROBOT_ID` and report
+  per-robot scheduler forwarding, deadline misses, queue wait, and
+  deadline-success Jain fairness;
+- expose an online deadline-gated scheduler path where urgent deadline flows
+  bypass the holdback queue and non-urgent flows are paced during drain;
 - advertise publisher/subscription graph changes with
   `fleetrmw.graph_advertisement.v1`, forward them to graph-only router peers,
   and apply remote graph advertisements back into RMW graph query state;
@@ -125,7 +162,7 @@ Expected smoke behavior:
 
 Current verification:
 
-- local unit suite: `python3 -m unittest discover tests` -> `413` tests pass;
+- local unit suite: `python3 -m unittest discover tests` -> `414` tests pass;
 - Docker ROS Jazzy build:
   `colcon build --base-paths ros2_ws/src --packages-select fleetrmw_interfaces rmw_fleetqox_cpp`;
 - Docker artifacts:
@@ -137,10 +174,44 @@ Current verification:
   `results_rmw_socket/docker_rmw_serialized_pubsub_probe_summary.json`;
 - QoS ABI artifact:
   `results_rmw_socket/docker_rmw_qos_probe_summary.json`;
+- service QoS ABI artifact:
+  `results_rmw_socket/docker_rmw_service_qos_probe_summary.json`;
+- service error ABI artifact:
+  `results_rmw_socket/docker_rmw_service_error_probe_summary.json`;
+- ROS CLI service-timeout artifact:
+  `results_rmw_socket/docker_ros2_service_timeout_probe_summary.json`;
+- action-frame contract artifact:
+  `results_rmw_socket/docker_rmw_action_frame_probe_summary.json`;
+- router-mediated action-frame artifact:
+  `results_rmw_socket/docker_rmw_router_action_frame_probe_summary.json`;
+- real `rclpy.action` smoke artifact:
+  `results_rmw_socket/docker_rmw_rclpy_action_probe_summary.json`;
+- router-mediated real `rclpy.action` smoke artifact:
+  `results_rmw_socket/docker_rmw_router_rclpy_action_probe_summary.json`;
+- router-mediated real `rclpy.action` QoS artifact:
+  `results_rmw_socket/docker_rmw_router_rclpy_action_qos_probe_summary.json`;
 - ACK/NACK reliability ABI artifact:
   `results_rmw_socket/docker_rmw_reliability_probe_summary.json`;
 - router-mediated ACK/NACK reliability artifact:
   `results_rmw_socket/docker_router_reliability_probe_summary.json`;
+- router-scheduled ACK/NACK reliability artifact:
+  `results_rmw_socket/docker_router_scheduled_reliability_probe_summary.json`;
+- repeated-loss router-scheduled ACK/NACK reliability artifact:
+  `results_rmw_socket/docker_router_scheduled_reliability_repeated_loss_matrix_summary.json`;
+- concurrent multi-robot router-scheduled ACK/NACK reliability artifact:
+  `results_rmw_socket/docker_router_multi_robot_scheduled_reliability_probe_summary.json`;
+- mixed real-action/control/state reliability artifact:
+  `results_rmw_socket/docker_router_mixed_action_control_state_probe_summary.json`;
+- proactive hard-deadline path-diversity artifact:
+  `results_rmw_socket/docker_router_proactive_deadline_diversity_probe_summary.json`;
+- repeated proactive hard-deadline diversity artifact:
+  `results_rmw_socket/docker_router_proactive_deadline_diversity_repeated_loss_matrix_summary.json`;
+- concurrent proactive hard-deadline diversity artifact:
+  `results_rmw_socket/docker_router_multi_robot_proactive_deadline_diversity_probe_summary.json`;
+- repeated concurrent proactive diversity artifact:
+  `results_rmw_socket/docker_router_multi_robot_proactive_deadline_diversity_repeated_loss_matrix_summary.json`;
+- fleet redundancy-budget/failure-domain allocator artifact:
+  `results_rmw_socket/fleet_optimizer_redundancy_budget_probe_summary.json`;
 - multi-hop router ACK/NACK reliability artifact:
   `results_rmw_socket/docker_router_multihop_reliability_probe_summary.json`;
 - dual-router path-diversity reliability artifact:
@@ -189,6 +260,14 @@ Current verification:
   `results_rmw_socket/docker_router_qos_priority_probe_summary.json`;
 - router QoS priority matrix artifact:
   `results_rmw_socket/docker_router_qos_priority_matrix_summary.json`;
+- multi-robot router QoS scheduler artifact:
+  `results_rmw_socket/docker_router_multi_robot_qos_matrix_summary.json`;
+- Wi-Fi/WAN/roaming adaptive multi-robot QoS artifact:
+  `results_rmw_socket/docker_router_multi_robot_qos_netem_matrix_summary.json`;
+- live router adaptive multi-robot QoS artifact:
+  `results_rmw_socket/docker_router_multi_robot_qos_live_adaptive_matrix_summary.json`;
+- live router adaptive repeated-loss QoS artifact:
+  `results_rmw_socket/docker_router_multi_robot_qos_live_adaptive_repeated_loss_matrix_summary.json`;
 - first ROS CLI pub/echo artifact:
   `results_rmw_socket/docker_ros2_pub_echo_probe_summary.json`;
 - ROS CLI multi-message matrix artifact:
@@ -205,9 +284,16 @@ Current verification:
   `results_rmw_socket/docker_rmw_multicontainer_router_probe_summary.json`.
 
 The next step is expanding from the current introspection-C CLI coverage,
-service request/response path, measured queue QoS subset, router QoS scheduler,
-and first ACK/NACK retransmission loops through one-hop and multi-hop router
-paths plus dual-router path diversity toward action transport, C++ type-support
-backed serialization, richer service timeout/error semantics, and deeper
+service request/response path, measured queue and service QoS/error subsets,
+minimal action-frame contract, router-mediated action-frame transport, first
+same-process real `rclpy.action` smoke, router-mediated real `rclpy.action`
+operation smoke, router QoS scheduler, adaptive multi-robot QoS netem evidence,
+live multi-epoch router adaptive admission, first repeated-loss scheduler
+smoke, repeated-loss scheduled ACK/NACK repair, and first ACK/NACK
+retransmission loops
+through one-hop and multi-hop router paths plus dual-router path diversity
+toward concurrent ACK/NACK-repaired mixed action/control/state scheduling,
+C++ type-support-backed serialization,
+broader caller-visible service cancellation/error semantics, and deeper
 telemetry-scored network-aware QoS/QoE scheduling beyond the current
 NACK-scored path memory and deadline-triggered redundancy modes.

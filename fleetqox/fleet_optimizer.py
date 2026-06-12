@@ -32,6 +32,7 @@ class PathTelemetry:
     nack_rate: float = 0.0
     deadline_miss_ratio: float = 0.0
     bandwidth_utilization: float = 0.0
+    failure_domain: str = ""
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,8 @@ class FleetOptimizerConfig:
     min_critical_admission_score: float = 7.5
     min_best_effort_admission_score: float = 2.0
     max_redundant_paths: int = 2
+    redundancy_budget_bytes_per_tick: int | None = None
+    require_failure_domain_diversity: bool = True
     weights: OptimizerWeights = field(default_factory=OptimizerWeights)
 
 
@@ -132,6 +135,11 @@ class FleetQoEPathOptimizer:
             raise ValueError("at least one path is required")
         if self.config.capacity_bytes_per_tick < 0:
             raise ValueError("capacity_bytes_per_tick must be non-negative")
+        if (
+            self.config.redundancy_budget_bytes_per_tick is not None
+            and self.config.redundancy_budget_bytes_per_tick < 0
+        ):
+            raise ValueError("redundancy_budget_bytes_per_tick must be non-negative")
         robot_map = {state.robot_id: state for state in robot_states}
         scored: list[tuple[float, FleetFlowDemand, tuple[PathTelemetry, ...], float, float]] = []
         decisions: list[FleetPathDecision] = []
@@ -161,6 +169,7 @@ class FleetQoEPathOptimizer:
             scored.append((utility / max(1, flow.payload_bytes), flow, ranked_paths, best_score, fairness_debt))
 
         remaining = self.config.capacity_bytes_per_tick
+        redundancy_remaining = self.config.redundancy_budget_bytes_per_tick
         for _, flow, ranked_paths, best_score, fairness_debt in sorted(
             scored,
             key=lambda item: (item[0], self.utility_score(item[1], item[4])),
@@ -168,6 +177,16 @@ class FleetQoEPathOptimizer:
         ):
             utility = self.utility_score(flow, fairness_debt)
             mode, selected_paths, reason = self._choose_mode(flow, ranked_paths, best_score)
+            redundancy_extra_bytes = flow.payload_bytes * max(0, len(selected_paths) - 1)
+            if (
+                mode is TransportMode.REDUNDANT
+                and redundancy_remaining is not None
+                and redundancy_extra_bytes > redundancy_remaining
+            ):
+                mode = TransportMode.UNICAST
+                selected_paths = (ranked_paths[0].path_id,)
+                redundancy_extra_bytes = 0
+                reason = "redundancy budget exhausted: best scored path"
             bytes_needed = flow.payload_bytes * max(1, len(selected_paths))
             if utility < self._admission_floor(flow):
                 decisions.append(
@@ -187,6 +206,8 @@ class FleetQoEPathOptimizer:
                 continue
             if bytes_needed <= remaining:
                 remaining -= bytes_needed
+                if mode is TransportMode.REDUNDANT and redundancy_remaining is not None:
+                    redundancy_remaining -= redundancy_extra_bytes
                 decisions.append(
                     FleetPathDecision(
                         flow.flow_id,
@@ -199,6 +220,23 @@ class FleetQoEPathOptimizer:
                         best_score,
                         fairness_debt,
                         reason,
+                    )
+                )
+                continue
+            if mode is TransportMode.REDUNDANT and flow.payload_bytes <= remaining:
+                remaining -= flow.payload_bytes
+                decisions.append(
+                    FleetPathDecision(
+                        flow.flow_id,
+                        flow.robot_id,
+                        "send",
+                        TransportMode.UNICAST,
+                        (ranked_paths[0].path_id,),
+                        flow.payload_bytes,
+                        utility,
+                        best_score,
+                        fairness_debt,
+                        "capacity pressure: redundancy downgraded to unicast",
                     )
                 )
                 continue
@@ -266,7 +304,8 @@ class FleetQoEPathOptimizer:
         best_score: float,
     ) -> tuple[TransportMode, tuple[str, ...], str]:
         best = ranked_paths[0]
-        second = ranked_paths[1] if len(ranked_paths) > 1 else None
+        redundant_paths = self._failure_domain_diverse_paths(ranked_paths)
+        second = redundant_paths[1] if len(redundant_paths) > 1 else None
         urgent = flow.deadline_ms <= self.config.redundant_deadline_ms
         qoe_sensitive = flow.qoe_weight >= 0.65
         critical = flow.flow_class in {
@@ -279,9 +318,36 @@ class FleetQoEPathOptimizer:
             and (urgent or qoe_sensitive or critical)
             and best_score >= self.config.redundancy_risk_threshold
         ):
-            selected = tuple(path.path_id for path in ranked_paths[: self.config.max_redundant_paths])
-            return TransportMode.REDUNDANT, selected, "high-risk urgent/QoE flow: redundant paths"
+            selected = tuple(
+                path.path_id
+                for path in redundant_paths[: self.config.max_redundant_paths]
+            )
+            return (
+                TransportMode.REDUNDANT,
+                selected,
+                "high-risk urgent/QoE flow: failure-domain-diverse paths",
+            )
+        if len(ranked_paths) > 1 and second is None:
+            return TransportMode.UNICAST, (best.path_id,), "correlated paths: best scored path"
         return TransportMode.UNICAST, (best.path_id,), "best scored path"
+
+    def _failure_domain_diverse_paths(
+        self,
+        ranked_paths: Sequence[PathTelemetry],
+    ) -> tuple[PathTelemetry, ...]:
+        if not ranked_paths:
+            return ()
+        if not self.config.require_failure_domain_diversity:
+            return tuple(ranked_paths)
+        selected = [ranked_paths[0]]
+        domains = {_failure_domain(ranked_paths[0])}
+        for path in ranked_paths[1:]:
+            domain = _failure_domain(path)
+            if domain in domains:
+                continue
+            selected.append(path)
+            domains.add(domain)
+        return tuple(selected)
 
     def _fairness_debt(self, state: RobotQoEState | None) -> float:
         if state is None:
@@ -476,3 +542,7 @@ def _class_value(flow_class: FlowClass) -> float:
 
 def _clip01(value: float) -> float:
     return min(1.0, max(0.0, value))
+
+
+def _failure_domain(path: PathTelemetry) -> str:
+    return path.failure_domain or path.path_id

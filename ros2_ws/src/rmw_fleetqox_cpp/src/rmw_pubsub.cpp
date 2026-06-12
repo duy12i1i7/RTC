@@ -62,6 +62,8 @@ extern "C" void rmw_fleetqox_cpp_graph_apply_remote_advertisement_with_info(
   size_t endpoint_gid_size,
   const rmw_qos_profile_t * qos,
   std::uint64_t lease_ms);
+extern "C" size_t rmw_fleetqox_cpp_graph_publisher_count(const char * topic_name);
+extern "C" size_t rmw_fleetqox_cpp_graph_subscription_count(const char * topic_name);
 extern "C" bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t size);
 
 namespace
@@ -120,6 +122,7 @@ std::vector<rmw_subscription_t *> g_subscription_handles;
 std::unordered_map<std::string, std::string> g_retransmit_ledger;
 std::atomic<std::uint64_t> g_next_publisher_id{1};
 std::atomic<std::uint64_t> g_next_subscription_id{1};
+std::atomic<bool> g_pubsub_graph_renewal_started{false};
 
 std::mutex g_last_take_mutex;
 std::string g_last_take_topic;
@@ -1301,6 +1304,16 @@ std::int64_t monotonic_timestamp_ns()
   return std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 }
 
+const std::string & local_robot_id()
+{
+  static const std::string robot_id = []() {
+      const char * configured = std::getenv("FLEETQOX_RMW_ROBOT_ID");
+      return configured != nullptr && configured[0] != '\0' ?
+             std::string(configured) : std::string("local");
+    }();
+  return robot_id;
+}
+
 std::int64_t qos_duration_ns(const rmw_time_t & duration)
 {
   if (duration.sec == 0 && duration.nsec == 0) {
@@ -1785,7 +1798,7 @@ rmw_ret_t publish_payload(FleetQoxPublisherData * data, const std::vector<std::u
   }
   const auto source_sequence = data->next_source_sequence++;
   const rmw_fleetqox_cpp::DataFrame frame{
-    "local",
+    local_robot_id(),
     data->topic_name,
     data->publisher_id,
     source_sequence,
@@ -1944,6 +1957,73 @@ size_t count_subscriptions_locked(const std::string & topic_name)
     }));
 }
 
+void send_publisher_graph_advertisement(const FleetQoxPublisherData * data, const char * action)
+{
+  if (data == nullptr || action == nullptr) {
+    return;
+  }
+  const rmw_ret_t graph_advertisement_ret =
+    socket_transport().send_graph_advertisement(
+      action,
+      "publisher",
+      data->node_name,
+      data->node_namespace,
+      data->topic_name,
+      data->type_name,
+      data->endpoint_id,
+      data->endpoint_gid,
+      data->qos);
+  (void)graph_advertisement_ret;
+}
+
+void send_subscription_graph_advertisement(const FleetQoxSubscriptionData * data, const char * action)
+{
+  if (data == nullptr || action == nullptr) {
+    return;
+  }
+  const rmw_ret_t graph_advertisement_ret =
+    socket_transport().send_graph_advertisement(
+      action,
+      "subscription",
+      data->node_name,
+      data->node_namespace,
+      data->topic_name,
+      data->type_name,
+      data->endpoint_id,
+      data->endpoint_gid,
+      data->qos);
+  (void)graph_advertisement_ret;
+  if (std::strcmp(action, "add") == 0) {
+    const rmw_ret_t advertisement_ret =
+      socket_transport().send_subscription_advertisement(data->topic_name, data->type_name);
+    (void)advertisement_ret;
+  }
+}
+
+void pubsub_graph_renewal_loop()
+{
+  constexpr auto kRenewInterval = std::chrono::milliseconds(500);
+  while (true) {
+    std::this_thread::sleep_for(kRenewInterval);
+    std::lock_guard<std::mutex> lock(g_bus_mutex);
+    for (const FleetQoxPublisherData * data : g_publishers) {
+      send_publisher_graph_advertisement(data, "add");
+    }
+    for (const FleetQoxSubscriptionData * data : g_subscriptions) {
+      send_subscription_graph_advertisement(data, "add");
+    }
+  }
+}
+
+void ensure_pubsub_graph_renewal_thread()
+{
+  bool expected = false;
+  if (!g_pubsub_graph_renewal_started.compare_exchange_strong(expected, true)) {
+    return;
+  }
+  std::thread(pubsub_graph_renewal_loop).detach();
+}
+
 void maybe_renew_publisher_graph(FleetQoxPublisherData * data)
 {
   constexpr std::int64_t kGraphRenewIntervalNs = 500000000;
@@ -1955,18 +2035,7 @@ void maybe_renew_publisher_graph(FleetQoxPublisherData * data)
     return;
   }
   data->last_graph_advertisement_ns = now;
-  const rmw_ret_t graph_advertisement_ret =
-    socket_transport().send_graph_advertisement(
-      "add",
-      "publisher",
-      data->node_name,
-      data->node_namespace,
-      data->topic_name,
-      data->type_name,
-      data->endpoint_id,
-      data->endpoint_gid,
-      data->qos);
-  (void)graph_advertisement_ret;
+  send_publisher_graph_advertisement(data, "add");
 }
 
 void enqueue_received_frame(const std::string & encoded_frame)
@@ -2446,18 +2515,8 @@ rmw_publisher_t * rmw_create_publisher(
     data->endpoint_gid.data(),
     data->endpoint_gid.size(),
     &data->qos);
-  const rmw_ret_t graph_advertisement_ret =
-    socket_transport().send_graph_advertisement(
-      "add",
-      "publisher",
-      data->node_name,
-      data->node_namespace,
-      data->topic_name,
-      data->type_name,
-      data->endpoint_id,
-      data->endpoint_gid,
-      data->qos);
-  (void)graph_advertisement_ret;
+  send_publisher_graph_advertisement(data, "add");
+  ensure_pubsub_graph_renewal_thread();
   return publisher;
 }
 
@@ -2474,18 +2533,7 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t * node, rmw_publisher_t * publisher)
   FleetQoxPublisherData * data = publisher_data(publisher);
   if (data != nullptr) {
     rmw_fleetqox_cpp_graph_unregister_publisher_endpoint(data->endpoint_id.c_str());
-    const rmw_ret_t graph_advertisement_ret =
-      socket_transport().send_graph_advertisement(
-        "remove",
-        "publisher",
-        data->node_name,
-        data->node_namespace,
-        data->topic_name,
-        data->type_name,
-        data->endpoint_id,
-        data->endpoint_gid,
-        data->qos);
-    (void)graph_advertisement_ret;
+    send_publisher_graph_advertisement(data, "remove");
   }
   {
     std::lock_guard<std::mutex> lock(g_bus_mutex);
@@ -2586,21 +2634,8 @@ rmw_subscription_t * rmw_create_subscription(
     data->endpoint_gid.data(),
     data->endpoint_gid.size(),
     &data->qos);
-  const rmw_ret_t graph_advertisement_ret =
-    socket_transport().send_graph_advertisement(
-      "add",
-      "subscription",
-      data->node_name,
-      data->node_namespace,
-      data->topic_name,
-      data->type_name,
-      data->endpoint_id,
-      data->endpoint_gid,
-      data->qos);
-  (void)graph_advertisement_ret;
-  const rmw_ret_t advertisement_ret =
-    socket_transport().send_subscription_advertisement(data->topic_name, data->type_name);
-  (void)advertisement_ret;
+  send_subscription_graph_advertisement(data, "add");
+  ensure_pubsub_graph_renewal_thread();
   return subscription;
 }
 
@@ -2617,18 +2652,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t * node, rmw_subscription_t * subsc
   FleetQoxSubscriptionData * data = subscription_data(subscription);
   if (data != nullptr) {
     rmw_fleetqox_cpp_graph_unregister_subscription_endpoint(data->endpoint_id.c_str());
-    const rmw_ret_t graph_advertisement_ret =
-      socket_transport().send_graph_advertisement(
-        "remove",
-        "subscription",
-        data->node_name,
-        data->node_namespace,
-        data->topic_name,
-        data->type_name,
-        data->endpoint_id,
-        data->endpoint_gid,
-        data->qos);
-    (void)graph_advertisement_ret;
+    send_subscription_graph_advertisement(data, "remove");
   }
   {
     std::lock_guard<std::mutex> lock(g_bus_mutex);
@@ -2879,8 +2903,7 @@ rmw_ret_t rmw_publisher_count_matched_subscriptions(
     RMW_SET_ERROR_MSG("publisher data is null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  std::lock_guard<std::mutex> lock(g_bus_mutex);
-  *subscription_count = count_subscriptions_locked(data->topic_name);
+  *subscription_count = rmw_fleetqox_cpp_graph_subscription_count(data->topic_name.c_str());
   return RMW_RET_OK;
 }
 
@@ -2901,8 +2924,7 @@ rmw_ret_t rmw_subscription_count_matched_publishers(
     RMW_SET_ERROR_MSG("subscription data is null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  std::lock_guard<std::mutex> lock(g_bus_mutex);
-  *publisher_count = count_publishers_locked(data->topic_name);
+  *publisher_count = rmw_fleetqox_cpp_graph_publisher_count(data->topic_name.c_str());
   return RMW_RET_OK;
 }
 

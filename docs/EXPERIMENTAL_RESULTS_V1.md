@@ -103,16 +103,198 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker ROS RMW type-erased typed pub/sub probe | `results_rmw_socket/docker_rmw_typed_pubsub_probe_summary.json` |
 | Docker ROS RMW std_msgs/String typed probe | `results_rmw_socket/docker_rmw_std_msgs_string_probe_summary.json` |
 | Docker ROS RMW geometry_msgs/Twist typed probe | `results_rmw_socket/docker_rmw_geometry_twist_probe_summary.json` |
+| Docker ROS RMW service QoS stale-frame probe | `results_rmw_socket/docker_rmw_service_qos_probe_summary.json` |
+| Docker ROS RMW service error probe | `results_rmw_socket/docker_rmw_service_error_probe_summary.json` |
+| Docker ROS CLI service timeout probe | `results_rmw_socket/docker_ros2_service_timeout_probe_summary.json` |
+| Docker ROS CLI router-mediated service timeout probe | `results_rmw_socket/docker_router_ros2_service_timeout_probe_summary.json` |
+| Docker ROS RMW action-frame contract probe | `results_rmw_socket/docker_rmw_action_frame_probe_summary.json` |
+| Docker ROS RMW router-mediated action-frame probe | `results_rmw_socket/docker_rmw_router_action_frame_probe_summary.json` |
+| Docker ROS RMW rclpy.action smoke probe | `results_rmw_socket/docker_rmw_rclpy_action_probe_summary.json` |
+| Docker ROS RMW router-mediated rclpy.action smoke probe | `results_rmw_socket/docker_rmw_router_rclpy_action_probe_summary.json` |
+| Docker ROS RMW router-mediated rclpy.action QoS probe | `results_rmw_socket/docker_rmw_router_rclpy_action_qos_probe_summary.json` |
 | Docker ROS RMW wait/guard probe | `results_rmw_socket/docker_rmw_wait_probe_summary.json` |
 | Docker ROS RMW graph probe | `results_rmw_socket/docker_rmw_graph_probe_summary.json` |
 | Docker ROS RMW remote graph lease probe | `results_rmw_socket/docker_rmw_remote_graph_lease_probe_summary.json` |
 | Docker ROS RMW inter-process serialized pub/sub probe | `results_rmw_socket/docker_rmw_interprocess_pubsub_probe_summary.json` |
 | Docker ROS RMW multi-container router probe | `results_rmw_socket/docker_rmw_multicontainer_router_probe_summary.json` |
+| Docker ROS RMW multi-robot QoS scheduler | `results_rmw_socket/docker_router_multi_robot_qos_matrix_summary.json` |
+| Docker ROS RMW adaptive multi-robot QoS netem | `results_rmw_socket/docker_router_multi_robot_qos_netem_matrix_summary.json` |
+| Docker ROS RMW live adaptive multi-robot QoS netem | `results_rmw_socket/docker_router_multi_robot_qos_live_adaptive_matrix_summary.json` |
+| Docker ROS RMW live adaptive repeated-loss QoS netem | `results_rmw_socket/docker_router_multi_robot_qos_live_adaptive_repeated_loss_matrix_summary.json` |
+| Docker ROS RMW scheduled ACK/NACK repair | `results_rmw_socket/docker_router_scheduled_reliability_probe_summary.json` |
+| Docker ROS RMW repeated-loss scheduled ACK/NACK repair | `results_rmw_socket/docker_router_scheduled_reliability_repeated_loss_matrix_summary.json` |
+| Docker ROS RMW concurrent multi-robot scheduled ACK/NACK repair | `results_rmw_socket/docker_router_multi_robot_scheduled_reliability_probe_summary.json` |
+| Docker ROS RMW mixed action/control/state repair | `results_rmw_socket/docker_router_mixed_action_control_state_probe_summary.json` |
+| Docker ROS RMW proactive deadline diversity | `results_rmw_socket/docker_router_proactive_deadline_diversity_probe_summary.json` |
+| Docker ROS RMW repeated proactive deadline diversity | `results_rmw_socket/docker_router_proactive_deadline_diversity_repeated_loss_matrix_summary.json` |
+| Docker ROS RMW concurrent proactive deadline diversity | `results_rmw_socket/docker_router_multi_robot_proactive_deadline_diversity_probe_summary.json` |
+| Docker ROS RMW repeated concurrent proactive deadline diversity | `results_rmw_socket/docker_router_multi_robot_proactive_deadline_diversity_repeated_loss_matrix_summary.json` |
+| Fleet optimizer redundancy-budget/failure-domain probe | `results_rmw_socket/fleet_optimizer_redundancy_budget_probe_summary.json` |
+| Docker ROS RMW budgeted multi-robot fleet-plan actuation | `results_rmw_socket/docker_router_multi_robot_budgeted_fleet_plan_probe_summary.json` |
+| Docker ROS RMW active-publisher budget epoch transition | `results_rmw_socket/docker_router_multi_robot_budgeted_fleet_plan_epoch_probe_summary.json` |
+| Docker ROS RMW subscriber-QoE closed-loop budget epoch | `results_rmw_socket/docker_router_multi_robot_qoe_feedback_budget_probe_summary.json` |
+| Docker ROS RMW repeated subscriber-QoE budget matrix | `results_rmw_socket/docker_router_multi_robot_qoe_feedback_budget_repeated_matrix_summary.json` |
+| Docker ROS RMW measured-QoE protection migration | `results_rmw_socket/docker_router_multi_robot_qoe_protection_migration_probe_summary.json` |
+| Docker ROS RMW 4/8/16-robot protection-migration scale matrix | `results_rmw_socket/docker_router_qoe_protection_migration_scale_matrix_summary.json` |
+| Docker ROS RMW repeated sequential-QoE protection migration | `results_rmw_socket/docker_router_qoe_protection_migration_sequential_repeated_matrix_summary.json` |
+| Docker ROS RMW harsh-loss sequential-QoE protection migration | `results_rmw_socket/docker_router_qoe_protection_migration_sequential_harsh_matrix_summary.json` |
+| Docker ROS RMW confidence-fallback protection smoke | `results_rmw_socket/docker_router_multi_robot_qoe_confidence_fallback_smoke_summary.json` |
+| Docker ROS RMW confidence-fallback matrix smoke | `results_rmw_socket/docker_router_qoe_protection_migration_confidence_fallback_matrix_smoke_summary.json` |
+| Docker ROS RMW harsh-loss confidence-fallback matrix | `results_rmw_socket/docker_router_qoe_protection_migration_sequential_harsh_fallback_matrix_summary.json` |
+| Docker ROS RMW confidence-fallback recovery smoke | `results_rmw_socket/docker_router_multi_robot_qoe_confidence_fallback_recovery_smoke_summary.json` |
+| Docker ROS RMW confidence-fallback recovery matrix smoke | `results_rmw_socket/docker_router_qoe_protection_migration_confidence_fallback_recovery_matrix_smoke_summary.json` |
+| Docker ROS RMW harsh-loss confidence-fallback recovery matrix | `results_rmw_socket/docker_router_qoe_protection_migration_sequential_harsh_fallback_recovery_matrix_summary.json` |
 | Docker ROS RMW stochastic netem sweep | `docs/RMW_MULTI_ROBOT_LIVE_STOCHASTIC_NETEM_SWEEP_V1.md` |
 | Docker ROS RMW proactive repair ablation | `docs/RMW_MULTI_ROBOT_LIVE_STOCHASTIC_NETEM_ABLATION_V1.md` |
 | FleetRMW live baseline comparison map | `docs/RMW_LIVE_BASELINE_COMPARISON_V1.md` |
 | FleetRMW matched four-robot live telemetry matrix | `results_rmw_socket/docker_multi_robot_live_telemetry_matrix_4robot_report.md` |
 | ROS 2 direct RMW netem baseline seed | `docs/ROS2_DIRECT_RMW_NETEM_MATRIX_V1.md` |
+
+The latest budgeted fleet-plan actuation closes the gap between the Python
+optimizer and the C++ RMW data plane. Four concurrent robot control topics run
+through roaming and Wi-Fi netem paths. The optimizer assigns diverse-path
+redundancy to the two robots with fairness debt and healthy-path unicast to the
+other two. The measured run passes `4/4` robots, delivers every source sequence
+within `100 ms`, records maximum latency `56.577 ms`, Jain fairness `1.0`, and
+zero NACK retransmissions. FleetRMW executes `18` path transmissions versus
+`24` for blanket dual-path protection, a `25%` reduction without lowering the
+observed deadline floor.
+
+The active-publisher epoch probe then starts with all four robots protected on
+both paths and changes the shared plan after source frame `1`. Robots
+`0002/0003` reload the plan and send frames `2/3` by unicast while robots
+`0000/0001` retain diverse-path redundancy. The run passes `4/4`, reaches
+maximum latency `63.405 ms`, keeps Jain fairness `1.0`, performs zero
+retransmissions, and executes `20` path transmissions versus `24` for a
+non-adaptive session. This is direct evidence that FleetRMW can actuate a
+fleet-wide budget epoch without restarting ROS 2 publishers.
+
+The subscriber-QoE closed-loop probe removes seeded robot debt from that
+decision. After the first frame, subscriber telemetry reports QoE scores of
+`0.628` and `0.555` for the two roaming robots versus `0.872` and `0.898` for
+the two backup-path robots. The controller spends its two-copy budget on the
+measured lower-QoE pair, and frames `2/3` follow the new plan while publishers
+remain active. All `4/4` robots meet the `250 ms` diagnostic deadline, maximum
+latency is `222.266 ms`, Jain fairness is `1.0`, and no NACK retransmission
+occurs. The closed loop executes `16` path transmissions rather than `24`
+under blanket redundancy, a `33.3%` reduction.
+The repeated matrix passes `2/2` independent rows with the same protected pair,
+maximum observed latency `210.977 ms`, minimum Jain fairness `1.0`, zero NACK
+retransmissions, and `32` aggregate path transmissions versus `48` under full
+dual-path protection.
+
+The protection-migration probe extends the loop to two changing network
+epochs without restarting ROS 2 publishers. Initially, robot `0000/0001` have
+the lower measured QoE and receive redundancy. The test then reverses the
+roaming/Wi-Fi qdiscs. The next isolated telemetry window measures QoE `0.934`
+for `0000/0001` and `0.792/0.830` for `0002/0003`, causing the budget to move
+to `0002/0003` before frame `3`. The run passes `4/4`, records maximum latency
+`201.596 ms`, fairness `1.0`, zero retransmissions, and `16` path transmissions
+versus `24` under blanket redundancy.
+
+The migration scale matrix runs the same live two-epoch experiment with `4`,
+`8`, and `16` robots. All `3/3` rows select the expected lower-QoE half before
+and after the qdisc reversal, yielding `14` total protection migrations and
+`28` changed set memberships. A publisher readiness barrier and per-epoch
+event gate replace the earlier fixed `3000 ms` interval, and a sequential QoE
+stopping rule waits for confidence-bound separation before each plan update. In
+the main `4/8/16` run, every QoE epoch stops at `3` samples per robot and each
+row reserves `5` post-migration confirmation frames. Maximum telemetry-to-plan
+convergence is `486.958 ms`; maximum controller actuation is `56.761 ms`,
+including a `50 ms` plan visibility guard, while qdisc reconfiguration is
+measured separately at up to `222.912 ms`. Across the matrix, maximum delivery
+latency is `127.958 ms`, minimum Jain fairness is `1.0`, no NACK
+retransmission occurs, and FleetRMW performs `420` path transmissions instead
+of `616` for full dual-path protection (`31.8%` reduction).
+
+The repeated sequential-QoE migration matrix then runs six independent rows:
+`4`, `8`, and `16` robots crossed with repetition IDs `7` and `13` at `0.02%`
+netem loss. All `6/6` rows pass and all `12/12` QoE epochs reach confidence
+separation. Maximum telemetry-to-plan convergence is `465.783 ms`, maximum
+delivery latency is `125.835 ms`, Jain fairness remains `1.0`, retransmissions
+remain zero, and aggregate path transmissions are `840` versus `1232` under
+blanket redundancy (`31.8%` reduction). Because the Docker image does not
+expose deterministic `tc netem` seeding, repetition IDs identify independent
+runs rather than fixed random seeds.
+
+The harsh-loss sequential-QoE matrix raises the live Docker/netem loss to
+`0.2%`, `0.5%`, and `1.0%` for `8` and `16` robots. It completes with
+`5/6` rows OK and records explicit failure-mode counts:
+`ok=5`, `confidence_not_separated=1`. The loss-tolerant telemetry collector no
+longer treats a delayed or lost individual feedback sample as an immediate
+bridge timeout; it continues sampling until the sequential confidence rule can
+separate the QoE groups or reaches its configured sample cap. The failing row is
+therefore algorithmically meaningful: at `8` robots and `1.0%` loss, only
+`1/2` QoE epochs reached confidence separation, one robot missed the delivery
+target, NACK retransmissions rose to `3`, and the worst observed latency reached
+`1523.410 ms`. The matrix still preserves the redundancy-budget property:
+aggregate path transmissions are reduced from the full-dual-path baseline by
+`31.9%`, with maximum controller actuation `61.600 ms`. This is now the first
+recorded stress boundary for the online QoE migration policy rather than a
+silent stochastic failure.
+
+The confidence-fallback smoke turns that boundary into a live actuation
+mechanism. The probe exposes sequential confidence parameters and a conservative
+fallback policy: when a QoE epoch reaches its sample cap without confidence
+separation, the controller protects the union of the previous protected set and
+the current low-QoE candidate set, temporarily increasing the redundancy budget
+only for that fallback epoch. A forced four-robot Docker/RMW run sets a high
+separation margin so both QoE epochs end as
+`maximum samples reached without confidence separation`; both epochs apply the
+fallback and protect all four robots. The run passes `4/4` robots, keeps zero
+NACK retransmissions, records maximum latency `112.636 ms`, converges within
+`189.892 ms`, and uses `20` path transmissions versus `24` under blanket
+dual-path protection (`16.7%` reduction). This is not a dominance claim; it is
+the first proof that uncertainty is now an explicit control-plane state with a
+safe ROS 2/RMW actuation path.
+
+The companion one-row matrix smoke keeps the strict evidence rule intact:
+because neither QoE epoch reaches confidence separation, the row is not counted
+as an OK dominance row. Instead, its failure taxonomy reports
+`failure_mode_counts={confidence_fallback_applied:1}` with `robots_ok=4`,
+`confidence_fallback_count=2`, and the same `20/24` path-transmission cost. This
+separates "safe fallback was applied" from "statistically confident migration
+was proven."
+
+The harsh-loss fallback matrix repeats the `8/16` robot, `0.2/0.5/1.0%` loss
+campaign with fallback enabled. Because Docker netem draws are not seeded, it is
+not a paired A/B replacement for the strict harsh matrix; it is a boundary
+probe. It completes `3/6` rows as strict OK and records
+`failure_mode_counts={ok:3, robot_delivery_failure:1,
+confidence_fallback_applied:1, confidence_fallback_delivery_failure:1}`. The
+`8`-robot rows pass at `0.2%` and `0.5%`; the `8`-robot `1.0%` row reaches
+confidence but still loses one robot delivery. The `16`-robot `0.2%` row applies
+fallback once, delivers all `16/16`, but remains a strict-evidence failure
+because only `1/2` QoE epochs reached confidence separation. The `16`-robot
+`1.0%` row applies fallback twice, protects the larger set, but still reaches
+only `15/16` robot delivery with `4` retransmissions and `1549.130 ms` maximum
+latency. Aggregate path transmissions are `1140` versus `1584` under blanket
+dual-path redundancy (`28.0%` reduction). The useful result is the failure
+taxonomy: fallback is now observable and can preserve delivery in some
+non-separated epochs, but high-loss fleet operation still needs a post-fallback
+recovery-window and repair/safe-mode policy.
+
+The post-fallback recovery slice adds that recovery-window accounting. The
+forced four-robot recovery smoke uses two non-separated QoE epochs and then
+releases three recovery frames after fallback. Strict confidence still fails,
+but the recovery window passes: all `4/4` robots receive recovery sequences
+`3,4,5` on time, maximum recovery latency is `33.764 ms`, and the run uses
+`36/40` full-redundancy path transmissions. The companion matrix smoke reports
+`failure_mode_counts={confidence_fallback_recovered_window:1}` rather than
+counting the row as a confident migration success.
+
+The harsh-loss recovery matrix repeats the `8/16` robot, `0.2/0.5/1.0%` loss
+campaign with `3` recovery frames after fallback. It completes `4/6` rows as
+strict OK, but all `6/6` rows have an OK recovery window. The two strict-failed
+rows are now classified as `confidence_fallback_recovered_window`: the
+`8`-robot `1.0%` row applies fallback twice, has only `7/8` full-session
+delivery because of a `1520.810 ms` tail event and `4` retransmissions, but its
+recovery window is `8/8`; the `16`-robot `1.0%` row applies fallback once,
+keeps `16/16` delivery, and its recovery window is `16/16`, but one QoE epoch
+does not reach confidence. Aggregate transmissions are `1364` versus `1872`
+under blanket dual-path redundancy (`27.1%` reduction). This is the first
+evidence that fallback can be treated as a bounded recovery state rather than a
+binary success/failure outcome.
 
 The latest direct ROS 2 RMW matrix now runs against the rebuilt
 `localhost/fleetrmw/rmw-netem:jazzy` image with Fast DDS, Cyclone DDS, and Zenoh
@@ -218,8 +400,120 @@ through RMW graph APIs: `topic_found=true`, `publisher_count=1`, and
 `subscriber_count=1`.  The remote graph lease probe proves stale endpoint
 cleanup: a `30 ms` remote publisher advertisement is visible immediately with
 `publisher_count_before=1`, then disappears after expiry with
-`publisher_count_after=0` and `topic_found_after=false`.  The latest
-multi-robot live RMW probes move beyond deterministic routing into stochastic
+`publisher_count_after=0` and `topic_found_after=false`.  The service-error
+probe verifies empty response queues do not fabricate a response, malformed
+response payloads return a controlled error with `taken=false`, and invalid
+service frames are rejected.  The ROS CLI service-timeout probe verifies a
+delayed service response makes `ros2 service call` exit with timeout code `124`
+after the server has observed the request and before any success response is
+printed.  The action-frame contract probe then locks a
+dependency-light `fleetrmw.action_frame.v1` shape for goal, feedback, status,
+result, and cancel roles before real `rcl_action` APIs are connected.  The
+router-mediated action-frame probe now runs those five roles through
+`fleetrmw_udp_router_probe`: the router observes `action_frames=5`,
+`action_forwarded=5`, `graph_action_servers=1`, and
+`graph_action_clients=1`, while the probe observes server-side `goal/cancel`
+and client-side `feedback/status/result` delivery.  The first real action API
+smoke now runs `tf2_msgs/action/LookupTransform` through
+`rclpy.action.ActionServer` and `ActionClient` with `RMW_IMPLEMENTATION` set to
+`rmw_fleetqox_cpp`; it observes server availability, accepted goal, execute
+callback, GetResult status `4`, `result_frame=map`, and
+`result_child_frame=base_link`.  The router-mediated real action smoke then
+separates that server and client into different Docker containers that peer
+only with `fleetrmw_udp_router_probe`; it observes accepted goal, execute
+callback, success GetResult status `4`, canceled GetResult status `5`, feedback
+callbacks for both goals, live status samples, and router `service_frames=10` /
+`service_forwarded=10`.  The same row verifies router-mediated
+`ActionClient.server_is_ready()` before the goal is sent and after the result,
+with remote feedback/status publishers and subscribers visible through graph
+counts.  The action QoS matrix then compares fresh and expired action
+observation traffic. With `1 ms` forwarding delay and `100 ms`
+feedback/status lifespan, all observation callbacks arrive. With `30 ms`
+delay and `5 ms` lifespan, the router drops `9` stale action data frames by
+topic (`2` feedback and `7` status), while all `10`
+SendGoal/CancelGoal/GetResult service frames are forwarded and the client still
+observes success status `4` and canceled status `5`. A third row scopes a
+three-frame scheduler burst to the action topic prefix and forwards feedback
+deadline `5 ms` before status deadline `100 ms`. The follow-on multi-robot QoS
+matrix assigns publisher identity through
+`FLEETQOX_RMW_ROBOT_ID` and drives four robots, each with one control and one
+state flow, through real FleetRMW publishers/subscribers and a shared router.
+It compares arrival-order FIFO with an online deadline-gated scheduler:
+urgent control frames bypass the holdback queue, non-urgent state frames are
+sorted by absolute deadline and drained with pacing, and the report records
+end-to-end take age, per-robot deadline success, Jain fairness, and scheduler
+queue wait.
+The current 8-robot Wi-Fi/WAN/roaming netem matrix reports `status=ok` with
+zero deadline misses and per-robot fairness `1.0` in all profiles. Raw
+deadline-gated holdback improves control p95 in Wi-Fi
+(`36.070 -> 34.900 ms`) and WAN (`94.874 -> 93.991 ms`), but regresses in
+roaming (`158.036 -> 159.904 ms`). The follow-on adaptive-admission wrapper
+selects `deadline_gated_holdback` for Wi-Fi/WAN and FIFO for roaming, keeping
+`adaptive_worse_profile_count=0` while raising admitted mean control p95
+reduction from `+0.061 ms` raw to `+0.684 ms`. The next live router gate moves that admission
+decision into `fleetrmw_udp_router_probe` itself using
+`slo_service_epoch`: the router normalizes each non-urgent frame's estimated
+link service time by the urgent control deadline, smooths the service-ratio
+signal with EWMA, and changes holdback mode only after threshold and epoch
+conditions are met. In the latest live Wi-Fi/WAN/roaming run it bypasses
+holdback on Wi-Fi, queues WAN and roaming, records `8` admission samples per
+profile, switches once into holdback for WAN/roaming, preserves zero deadline
+misses/fairness `1.0`, and keeps mean control p95 reduction positive at
+`5.021 ms`. This changes the gap from "make admission live" to "validate the
+multi-epoch controller across lossy repeated seeds."
+The first repeated-loss smoke now does that on a small scale: Wi-Fi and roaming
+are rerun with repetition ID `7` and `tc netem loss 0.02%`; both rows pass, the
+runner exercises both bypass and holdback branches, and mean control p95
+reduction is `6.536 ms`. The runner deliberately reports `partial` rather than
+hiding row failures when stochastic UDP loss drops a single-send payload,
+because the next research gap is scheduled-path ACK/NACK repair under
+non-trivial loss.
+The first scheduled-path ACK/NACK repair probe now closes the deterministic
+drop version of that gap: with router scheduler window `150 ms`, the router
+drops source sequence `2`, forwards `3` ACK/NACK frames, queues and forwards
+`4` scheduled data frames including retransmissions, and the subscriber
+recovers payloads `one`, `three`, `two`.
+The repeated-loss extension runs the same contract under Wi-Fi and roaming
+qdiscs with `loss 0.02%`. The latest repetition-`7` smoke passes `2/2` rows:
+both recover all payloads, each publisher retransmits twice, each router queues
+and forwards four scheduled frames with zero deadline misses, and the matrix
+records `12` forwarded ACK/NACK frames. An initial failed run identified that
+router process completion could precede kernel qdisc delivery; a
+post-satisfaction drain horizon now makes terminal evidence include the
+network-emulator queue rather than only userspace forwarding counters.
+The concurrent extension then runs four independent ROS 2 publisher/subscriber
+pairs through one roaming-profile router. It passes `4/4` robots, drops one
+source sequence per publisher identity, forwards `32` ACK/NACK and `16`
+scheduled data frames, performs `8` NACK-driven retransmissions, and recovers
+all three payloads on every robot. Router telemetry reports zero deadline
+misses and per-robot deadline-success Jain fairness `1.0`.
+The first real mixed workload then shares one roaming-profile router between a
+real `rclpy.action` success/cancel lifecycle and four repaired control/state
+flows for two robots. Action completion and all `4/4` flows pass; the scheduler
+records `17` urgent and `8` queued frames, while the router forwards `46`
+ACK/NACK frames. Topic-scoped fault injection plus structured miss telemetry
+shows zero fresh deadline misses but four late sequence-`2` control repairs
+(`167-196 ms` beyond the original deadline). The result separates the delivery
+QoE benefit of reactive repair from the unresolved hard-real-time protection
+problem.
+The proactive diversity follow-on sends deadline-critical control samples over
+a roaming primary and Wi-Fi backup before loss is observed. Its two-row matrix
+passes `2/2`: primary sequence `2` is dropped in both rows, all sequences arrive
+within the `100 ms` subscriber deadline, maximum latency is `63.688 ms`, and
+the publisher uses `6` redundant sends with `0` NACK retransmissions.
+The concurrent extension protects four robots in one shared session. Its
+two-row repeated-loss matrix passes `2/2`, keeps all eight robot-runs at `3/3`
+on-time samples, reaches maximum latency `56.163 ms`, preserves Jain fairness
+`1.0`, and performs no retransmission. Full protection expands `24` source
+frames to `48` path transmissions, quantifying the bandwidth cost that the
+next budget allocator must reduce.
+The first allocator probe applies a `1400`-byte extra-copy budget to four
+`700`-byte control flows. It protects the two robots carrying fairness debt,
+keeps the other two on the best unicast path, drops no flow, and reduces path
+transmissions from `8` under full duplication to `6`. Redundant pairs are
+forced across `private_5g_core` and `warehouse_ap`, rather than selecting two
+radios sharing the same AP failure domain.
+The latest multi-robot live RMW probes move beyond deterministic routing into stochastic
 network evidence.  The stochastic netem sweep runs the same ROS 2/RMW
 publisher-router-subscriber topology across Wi-Fi/WAN/roaming profiles, loss
 scales, and repetition IDs while classifying harness, qdisc, component,

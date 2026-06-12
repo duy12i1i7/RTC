@@ -62,6 +62,22 @@ target_link_libraries(fleetrmw_frame_probe
   ${PROJECT_NAME}_transport
 )
 
+add_executable(fleetrmw_action_frame_probe
+  src/action_frame_probe.cpp
+)
+target_compile_features(fleetrmw_action_frame_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_action_frame_probe
+  ${PROJECT_NAME}_transport
+)
+
+add_executable(fleetrmw_action_router_probe
+  src/action_router_probe.cpp
+)
+target_compile_features(fleetrmw_action_router_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_action_router_probe
+  ${PROJECT_NAME}_transport
+)
+
 add_executable(fleetrmw_lifecycle_probe
   src/lifecycle_probe.cpp
 )
@@ -96,6 +112,34 @@ target_link_libraries(fleetrmw_qos_probe
 ament_target_dependencies(fleetrmw_qos_probe
   rcutils
   rmw
+)
+
+add_executable(fleetrmw_service_qos_probe
+  src/service_qos_probe.cpp
+)
+target_compile_features(fleetrmw_service_qos_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_service_qos_probe
+  ${PROJECT_NAME}
+  std_srvs::std_srvs__rosidl_typesupport_introspection_c
+)
+ament_target_dependencies(fleetrmw_service_qos_probe
+  rcutils
+  rmw
+  std_srvs
+)
+
+add_executable(fleetrmw_service_error_probe
+  src/service_error_probe.cpp
+)
+target_compile_features(fleetrmw_service_error_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_service_error_probe
+  ${PROJECT_NAME}
+  std_srvs::std_srvs__rosidl_typesupport_introspection_c
+)
+ament_target_dependencies(fleetrmw_service_error_probe
+  rcutils
+  rmw
+  std_srvs
 )
 
 add_executable(fleetrmw_reliability_probe
@@ -279,9 +323,13 @@ install(
     ${PROJECT_NAME}_transport
     fleetrmw_transport_loop_smoke
     fleetrmw_frame_probe
+    fleetrmw_action_frame_probe
+    fleetrmw_action_router_probe
     fleetrmw_lifecycle_probe
     fleetrmw_serialized_pubsub_probe
     fleetrmw_qos_probe
+    fleetrmw_service_qos_probe
+    fleetrmw_service_error_probe
     fleetrmw_reliability_probe
     fleetrmw_reliable_interprocess_probe
     fleetrmw_typed_pubsub_probe

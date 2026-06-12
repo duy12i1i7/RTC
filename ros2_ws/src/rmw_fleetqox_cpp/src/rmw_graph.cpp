@@ -1330,6 +1330,28 @@ size_t rmw_fleetqox_cpp_graph_service_count(const char * service_name)
   return found == g_services.end() ? 0 : found->second.service_count;
 }
 
+size_t rmw_fleetqox_cpp_graph_publisher_count(const char * topic_name)
+{
+  if (!topic_is_valid(topic_name)) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(g_graph_mutex);
+  purge_expired_remote_graph_locked(SteadyClock::now());
+  const auto found = g_topics.find(topic_name);
+  return found == g_topics.end() ? 0 : found->second.publisher_count;
+}
+
+size_t rmw_fleetqox_cpp_graph_subscription_count(const char * topic_name)
+{
+  if (!topic_is_valid(topic_name)) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(g_graph_mutex);
+  purge_expired_remote_graph_locked(SteadyClock::now());
+  const auto found = g_topics.find(topic_name);
+  return found == g_topics.end() ? 0 : found->second.subscription_count;
+}
+
 rmw_ret_t rmw_get_publishers_info_by_topic(
   const rmw_node_t * node,
   rcutils_allocator_t * allocator,

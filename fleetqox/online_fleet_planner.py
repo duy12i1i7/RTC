@@ -41,6 +41,7 @@ class PathObservation:
     nack_rate: float | None = None
     deadline_miss_ratio: float | None = None
     bandwidth_utilization: float | None = None
+    failure_domain: str = ""
 
     def to_telemetry(self) -> PathTelemetry:
         sent = max(0, int(self.sent_frames))
@@ -70,6 +71,7 @@ class PathObservation:
             nack_rate=nack_rate,
             deadline_miss_ratio=deadline_miss_ratio,
             bandwidth_utilization=bandwidth_utilization,
+            failure_domain=self.failure_domain,
         )
 
 
@@ -147,6 +149,7 @@ class OnlineFleetPathPlan:
                     "nack_rate": path.nack_rate,
                     "deadline_miss_ratio": path.deadline_miss_ratio,
                     "bandwidth_utilization": path.bandwidth_utilization,
+                    "failure_domain": path.failure_domain,
                 }
                 for path in self.path_telemetry
             ],
@@ -320,6 +323,7 @@ def optimizer_payload_from_plan(
                 "nack_rate": path.nack_rate,
                 "deadline_miss_ratio": path.deadline_miss_ratio,
                 "bandwidth_utilization": path.bandwidth_utilization,
+                "failure_domain": path.failure_domain,
             }
             for path in plan.path_telemetry
         ],
@@ -347,6 +351,7 @@ def _smooth_path(previous: PathTelemetry, current: PathTelemetry, alpha: float) 
             current.bandwidth_utilization,
             alpha,
         ),
+        failure_domain=current.failure_domain or previous.failure_domain,
     )
 
 

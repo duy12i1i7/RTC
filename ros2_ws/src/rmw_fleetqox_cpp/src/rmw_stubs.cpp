@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <deque>
@@ -108,6 +109,42 @@ std::atomic<std::uint64_t> g_service_expired_frames_dropped{0};
 bool identifier_matches(const char * identifier)
 {
   return identifier != nullptr && std::strcmp(identifier, kIdentifier) == 0;
+}
+
+bool trace_service_enabled()
+{
+  const char * value = std::getenv("FLEETQOX_RMW_TRACE_SERVICE");
+  return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+void trace_service_event(
+  const char * event,
+  const FleetQoxServiceData * data,
+  const rmw_fleetqox_cpp::ServiceFrame * frame = nullptr,
+  size_t queue_size = 0)
+{
+  if (!trace_service_enabled()) {
+    return;
+  }
+  std::fprintf(
+    stderr,
+    "fleetqox service event=%s service=%s endpoint=%s is_service=%s",
+    event == nullptr ? "unknown" : event,
+    data != nullptr && data->service_name != nullptr ? data->service_name : "",
+    data != nullptr ? data->endpoint_id.c_str() : "",
+    data != nullptr && data->is_service ? "true" : "false");
+  if (frame != nullptr) {
+    std::fprintf(
+      stderr,
+      " role=%s client=%s service_endpoint=%s seq=%ld payload=%zu queue=%zu",
+      frame->role.c_str(),
+      frame->client_endpoint_id.c_str(),
+      frame->service_endpoint_id.c_str(),
+      static_cast<long>(frame->sequence_id),
+      frame->serialized_payload.size(),
+      queue_size);
+  }
+  std::fprintf(stderr, "\n");
 }
 
 rmw_ret_t require_identifier(const char * identifier, const char * entity_name)
@@ -581,6 +618,7 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
         frame->service_name == data->service_name)
       {
         data->request_queue.push_back(*frame);
+        trace_service_event("enqueue_request", data, &*frame, data->request_queue.size());
       }
     }
     return true;
@@ -589,6 +627,7 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
     for (FleetQoxServiceData * data : g_service_bus_endpoints) {
       if (data != nullptr && !data->is_service && frame->client_endpoint_id == data->endpoint_id) {
         data->response_queue.push_back(*frame);
+        trace_service_event("enqueue_response", data, &*frame, data->response_queue.size());
       }
     }
     return true;
@@ -617,6 +656,18 @@ bool rmw_fleetqox_cpp_waitable_client_has_response(const void * waitable)
 std::uint64_t rmw_fleetqox_cpp_service_expired_frames_dropped()
 {
   return g_service_expired_frames_dropped.load();
+}
+
+const char * rmw_fleetqox_cpp_service_endpoint_id(const rmw_service_t * service)
+{
+  const FleetQoxServiceData * data = service_data(service);
+  return data == nullptr ? "" : data->endpoint_id.c_str();
+}
+
+const char * rmw_fleetqox_cpp_client_endpoint_id(const rmw_client_t * client)
+{
+  const FleetQoxServiceData * data = client_data(client);
+  return data == nullptr ? "" : data->endpoint_id.c_str();
 }
 
 rmw_ret_t rmw_init_publisher_allocation(
@@ -1014,6 +1065,7 @@ rmw_ret_t rmw_send_request(
     monotonic_timestamp_ns(),
     qos_duration_ns(data->qos.lifespan),
     payload};
+  trace_service_event("send_request", data, &frame);
   const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(frame);
   ret = rmw_fleetqox_cpp_send_encoded_frame(encoded.data(), encoded.size());
   if (ret != RMW_RET_OK) {
@@ -1048,9 +1100,11 @@ rmw_ret_t rmw_take_response(
     while (!data->response_queue.empty()) {
       frame = std::move(data->response_queue.front());
       data->response_queue.pop_front();
-      if (!drop_if_expired_service_frame(frame)) {
-        break;
+      if (drop_if_expired_service_frame(frame)) {
+        frame = rmw_fleetqox_cpp::ServiceFrame{};
+        continue;
       }
+      break;
     }
     if (frame.role.empty()) {
       *taken = false;
@@ -1063,6 +1117,7 @@ rmw_ret_t rmw_take_response(
       ros_response))
   {
     *taken = false;
+    trace_service_event("take_response_deserialize_failed", data, &frame);
     RMW_SET_ERROR_MSG("failed to deserialize service response with introspection C type support");
     return RMW_RET_UNSUPPORTED;
   }
@@ -1070,6 +1125,7 @@ rmw_ret_t rmw_take_response(
   request_header->received_timestamp = monotonic_timestamp_ns();
   fill_request_id(data->endpoint_gid, frame.sequence_id, &request_header->request_id);
   *taken = true;
+  trace_service_event("take_response", data, &frame);
   return RMW_RET_OK;
 }
 
@@ -1195,9 +1251,11 @@ rmw_ret_t rmw_take_request(
     while (!data->request_queue.empty()) {
       frame = std::move(data->request_queue.front());
       data->request_queue.pop_front();
-      if (!drop_if_expired_service_frame(frame)) {
-        break;
+      if (drop_if_expired_service_frame(frame)) {
+        frame = rmw_fleetqox_cpp::ServiceFrame{};
+        continue;
       }
+      break;
     }
     if (frame.role.empty()) {
       *taken = false;
@@ -1210,6 +1268,7 @@ rmw_ret_t rmw_take_request(
       ros_request))
   {
     *taken = false;
+    trace_service_event("take_request_deserialize_failed", data, &frame);
     RMW_SET_ERROR_MSG("failed to deserialize service request with introspection C type support");
     return RMW_RET_UNSUPPORTED;
   }
@@ -1223,6 +1282,7 @@ rmw_ret_t rmw_take_request(
     data->pending_response_clients[request_key(request_header->request_id)] = frame.client_endpoint_id;
   }
   *taken = true;
+  trace_service_event("take_request", data, &frame);
   return RMW_RET_OK;
 }
 
@@ -1246,6 +1306,7 @@ rmw_ret_t rmw_send_response(
   }
   std::vector<std::uint8_t> payload;
   if (!rmw_fleetqox_cpp_serialize_introspection_message(data->response_members, ros_response, &payload)) {
+    trace_service_event("send_response_serialize_failed", data);
     RMW_SET_ERROR_MSG("failed to serialize service response with introspection C type support");
     return RMW_RET_UNSUPPORTED;
   }
@@ -1259,6 +1320,7 @@ rmw_ret_t rmw_send_response(
     }
   }
   if (client_endpoint_id.empty()) {
+    trace_service_event("send_response_unknown_target", data);
     RMW_SET_ERROR_MSG("service response target is unknown");
     return RMW_RET_ERROR;
   }
@@ -1272,6 +1334,7 @@ rmw_ret_t rmw_send_response(
     monotonic_timestamp_ns(),
     qos_duration_ns(data->qos.lifespan),
     payload};
+  trace_service_event("send_response", data, &frame);
   const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(frame);
   return rmw_fleetqox_cpp_send_encoded_frame(encoded.data(), encoded.size());
 }
@@ -1392,7 +1455,17 @@ rmw_ret_t rmw_service_server_is_available(
     RMW_SET_ERROR_MSG("client data is null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  *is_available = rmw_fleetqox_cpp_graph_service_count(data->service_name) > 0;
+  const size_t service_count = rmw_fleetqox_cpp_graph_service_count(data->service_name);
+  *is_available = service_count > 0;
+  if (trace_service_enabled()) {
+    std::fprintf(
+      stderr,
+      "fleetqox service event=server_is_available service=%s endpoint=%s count=%zu available=%s\n",
+      data->service_name,
+      data->endpoint_id.c_str(),
+      service_count,
+      *is_available ? "true" : "false");
+  }
   return RMW_RET_OK;
 }
 

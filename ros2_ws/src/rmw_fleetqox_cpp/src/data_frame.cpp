@@ -615,6 +615,88 @@ bool service_frame_expired(const ServiceFrame & frame, std::int64_t now_ns)
   return now_ns > frame.source_timestamp_ns && now_ns - frame.source_timestamp_ns > frame.lifespan_ns;
 }
 
+std::string encode_action_frame(const ActionFrame & frame)
+{
+  std::ostringstream out;
+  out << kDataFrameMagic;
+  out << "{\"schema_version\":\"" << kActionFrameSchemaVersion << "\",";
+  out << "\"kind\":\"action_frame\",";
+  out << "\"role\":\"" << json_escape(frame.role) << "\",";
+  out << "\"action_name\":\"" << json_escape(frame.action_name) << "\",";
+  out << "\"type_name\":\"" << json_escape(frame.type_name) << "\",";
+  out << "\"endpoint_id\":\"" << json_escape(frame.endpoint_id) << "\",";
+  out << "\"goal_id\":\"" << json_escape(frame.goal_id) << "\",";
+  out << "\"sequence_id\":" << frame.sequence_id << ",";
+  out << "\"source_timestamp_ns\":" << frame.source_timestamp_ns << ",";
+  out << "\"lifespan_ns\":" << frame.lifespan_ns;
+  if (!frame.serialized_payload.empty()) {
+    out << ",\"serialized_payload\":{";
+    out << "\"encoding\":\"hex\",";
+    out << "\"size\":" << frame.serialized_payload.size() << ",";
+    out << "\"data\":\"" << hex_encode(frame.serialized_payload) << "\"}";
+  }
+  out << "}";
+  return out.str();
+}
+
+std::optional<ActionFrame> decode_action_frame(const std::string & payload)
+{
+  const std::string stripped = strip_padding(payload);
+  const std::string magic = kDataFrameMagic;
+  if (stripped.rfind(magic, 0) != 0) {
+    return std::nullopt;
+  }
+  const std::string body = stripped.substr(magic.size());
+  if (!json_has_string_value(body, "schema_version", kActionFrameSchemaVersion)) {
+    return std::nullopt;
+  }
+  const auto role = json_string_value(body, "role");
+  const auto action_name = json_string_value(body, "action_name");
+  const auto type_name = json_string_value(body, "type_name");
+  const auto endpoint_id = json_string_value(body, "endpoint_id");
+  const auto goal_id = json_string_value(body, "goal_id");
+  const auto sequence_id = json_uint_value(body, "sequence_id");
+  const auto source_timestamp_ns = json_uint_value(body, "source_timestamp_ns");
+  const auto lifespan_ns = json_uint_value(body, "lifespan_ns").value_or(0);
+  if (!role || !action_name || !type_name || !endpoint_id || !goal_id || !sequence_id ||
+    !source_timestamp_ns)
+  {
+    return std::nullopt;
+  }
+  const std::string serialized_payload = json_object_value(body, "serialized_payload").value_or("");
+  std::vector<std::uint8_t> payload_bytes;
+  if (!serialized_payload.empty()) {
+    const auto encoding = json_string_value(serialized_payload, "encoding");
+    const auto encoded_data = json_string_value(serialized_payload, "data");
+    if (!encoding || *encoding != "hex" || !encoded_data) {
+      return std::nullopt;
+    }
+    const auto decoded_payload = hex_decode(*encoded_data);
+    if (!decoded_payload) {
+      return std::nullopt;
+    }
+    payload_bytes = *decoded_payload;
+  }
+  return ActionFrame{
+    *role,
+    *action_name,
+    *type_name,
+    *endpoint_id,
+    *goal_id,
+    static_cast<std::int64_t>(*sequence_id),
+    static_cast<std::int64_t>(*source_timestamp_ns),
+    static_cast<std::int64_t>(lifespan_ns),
+    payload_bytes};
+}
+
+bool action_frame_expired(const ActionFrame & frame, std::int64_t now_ns)
+{
+  if (frame.lifespan_ns <= 0 || frame.source_timestamp_ns <= 0) {
+    return false;
+  }
+  return now_ns > frame.source_timestamp_ns && now_ns - frame.source_timestamp_ns > frame.lifespan_ns;
+}
+
 AckNackFeedback observe_frame(SequenceState & state, const DataFrame & frame)
 {
   AckNackFeedback feedback;

@@ -22,11 +22,36 @@ CASES: list[dict[str, Any]] = [
         "expected": ["data: fleetqox matrix string"],
     },
     {
+        "name": "builtin_interfaces_time",
+        "topic": "/fleetqox/matrix_time",
+        "type": "builtin_interfaces/msg/Time",
+        "yaml": "{sec: 42, nanosec: 123456789}",
+        "expected": ["sec: 42", "nanosec: 123456789"],
+    },
+    {
+        "name": "builtin_interfaces_duration",
+        "topic": "/fleetqox/matrix_duration",
+        "type": "builtin_interfaces/msg/Duration",
+        "yaml": "{sec: -3, nanosec: 250000000}",
+        "expected": ["sec: -3", "nanosec: 250000000"],
+    },
+    {
         "name": "geometry_msgs_twist",
         "topic": "/fleetqox/matrix_twist",
         "type": "geometry_msgs/msg/Twist",
         "yaml": "{linear: {x: 0.25, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: -0.5}}",
         "expected": ["linear:", "x: 0.25", "angular:", "z: -0.5"],
+    },
+    {
+        "name": "geometry_msgs_pose_stamped",
+        "topic": "/fleetqox/matrix_pose_stamped",
+        "type": "geometry_msgs/msg/PoseStamped",
+        "yaml": (
+            "{header: {stamp: {sec: 5, nanosec: 6}, frame_id: map}, "
+            "pose: {position: {x: 1.5, y: -2.0, z: 0.25}, "
+            "orientation: {x: 0.0, y: 0.0, z: 0.707, w: 0.707}}}"
+        ),
+        "expected": ["frame_id: map", "sec: 5", "x: 1.5", "y: -2.0", "w: 0.707"],
     },
     {
         "name": "sensor_msgs_laserscan",
@@ -56,6 +81,19 @@ CASES: list[dict[str, Any]] = [
             "0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}}"
         ),
         "expected": ["frame_id: odom", "child_frame_id: base_link", "position:", "x: 1.0", "angular:", "z: 0.2"],
+    },
+    {
+        "name": "nav_msgs_path",
+        "topic": "/fleetqox/matrix_path",
+        "type": "nav_msgs/msg/Path",
+        "yaml": (
+            "{header: {stamp: {sec: 8, nanosec: 9}, frame_id: map}, poses: ["
+            "{header: {frame_id: map}, pose: {position: {x: 1.0, y: 2.0, z: 0.0}, "
+            "orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}, "
+            "{header: {frame_id: map}, pose: {position: {x: 3.0, y: 4.0, z: 0.0}, "
+            "orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}]}"
+        ),
+        "expected": ["frame_id: map", "poses:", "x: 1.0", "y: 4.0", "w: 1.0"],
     },
 ]
 

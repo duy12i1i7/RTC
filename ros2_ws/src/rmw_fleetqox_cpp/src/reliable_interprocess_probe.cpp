@@ -59,6 +59,10 @@ struct Config
   int hold_ms{3000};
   int pre_publish_wait_ms{0};
   int publish_interval_ms{20};
+  std::string payload_sequence{"one,two,three"};
+  std::string publish_trigger_file;
+  int publish_trigger_timeout_ms{10000};
+  std::string publisher_ready_file;
   int pre_payload_warmup_count{0};
   std::string pre_payload_warmup_payload{"route_warmup"};
   int pre_payload_warmup_ack_count{0};
@@ -115,6 +119,14 @@ Config parse_args(int argc, char ** argv)
       config.pre_publish_wait_ms = std::stoi(argv[++i]);
     } else if (arg == "--publish-interval-ms" && i + 1 < argc) {
       config.publish_interval_ms = std::stoi(argv[++i]);
+    } else if (arg == "--payload-sequence" && i + 1 < argc) {
+      config.payload_sequence = argv[++i];
+    } else if (arg == "--publish-trigger-file" && i + 1 < argc) {
+      config.publish_trigger_file = argv[++i];
+    } else if (arg == "--publish-trigger-timeout-ms" && i + 1 < argc) {
+      config.publish_trigger_timeout_ms = std::stoi(argv[++i]);
+    } else if (arg == "--publisher-ready-file" && i + 1 < argc) {
+      config.publisher_ready_file = argv[++i];
     } else if (arg == "--pre-payload-warmup-count" && i + 1 < argc) {
       config.pre_payload_warmup_count = std::stoi(argv[++i]);
     } else if (arg == "--pre-payload-warmup-payload" && i + 1 < argc) {
@@ -248,6 +260,14 @@ void print_result(
   std::cout << "\"deadline_ms\":" << config.deadline_ms << ",";
   std::cout << "\"pre_publish_wait_ms\":" << std::max(config.pre_publish_wait_ms, 0) << ",";
   std::cout << "\"publish_interval_ms\":" << config.publish_interval_ms << ",";
+  std::cout << "\"payload_sequence\":\"" <<
+    json_escape(config.payload_sequence) << "\",";
+  std::cout << "\"publish_trigger_file\":\"" <<
+    json_escape(config.publish_trigger_file) << "\",";
+  std::cout << "\"publish_trigger_timeout_ms\":" <<
+    std::max(config.publish_trigger_timeout_ms, 0) << ",";
+  std::cout << "\"publisher_ready_file\":\"" <<
+    json_escape(config.publisher_ready_file) << "\",";
   std::cout << "\"pre_payload_warmup_count\":" <<
     std::max(config.pre_payload_warmup_count, 0) << ",";
   std::cout << "\"pre_payload_warmup_payload\":\"" <<
@@ -306,9 +326,11 @@ void print_result(
   std::cout << "]}" << std::endl;
 }
 
+std::vector<std::string> split_payloads(const std::string & text);
+
 std::vector<std::string> required_payloads(const Config & config)
 {
-  std::vector<std::string> payloads{"one", "two", "three"};
+  std::vector<std::string> payloads = split_payloads(config.payload_sequence);
   if (config.require_post_recovery_payload && !config.post_recovery_payload.empty()) {
     payloads.push_back(config.post_recovery_payload);
   }
@@ -344,6 +366,38 @@ void maybe_update_plan_file(const Config & config, size_t published_count)
     return;
   }
   output << config.plan_update_text << std::endl;
+}
+
+bool wait_for_publish_trigger(const Config & config, size_t sequence_number)
+{
+  if (config.publish_trigger_file.empty()) {
+    return true;
+  }
+  const auto deadline =
+    std::chrono::steady_clock::now() +
+    std::chrono::milliseconds(std::max(config.publish_trigger_timeout_ms, 0));
+  do {
+    std::ifstream input(config.publish_trigger_file);
+    size_t released_sequence = 0;
+    if (input && input >> released_sequence && released_sequence >= sequence_number) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  } while (std::chrono::steady_clock::now() < deadline);
+  return false;
+}
+
+bool mark_publisher_ready(const Config & config)
+{
+  if (config.publisher_ready_file.empty()) {
+    return true;
+  }
+  std::ofstream output(config.publisher_ready_file);
+  if (!output) {
+    return false;
+  }
+  output << "ready" << std::endl;
+  return true;
 }
 
 void append_subscriber_telemetry(const Config & config, const std::string & payload)
@@ -438,14 +492,15 @@ int run_publisher(const Config & config)
   rmw_publisher_t * publisher = node == nullptr ? nullptr :
     rmw_create_publisher(node, &type_support, config.topic.c_str(), &qos, &publisher_options);
 
-  std::vector<rmw_serialized_message_t> messages(3);
-  const std::vector<std::string> payloads{"one", "two", "three"};
+  const std::vector<std::string> payloads = split_payloads(config.payload_sequence);
+  std::vector<rmw_serialized_message_t> messages(payloads.size());
   bool messages_ok = true;
   for (size_t i = 0; i < payloads.size(); ++i) {
     messages_ok = init_message(&messages[i], payloads[i], &allocator) && messages_ok;
   }
 
   bool publish_ok = publisher != nullptr && messages_ok;
+  publish_ok = mark_publisher_ready(config) && publish_ok;
   if (config.pre_publish_wait_ms > 0) {
     std::this_thread::sleep_for(std::chrono::milliseconds(config.pre_publish_wait_ms));
   }
@@ -472,6 +527,10 @@ int run_publisher(const Config & config)
   }
   size_t published_count = 0;
   for (rmw_serialized_message_t & message : messages) {
+    if (!wait_for_publish_trigger(config, published_count + 1)) {
+      publish_ok = false;
+      break;
+    }
     publish_ok = rmw_publish_serialized_message(publisher, &message, nullptr) == RMW_RET_OK && publish_ok;
     ++published_count;
     maybe_update_plan_file(config, published_count);
