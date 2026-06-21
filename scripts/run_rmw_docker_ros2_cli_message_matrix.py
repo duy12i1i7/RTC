@@ -95,6 +95,79 @@ CASES: list[dict[str, Any]] = [
         ),
         "expected": ["frame_id: map", "poses:", "x: 1.0", "y: 4.0", "w: 1.0"],
     },
+    {
+        "name": "sensor_msgs_pointcloud2",
+        "topic": "/fleetqox/matrix_pointcloud2",
+        "type": "sensor_msgs/msg/PointCloud2",
+        "yaml": (
+            "{header: {frame_id: lidar}, height: 1, width: 2, fields: ["
+            "{name: x, offset: 0, datatype: 7, count: 1}, "
+            "{name: y, offset: 4, datatype: 7, count: 1}], "
+            "is_bigendian: false, point_step: 8, row_step: 16, "
+            "data: [0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64, 0, 0, 128, 64], "
+            "is_dense: true}"
+        ),
+        "expected": ["frame_id: lidar", "height: 1", "width: 2", "name: x", "point_step: 8"],
+    },
+    {
+        "name": "trajectory_msgs_joint_trajectory",
+        "topic": "/fleetqox/matrix_joint_trajectory",
+        "type": "trajectory_msgs/msg/JointTrajectory",
+        "yaml": (
+            "{header: {frame_id: arm_base}, joint_names: [joint_1, joint_2], points: ["
+            "{positions: [0.5, -0.25], velocities: [0.1, 0.2], accelerations: [0.0, 0.0], "
+            "effort: [1.0, 2.0], time_from_start: {sec: 2, nanosec: 500000000}}]}"
+        ),
+        "expected": ["frame_id: arm_base", "joint_names:", "joint_1", "positions:", "sec: 2"],
+    },
+    {
+        "name": "diagnostic_msgs_array",
+        "topic": "/fleetqox/matrix_diagnostics",
+        "type": "diagnostic_msgs/msg/DiagnosticArray",
+        "yaml": (
+            "{header: {frame_id: fleet}, status: [{level: 1, name: network, "
+            "message: degraded, hardware_id: robot_0000, values: ["
+            "{key: latency_ms, value: '42.5'}, {key: loss, value: '0.01'}]}]}"
+        ),
+        "expected": ["frame_id: fleet", "name: network", "message: degraded", "key: latency_ms"],
+    },
+    {
+        "name": "fleetrmw_sample_identity",
+        "topic": "/fleetqox/matrix_sample_identity",
+        "type": "fleetrmw_interfaces/msg/SampleIdentity",
+        "yaml": (
+            "{schema_version: fleetrmw.sample_identity.v1, contract_id: contract-7, "
+            "source_sample_id: sample-42, has_event_id: true, event_id: 42, "
+            "robot_id: robot_0007, flow_id: odom, source_topic: /robot_0007/odom, "
+            "projection_kind: semantic_delta, projection_topic: /fleetqox/qualified_odom, "
+            "projection_msg_type: fleetrmw_interfaces/msg/QualifiedOdometry, "
+            "projection_signature_version: v1, projection_signature_algorithm: sha256, "
+            "projection_signature: abc123}"
+        ),
+        "expected": ["contract_id: contract-7", "event_id: 42", "robot_id: robot_0007", "projection_kind: semantic_delta"],
+    },
+    {
+        "name": "fleetrmw_projection_quality",
+        "topic": "/fleetqox/matrix_projection_quality",
+        "type": "fleetrmw_interfaces/msg/ProjectionQuality",
+        "yaml": (
+            "{identity: {schema_version: fleetrmw.sample_identity.v1, contract_id: c9, "
+            "source_sample_id: s9, has_event_id: true, event_id: 9, robot_id: robot_0009, "
+            "flow_id: scan, source_topic: /scan, projection_kind: semantic_projection, "
+            "projection_topic: /fleetqox/scan, projection_msg_type: sensor_msgs/msg/LaserScan, "
+            "projection_signature_version: v1, projection_signature_algorithm: sha256, "
+            "projection_signature: def456}, schema_version: fleetrmw.projection_quality.v1, "
+            "kind: perception, source_msg_type: sensor_msgs/msg/LaserScan, action: project, "
+            "wire_mode: semantic_delta, valid_until_timestamp_ms: 1000.0, deadline_ms: 100.0, "
+            "lifespan_ms: 250.0, age_ms: 12.5, semantic_utility: 0.9, task_criticality: 0.8, "
+            "collision_risk: 0.2, operator_attention: 0.1, coordination_pressure: 0.4, "
+            "raw_serialized_sample_preserved: false, reconstruction: scan_delta, "
+            "fidelity_class: semantic, lossy: true, degradation_reasons: [downsampled, cropped], "
+            "source_sample_count: 360, projected_sample_count: 90, downsample_stride: 4, "
+            "projection_payload_embedded: true}"
+        ),
+        "expected": ["kind: perception", "wire_mode: semantic_delta", "degradation_reasons:", "downsampled", "projected_sample_count: 90"],
+    },
 ]
 
 

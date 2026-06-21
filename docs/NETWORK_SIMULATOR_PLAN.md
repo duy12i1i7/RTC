@@ -174,9 +174,45 @@ Start with trace-driven ns-3/OMNeT++ because it does not require a full RMW.
 5. Compare FIFO/static-priority/FleetQoX policies under identical network
    scenarios.
 
-The current ns-3 runner expects an external ns-3 workspace:
+The legacy ns-3 runner expects an external ns-3 workspace:
 
 ```bash
 export NS3_WORKSPACE=/path/to/ns-3
 python3 -m scripts.run_ns3_replay --trace traces/warehouse_100_constrained.csv
 ```
+
+The reproducible path now installs ns-3 3.41 in the FleetRMW Docker image and
+runs the native replay source directly:
+
+```bash
+python3 scripts/run_ns3_docker_fleet_matrix.py \
+  --robot-counts 8,16,32 --seeds 7,13,29 --seconds 3
+```
+
+The first campaign passes `27/27` rows. Its topology remains shared CSMA plus
+an independent receive error model, so the generated summary explicitly sets
+`high_fidelity_wireless_claim_allowed=false`.
+
+The next reproducible gate uses native ns-3 Wi-Fi and mobility modules:
+
+```bash
+python3 scripts/run_ns3_docker_wifi_mobility_matrix.py \
+  --robot-counts 8,16,32 --seeds 7,13,29 --seconds 3
+```
+
+That campaign passes `27/27` rows on a single 802.11g AP with stationary and
+moving stations. Its summary allows Wi-Fi and mobility-model claims but keeps
+`roaming_handoff_claim_allowed=false` for that artifact.
+
+The multi-AP transition gate is separate and reproducible:
+
+```bash
+python3 scripts/run_ns3_docker_wifi_roaming_matrix.py \
+  --robot-counts 8,16,32 --seeds 7,13,29 --seconds 3
+```
+
+It passes `27/27` rows and measures all `585/585` required endpoint handoffs
+using association/disassociation trace events. The project can therefore make
+a scoped dual-AP roaming-handoff claim. Richer propagation/interference and
+OMNeT++/INET remain separate fidelity gates; the general high-fidelity
+wireless claim stays false.

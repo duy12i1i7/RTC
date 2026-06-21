@@ -547,6 +547,7 @@ class LivePathPlanControllerConfig:
     plan_file: Path
     telemetry_files: tuple[Path, ...]
     demands: tuple[FleetTopicDemand, ...]
+    repair_plan_file: Path | None = None
     subscriber_telemetry_files: tuple[Path, ...] = ()
     seed_observations: tuple[PathObservation, ...] = ()
     robot_states: tuple[RobotQoEState, ...] = ()
@@ -632,6 +633,8 @@ class LivePathPlanController:
         )
         self._tick += 1
         atomic_write_text(self.config.plan_file, plan.path_plan_env + "\n")
+        if self.config.repair_plan_file is not None:
+            atomic_write_text(self.config.repair_plan_file, plan.path_plan_env + "\n")
         self._last_plan = plan
         return plan
 
@@ -740,6 +743,11 @@ class LivePathPlanController:
             "subscriber_record_count": self.subscriber_record_count,
             "last_plan": None if self._last_plan is None else self._last_plan.as_dict(),
             "plan_file": str(self.config.plan_file),
+            "repair_plan_file": (
+                None
+                if self.config.repair_plan_file is None
+                else str(self.config.repair_plan_file)
+            ),
             "telemetry_files": [str(path) for path in self.config.telemetry_files],
             "subscriber_telemetry_files": [
                 str(path) for path in self.config.subscriber_telemetry_files

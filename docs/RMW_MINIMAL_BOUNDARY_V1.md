@@ -104,11 +104,16 @@ Implemented in `fleetqox/rmw_boundary.py`:
   - includes `scripts/run_rmw_docker_ros2_service_timeout_probe.py`, proving a
     delayed `rcl` service response makes `ros2 service call` time out without a
     fabricated response while the server still records the request;
+  - includes
+    `scripts/run_rmw_docker_router_ros2_malformed_service_response_probe.py`,
+    proving a correctly routed response with an invalid serialized body makes
+    `ros2 service call` exit with a caller-visible RMW/rcl deserialize error and
+    no fabricated response;
   - defines `fleetrmw.action_frame.v1` and builds
     `fleetrmw_action_frame_probe` plus
     `scripts/run_rmw_docker_action_frame_probe.py`, proving the minimal goal,
     feedback, status, result, and cancel roles round-trip with lifespan checks
-    before real `rcl_action` APIs are wired in;
+    as the low-level frame contract under the real `rclpy.action` probes;
   - exports explicit optional-surface ABI stubs for loaned messages, services,
     events, dynamic messages, network-flow endpoints, callbacks,
     and serialization-support hooks, keeping `rcl` loader symbol resolution
@@ -300,7 +305,8 @@ The C++ reference package has the same smoke artifact at
 `15` taken, `6` ACK/NACK-driven retransmissions, and `6` missing sequence ranges
 repaired. Unit tests also compile and load the identifier symbols, confirming
 `rmw_get_implementation_identifier()` returns `rmw_fleetqox_cpp` and
-`rmw_get_serialization_format()` returns `cdr`.
+`rmw_get_serialization_format()` returns `fleetrmw.introspection_c.v1`, matching
+the native introspection-C codec instead of claiming DDS CDR compatibility.
 
 The C++ package was also built inside Docker with `ros:jazzy-ros-base` through
 `colcon` alongside `fleetrmw_interfaces`.  The Docker ROS build/run artifact
@@ -332,7 +338,7 @@ matched-endpoint counting, and destroy paths all run in Docker ROS Jazzy.  The
 probe publishes `18` bytes on `/fleetqox/serialized_probe`, takes the same `18`
 bytes from a decoded `fleetrmw.data_frame.v1`, and reports
 `data_frame_wrapped=true`, schema `fleetrmw.data_frame.v1`, and payload
-`fleetrmw-cdr-bytes`.  The same probe now verifies the local transport boundary
+an opaque serialized payload. The same probe now verifies the local transport boundary
 is socket-backed, with `socket_backed=true`, `socket_frames_sent=1`, and
 `socket_frames_received=1`.
 
@@ -406,7 +412,7 @@ The inter-process artifact
 the same serialized RMW data path can cross process boundaries without DDS.  A
 subscriber process binds `FLEETQOX_RMW_BIND=127.0.0.1:48101`, a publisher
 process sends with `FLEETQOX_RMW_PEERS=127.0.0.1:48101`, and the subscriber
-takes the `fleetqox-interprocess-cdr` payload from
+takes the opaque inter-process payload from
 `/fleetqox/interprocess_probe`.  The publisher reports `peer_count=1` and
 `socket_frames_sent=1`; the subscriber reports `socket_frames_received=1`,
 `taken=true`, and `25` received bytes.
@@ -418,7 +424,7 @@ container binds `0.0.0.0:48201` and advertises its topic route to the router
 with `fleetrmw.route_advertisement.v1`; the publisher container sends only to
 the router hostname; the router container binds `0.0.0.0:48200`, learns the
 subscriber route, and forwards the data frame before the subscriber takes the
-`fleetqox-multicontainer-router-cdr` payload from
+opaque multi-container router payload from
 `/fleetqox/multicontainer_router_probe`.  Publisher/subscriber creation also
 emits `fleetrmw.graph_advertisement.v1`, and the router forwards those graph
 advertisements to a graph-only observer peer.  The router reports
@@ -445,11 +451,20 @@ The ROS CLI message-matrix artifact
 CLI pub/echo cases over `rmw_fleetqox_cpp`: `std_msgs/msg/String`,
 `builtin_interfaces/msg/Time`, `builtin_interfaces/msg/Duration`,
 `geometry_msgs/msg/Twist`, `geometry_msgs/msg/PoseStamped`,
-`sensor_msgs/msg/LaserScan`, `nav_msgs/msg/Odometry`, and
-`nav_msgs/msg/Path`.  This covers ROS strings, signed/unsigned time fields,
-nested messages, fixed covariance arrays, dynamic float sequences
-(`ranges`/`intensities`), and dynamic sequences of nested pose messages through
-the current introspection-C serializer.
+`sensor_msgs/msg/LaserScan`, `sensor_msgs/msg/PointCloud2`,
+`nav_msgs/msg/Odometry`, `nav_msgs/msg/Path`,
+`trajectory_msgs/msg/JointTrajectory`,
+`diagnostic_msgs/msg/DiagnosticArray`,
+`fleetrmw_interfaces/msg/SampleIdentity`, and
+`fleetrmw_interfaces/msg/ProjectionQuality`.  This covers ROS strings,
+signed/unsigned time fields, nested messages, fixed covariance arrays, dynamic
+float sequences (`ranges`/`intensities`), binary blobs, trajectories,
+diagnostics, FleetRMW quality metadata, and dynamic sequences of nested pose
+messages through the introspection-C serializer. The v5 upstream Nav2
+lifecycle-manager workload additionally dispatches `rosidl_typesupport_cpp` to
+introspection C++, uses the same FleetRMW wire encoding across Python/C and
+C++, and proves service/client wait readiness through `82/82` routed service
+frames with zero invalid frames.
 
 The ROS CLI node-info artifact
 `results_rmw_socket/docker_ros2_node_info_probe_summary.json` verifies by-node
@@ -567,16 +582,29 @@ controller tails those files to rewrite the RMW plan file during the same
 publisher session. The subscriber path now writes
 `fleetrmw.subscriber_delivery_telemetry.v1` from `rmw_take` source sequence and
 timestamp metadata, and the controller converts those records into robot QoE
-state. The live RMW probe now covers two robots/topics with divergent
+state. NACK retransmissions can now use a distinct live repair plan through
+`FLEETQOX_RMW_REPAIR_PATH_PLAN_FILE`, with a bounded per-publisher repair
+budget, repeated-NACK coalescing, a per-sequence attempt cap, and separate
+repair path/frame metrics. A fleet-level repair scheduler now converts
+deadline pressure, criticality, QoE debt, path quality, attempt debt, and byte
+cost into a shared-capacity sequence policy. The C++ boundary parses
+`topic=paths|sequences=N|attempts=M`, rejects non-admitted gaps in strict mode,
+and reports `repair_not_admitted`. Deterministic Docker runs prove both the
+`4/4` sufficient-capacity result and the expected `3/4` result when only one of
+two gaps fits the shared budget. The live RMW probe now covers
+two robots/topics with divergent
 control-vs-state path rules, and the controller-scale probe covers N robots and
  2N topics without Docker. Redundant-path duplicate data frames are counted and
  de-duplicated before application delivery. A multi-robot profile matrix now
  repeats the Docker RMW path over `wifi`, `wan`, and `roaming`
  router-telemetry profiles. It now has a dependency-light
- `fleetrmw.action_frame.v1` contract for action role payloads, but it does not
- yet own real `rcl_action` APIs, full sequence/C++ type-support coverage,
- broader service cancellation/error semantics, or scaled end-to-end `tc netem`
- QoE/robot-SLO telemetry over many topics and robots.
+ `fleetrmw.action_frame.v1` contract plus real `rclpy.action` success/cancel
+ smokes, including upstream Nav2 `NavigateToPose`, RMF task services, four-way
+ concurrency, and lifecycle transition transport, but it does not yet own a
+ full Nav2 planner/controller lifecycle deployment, full
+ sequence/C++ type-support coverage, broader service cancellation/error
+ semantics, or repeated end-to-end `tc netem` QoE/robot-SLO telemetry over many
+ topics and robots.
 The dependency-free Python boundary and the C++ socket reference now prove the
 same frame/ACK contract, including Docker ROS build coverage.  The Python
 sidecar runtime can consume
@@ -591,11 +619,19 @@ minimal RMW ABI layer:
 2. carry source sequence, effective lifespan, source lifespan, liveliness lease,
    ACK/NACK recovery horizon, and fleet optimizer decisions through
    telemetry-scored multi-path RMW/router paths;
-3. bind the current live profile matrix to real `tc netem` shaping and then run
-   the N-topic controller-scale workload through live router/subscriber loops,
-   including duplicate/de-duplication and richer robot-SLO outcomes, so
-   `FLEETQOX_RMW_FLEET_PATH_PLAN_FILE` is driven by end-to-end fleet health;
-4. expand from the current ROS CLI topic/service graph, pub/echo, and SetBool
-   service-call smokes to richer messages, sequence/C++ type-support coverage,
-   deadline-aware concurrent action scheduling, Nav2/RMF action workloads, and
-   caller-visible service cancellation/error semantics.
+3. retain the completed `27/27` repeated `8/16/32` actuated-repair v3 frontier
+   as the fleet scheduler/repair regression gate, and add repetitions around
+   its `400 ms` tail boundary for tighter confidence intervals;
+4. expand from the current ROS CLI topic/service graph, pub/echo, SetBool
+   service-call smokes, local actions, upstream Nav2/RMF, and lifecycle harness
+   to real Nav2 components, sequence/C++ type-support coverage, deadline-aware
+   concurrent action scheduling, and caller-visible service cancellation/error
+   semantics;
+5. preserve the v2 split-scope benchmark contract: direct DDS/Zenoh throughput
+   and FleetRMW router/repair value remain separate claims, with mixed-hop
+   superiority explicitly forbidden.
+
+The installed `rmw_fleetqox_cpp/capabilities.json` is the normative ABI claim
+boundary. It keeps production readiness false until unsupported optional
+surfaces and non-UDP production transports are either implemented or remain
+explicitly out of scope.

@@ -11,6 +11,7 @@
 #include "rmw/publisher_options.h"
 #include "rmw/qos_profiles.h"
 #include "rmw/rmw.h"
+#include "rmw/serialized_message.h"
 #include "rmw/subscription_options.h"
 #include "rosidl_runtime_c/string_functions.h"
 #include "rosidl_typesupport_interface/macros.h"
@@ -117,7 +118,11 @@ int main()
 
   std_msgs__msg__String outgoing;
   std_msgs__msg__String incoming;
-  if (!std_msgs__msg__String__init(&outgoing) || !std_msgs__msg__String__init(&incoming)) {
+  std_msgs__msg__String standalone_roundtrip;
+  if (!std_msgs__msg__String__init(&outgoing) ||
+    !std_msgs__msg__String__init(&incoming) ||
+    !std_msgs__msg__String__init(&standalone_roundtrip))
+  {
     std::cout << "{\"status\":\"message_init_failed\"}" << std::endl;
     return 1;
   }
@@ -126,6 +131,18 @@ int main()
     std::cout << "{\"status\":\"string_assign_failed\"}" << std::endl;
     return 1;
   }
+
+  rmw_serialized_message_t standalone = rmw_get_zero_initialized_serialized_message();
+  const bool standalone_init_ok =
+    rmw_serialized_message_init(&standalone, 1, &allocator) == RMW_RET_OK;
+  const rmw_ret_t standalone_serialize_ret = standalone_init_ok ?
+    rmw_serialize(&outgoing, type_support, &standalone) : RMW_RET_ERROR;
+  const rmw_ret_t standalone_deserialize_ret = standalone_serialize_ret == RMW_RET_OK ?
+    rmw_deserialize(&standalone, type_support, &standalone_roundtrip) : RMW_RET_ERROR;
+  const std::string standalone_received =
+    standalone_roundtrip.data.data == nullptr ? "" : standalone_roundtrip.data.data;
+  const bool standalone_ok =
+    standalone_deserialize_ret == RMW_RET_OK && standalone_received == payload;
 
   const std::uint64_t socket_sent_before = rmw_fleetqox_cpp_socket_frames_sent();
   const std::uint64_t socket_received_before = rmw_fleetqox_cpp_socket_frames_received();
@@ -148,6 +165,7 @@ int main()
   const bool ok = ret == RMW_RET_OK &&
                   taken &&
                   received == payload &&
+                  standalone_ok &&
                   socket_frames_sent >= 1 &&
                   socket_frames_received >= 1;
 
@@ -156,6 +174,8 @@ int main()
   std::cout << "\"topic\":\"" << topic << "\",";
   std::cout << "\"data_frame_wrapped\":true,";
   std::cout << "\"socket_backed\":true,";
+  std::cout << "\"standalone_serialization\":" << (standalone_ok ? "true" : "false") << ",";
+  std::cout << "\"standalone_serialized_size\":" << standalone.buffer_length << ",";
   std::cout << "\"socket_frames_sent\":" << socket_frames_sent << ",";
   std::cout << "\"socket_frames_received\":" << socket_frames_received << ",";
   std::cout << "\"taken\":" << (taken ? "true" : "false") << ",";
@@ -163,6 +183,9 @@ int main()
 
   std_msgs__msg__String__fini(&outgoing);
   std_msgs__msg__String__fini(&incoming);
+  std_msgs__msg__String__fini(&standalone_roundtrip);
+  const rmw_ret_t standalone_fini_ret = standalone_init_ok ?
+    rmw_serialized_message_fini(&standalone) : RMW_RET_ERROR;
   const rmw_ret_t destroy_pub_ret = rmw_destroy_publisher(node, publisher);
   const rmw_ret_t destroy_sub_ret = rmw_destroy_subscription(node, subscription);
   const rmw_ret_t destroy_node_ret = rmw_destroy_node(node);
@@ -170,5 +193,6 @@ int main()
   return ok &&
          destroy_pub_ret == RMW_RET_OK &&
          destroy_sub_ret == RMW_RET_OK &&
+         standalone_fini_ret == RMW_RET_OK &&
          destroy_node_ret == RMW_RET_OK ? 0 : 1;
 }

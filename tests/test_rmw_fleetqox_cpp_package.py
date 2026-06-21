@@ -12,6 +12,7 @@ from fleetqox.ros2_shim import Ros2Sample
 
 ROOT = Path(__file__).resolve().parents[1]
 PKG = ROOT / "ros2_ws" / "src" / "rmw_fleetqox_cpp"
+IFACE_PKG = ROOT / "ros2_ws" / "src" / "fleetrmw_interfaces"
 
 
 class RmwFleetQoxCppPackageTest(unittest.TestCase):
@@ -39,10 +40,13 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertIn("fleetrmw_typed_pubsub_probe", cmake)
         self.assertIn("fleetrmw_std_msgs_string_probe", cmake)
         self.assertIn("fleetrmw_geometry_twist_probe", cmake)
+        self.assertIn("fleetrmw_cpp_typesupport_probe", cmake)
+        self.assertIn("fleetrmw_rclcpp_interprocess_probe", cmake)
         self.assertIn("fleetrmw_rcl_string_probe", cmake)
         self.assertIn("fleetrmw_rcl_graph_talker", cmake)
         self.assertIn("fleetrmw_rcl_service_node", cmake)
-        self.assertIn('register_rmw_implementation("c:rosidl_typesupport_introspection_c")', cmake)
+        self.assertIn('"c:rosidl_typesupport_introspection_c"', cmake)
+        self.assertIn('"cpp:rosidl_typesupport_introspection_cpp"', cmake)
         self.assertIn("fleetrmw_wait_probe", cmake)
         self.assertIn("fleetrmw_graph_probe", cmake)
         self.assertIn("fleetrmw_interprocess_pubsub_probe", cmake)
@@ -53,8 +57,46 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertIn("<depend>rmw</depend>", manifest)
         self.assertIn("<depend>rcutils</depend>", manifest)
         self.assertIn("<depend>rcl</depend>", manifest)
+        self.assertIn("<depend>rclcpp</depend>", manifest)
         self.assertIn("<depend>rosidl_typesupport_c</depend>", manifest)
+        self.assertIn("<depend>rosidl_typesupport_cpp</depend>", manifest)
+        self.assertIn("<depend>rosidl_typesupport_introspection_cpp</depend>", manifest)
+        wait_source = (PKG / "src" / "rmw_wait.cpp").read_text()
+        self.assertIn("guard_data_from_waitable", wait_source)
+        self.assertIn("std::atomic<bool> triggered", wait_source)
+        service_source = (PKG / "src" / "rmw_stubs.cpp").read_text()
+        self.assertIn("service_cpp_introspection_members", service_source)
+        self.assertIn(
+            "rosidl_typesupport_cpp::get_service_typesupport_handle_function",
+            service_source,
+        )
         self.assertIn("<depend>std_srvs</depend>", manifest)
+        cpp_probe = (PKG / "src" / "cpp_typesupport_probe.cpp").read_text()
+        self.assertIn("fleetrmw.cpp_typesupport_probe.v1", cpp_probe)
+        self.assertIn("rosidl_typesupport_cpp", cpp_probe)
+        self.assertIn("geometry_msgs::msg::PoseStamped", cpp_probe)
+        self.assertIn("bounded_pose_size_ok", cpp_probe)
+        self.assertIn("bounded_c_pose_size_ok", cpp_probe)
+        self.assertIn("rmw_get_serialized_message_size", cpp_probe)
+        cpp_runner = ROOT / "scripts" / "run_rmw_docker_cpp_typesupport_probe.py"
+        self.assertTrue(cpp_runner.exists())
+        self.assertIn(
+            "fleetrmw.docker_cpp_typesupport_probe.v1",
+            cpp_runner.read_text(),
+        )
+        rclcpp_probe = (PKG / "src" / "rclcpp_interprocess_probe.cpp").read_text()
+        self.assertIn("fleetrmw.rclcpp_interprocess_client.v1", rclcpp_probe)
+        self.assertIn("geometry_msgs::msg::PoseStamped", rclcpp_probe)
+        self.assertIn("publisher_network_flow", rclcpp_probe)
+        self.assertIn("subscription_network_flow", rclcpp_probe)
+        self.assertIn("request_callback_observed", rclcpp_probe)
+        self.assertIn("response_callback_observed", rclcpp_probe)
+        rclcpp_runner = ROOT / "scripts" / "run_rmw_docker_router_rclcpp_interprocess_probe.py"
+        self.assertTrue(rclcpp_runner.exists())
+        self.assertIn(
+            "fleetrmw.docker_router_rclcpp_interprocess_probe.v1",
+            rclcpp_runner.read_text(),
+        )
         header = (PKG / "include" / "rmw_fleetqox_cpp" / "data_frame.hpp").read_text()
         self.assertIn("fleetrmw.data_frame.v1", header)
         self.assertIn("fleetrmw.ack_nack.v1", header)
@@ -558,6 +600,10 @@ int main()
         self.assertIn("rosidl_typesupport_introspection_c__identifier", source)
         self.assertIn("serialize_introspection_c_message", source)
         self.assertIn("deserialize_introspection_c_message", source)
+        self.assertIn("serialize_introspection_cpp_message", source)
+        self.assertIn("deserialize_introspection_cpp_message", source)
+        self.assertIn("rosidl_typesupport_introspection_cpp::typesupport_identifier", source)
+        self.assertIn("rosidl_typesupport_cpp::get_message_typesupport_handle_function", source)
         self.assertIn("type_name_from_type_support", source)
         self.assertIn("resolve_effective_type_support", source)
         self.assertIn("rosidl_typesupport_c__get_message_typesupport_handle_function", source)
@@ -574,9 +620,18 @@ int main()
         self.assertIn("fleet_plan", source)
         self.assertIn("FLEETQOX_RMW_FLEET_PATH_PLAN", source)
         self.assertIn("FLEETQOX_RMW_FLEET_PATH_PLAN_FILE", source)
+        self.assertIn("FLEETQOX_RMW_REPAIR_PATH_PLAN", source)
+        self.assertIn("FLEETQOX_RMW_REPAIR_PATH_PLAN_FILE", source)
+        self.assertIn("FLEETQOX_RMW_REPAIR_RETRANSMISSION_BUDGET", source)
+        self.assertIn("FLEETQOX_RMW_REPAIR_MIN_INTERVAL_MS", source)
+        self.assertIn("FLEETQOX_RMW_REPAIR_MAX_ATTEMPTS_PER_SEQUENCE", source)
+        self.assertIn("FLEETQOX_RMW_REPAIR_ADMISSION_STRICT", source)
+        self.assertIn("parse_fleet_repair_plan", source)
+        self.assertIn("source_sequences", source)
         self.assertIn("FleetPathPlanRule", source)
         self.assertIn("parse_fleet_path_plan", source)
         self.assertIn("refresh_fleet_path_plan_from_file", source)
+        self.assertIn("refresh_repair_path_plan_from_file", source)
         self.assertIn("rmw_fleetqox_cpp_last_take_source_sequence", source)
         self.assertIn("rmw_fleetqox_cpp_last_take_source_timestamp_ns", source)
         self.assertIn("rmw_fleetqox_cpp_last_take_timestamp_ns", source)
@@ -600,11 +655,26 @@ int main()
         self.assertIn("fleet_plan_redundant_frames", source)
         self.assertIn("fleet_plan_selected_path_count", source)
         self.assertIn("rmw_fleetqox_cpp_socket_fleet_plan_last_paths", source)
+        self.assertIn("repair_plan_selected_path_count", source)
+        self.assertIn("rmw_fleetqox_cpp_socket_repair_plan_last_paths", source)
+        self.assertIn("rmw_fleetqox_cpp_socket_repair_budget_exhausted", source)
+        self.assertIn("rmw_fleetqox_cpp_socket_repair_requests_coalesced", source)
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_repair_sequence_attempt_limit_exhausted",
+            source,
+        )
+        self.assertIn("rmw_fleetqox_cpp_socket_repair_not_admitted", source)
         self.assertIn("adaptive_peer_score_sum", source)
         self.assertIn("adaptive_selected_peer_index", source)
         self.assertIn("rmw_fleetqox_cpp_socket_peer_policy", source)
         self.assertIn("send_data_frame", source)
         self.assertIn("rmw_fleetqox_cpp_socket_nack_retransmissions", source)
+        self.assertIn("ReliableRetransmitEntry", source)
+        self.assertIn("FLEETQOX_RMW_RELIABLE_ACK_TIMEOUT_MS", source)
+        self.assertIn("FLEETQOX_RMW_RELIABLE_MAX_RETRANSMISSIONS", source)
+        self.assertIn("FLEETQOX_RMW_GRAPH_RENEW_INTERVAL_MS", source)
+        self.assertIn("reliable_retransmit_loop", source)
+        self.assertIn("rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions", source)
         self.assertIn("rmw_subscription_set_on_new_message_callback", source)
         self.assertIn("on_new_message_callback", source)
         self.assertIn("rmw_fleetqox_cpp_waitable_subscription_has_data", source)
@@ -643,6 +713,9 @@ int main()
         self.assertTrue(std_msgs_probe.exists())
         std_msgs_probe_source = std_msgs_probe.read_text()
         self.assertIn("fleetrmw.rmw_std_msgs_string_probe.v1", std_msgs_probe_source)
+        self.assertIn("rmw_serialize(&outgoing", std_msgs_probe_source)
+        self.assertIn("rmw_deserialize(&standalone", std_msgs_probe_source)
+        self.assertIn("standalone_serialization", std_msgs_probe_source)
         self.assertIn("std_msgs__msg__String", std_msgs_probe_source)
         twist_probe = PKG / "src" / "geometry_twist_probe.cpp"
         self.assertTrue(twist_probe.exists())
@@ -848,6 +921,17 @@ int main()
         self.assertIn("rmw_fleetqox_cpp_socket_fleet_plan_redundant_frames", reliable_interprocess_source)
         self.assertIn("rmw_fleetqox_cpp_socket_fleet_plan_selected_path_count", reliable_interprocess_source)
         self.assertIn("fleet_plan_last_paths", reliable_interprocess_source)
+        self.assertIn("repair_plan_frames", reliable_interprocess_source)
+        self.assertIn("repair_plan_selected_path_count", reliable_interprocess_source)
+        self.assertIn("repair_retransmission_budget", reliable_interprocess_source)
+        self.assertIn("repair_budget_exhausted", reliable_interprocess_source)
+        self.assertIn("repair_requests_coalesced", reliable_interprocess_source)
+        self.assertIn(
+            "repair_sequence_attempt_limit_exhausted",
+            reliable_interprocess_source,
+        )
+        self.assertIn("repair_not_admitted", reliable_interprocess_source)
+        self.assertIn("reliable_timeout_retransmissions", reliable_interprocess_source)
         self.assertIn("peer_policy", reliable_interprocess_source)
         docker_router_script = ROOT / "scripts" / "run_rmw_docker_multicontainer_router_probe.py"
         self.assertTrue(docker_router_script.exists())
@@ -900,6 +984,10 @@ int main()
         self.assertIn("fleetrmw.rmw_ros2_node_info_probe.v1", docker_node_info_source)
         self.assertIn("ros2 node list --no-daemon", docker_node_info_source)
         self.assertIn("ros2 node info --no-daemon", docker_node_info_source)
+        rcl_service_node_source = (PKG / "src" / "rcl_service_node.cpp").read_text()
+        self.assertIn("rmw_fleetqox_cpp_send_malformed_response", rcl_service_node_source)
+        self.assertIn("--malformed-response", rcl_service_node_source)
+        self.assertIn("--exit-after-request", rcl_service_node_source)
         docker_service_graph_script = ROOT / "scripts" / "run_rmw_docker_ros2_service_graph_probe.py"
         self.assertTrue(docker_service_graph_script.exists())
         docker_service_graph_source = docker_service_graph_script.read_text()
@@ -921,6 +1009,18 @@ int main()
         self.assertIn("service_call_returncode", docker_service_timeout_source)
         self.assertIn("timed_out", docker_service_timeout_source)
         self.assertIn("server_saw_request", docker_service_timeout_source)
+        malformed_service_script = (
+            ROOT / "scripts" / "run_rmw_docker_router_ros2_malformed_service_response_probe.py"
+        )
+        self.assertTrue(malformed_service_script.exists())
+        malformed_service_source = malformed_service_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_router_ros2_malformed_service_response_probe.v1",
+            malformed_service_source,
+        )
+        self.assertIn("--malformed-response", malformed_service_source)
+        self.assertIn("diagnostic_observed", malformed_service_source)
+        self.assertIn("client_failed_cleanly", malformed_service_source)
         docker_router_service_call_script = ROOT / "scripts" / "run_rmw_docker_router_service_call_probe.py"
         self.assertTrue(docker_router_service_call_script.exists())
         docker_router_service_call_source = docker_router_service_call_script.read_text()
@@ -1234,6 +1334,9 @@ int main()
         self.assertIn("feedback_safe_mode_count", docker_router_budgeted_fleet_plan_source)
         self.assertIn("fallback_recovery_samples", docker_router_budgeted_fleet_plan_source)
         self.assertIn("fallback_recovery", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("subscriber_timeout_ms", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("publisher_trigger_timeout_ms", docker_router_budgeted_fleet_plan_source)
+        self.assertIn("graph_renew_interval_ms", docker_router_budgeted_fleet_plan_source)
         docker_router_budgeted_epoch_script = (
             ROOT
             / "scripts"
@@ -1613,6 +1716,9 @@ int main()
         rmw_netem_dockerfile_source = rmw_netem_dockerfile.read_text()
         self.assertIn("iproute2", rmw_netem_dockerfile_source)
         self.assertIn("python3-colcon-common-extensions", rmw_netem_dockerfile_source)
+        self.assertIn("ros-jazzy-nav2-msgs", rmw_netem_dockerfile_source)
+        self.assertIn("ros-jazzy-rmf-task-msgs", rmw_netem_dockerfile_source)
+        self.assertIn("ros-jazzy-rmf-fleet-msgs", rmw_netem_dockerfile_source)
         self.assertIn("ros-jazzy-rmw-cyclonedds-cpp", rmw_netem_dockerfile_source)
         self.assertIn("ros-jazzy-rmw-zenoh-cpp", rmw_netem_dockerfile_source)
         rmw_netem_readme = ROOT / "external" / "rmw-netem" / "README.md"
@@ -1734,6 +1840,195 @@ int main()
         self.assertIn("fail_on_row_failure", repeated_loss_source)
         self.assertIn("netem_loss_percent=loss_percent", repeated_loss_source)
 
+    def test_fleet_scale_frontier_action_and_comparison_contracts_exist(self) -> None:
+        iface_cmake = (IFACE_PKG / "CMakeLists.txt").read_text()
+        iface_manifest = (IFACE_PKG / "package.xml").read_text()
+        self.assertIn("action/NavigateFleet.action", iface_cmake)
+        self.assertIn("action/DispatchFleetTask.action", iface_cmake)
+        self.assertIn("DEPENDENCIES builtin_interfaces geometry_msgs nav_msgs sensor_msgs", iface_cmake)
+        self.assertIn("<depend>builtin_interfaces</depend>", iface_manifest)
+        self.assertIn("<depend>geometry_msgs</depend>", iface_manifest)
+        navigate_action = (IFACE_PKG / "action" / "NavigateFleet.action").read_text()
+        dispatch_action = (IFACE_PKG / "action" / "DispatchFleetTask.action").read_text()
+        self.assertIn("geometry_msgs/PoseStamped pose", navigate_action)
+        self.assertIn("builtin_interfaces/Duration navigation_time", navigate_action)
+        self.assertIn("uint16 number_of_recoveries", navigate_action)
+        self.assertIn("string[] phases", dispatch_action)
+        self.assertIn("builtin_interfaces/Time completion_time", dispatch_action)
+        self.assertIn("float32 progress", dispatch_action)
+
+        docker_cli_matrix_script = ROOT / "scripts" / "run_rmw_docker_ros2_cli_message_matrix.py"
+        docker_cli_matrix_source = docker_cli_matrix_script.read_text()
+        for msg_type in (
+            "sensor_msgs/msg/PointCloud2",
+            "trajectory_msgs/msg/JointTrajectory",
+            "diagnostic_msgs/msg/DiagnosticArray",
+            "fleetrmw_interfaces/msg/SampleIdentity",
+            "fleetrmw_interfaces/msg/ProjectionQuality",
+        ):
+            self.assertIn(msg_type, docker_cli_matrix_source)
+
+        nav_rmf_script = ROOT / "scripts" / "run_rmw_docker_router_nav2_rmf_action_workload.py"
+        self.assertTrue(nav_rmf_script.exists())
+        nav_rmf_source = nav_rmf_script.read_text()
+        self.assertIn("fleetrmw.rmw_router_nav2_rmf_action_workload.v5", nav_rmf_source)
+        self.assertIn("NavigateFleet", nav_rmf_source)
+        self.assertIn("DispatchFleetTask", nav_rmf_source)
+        self.assertIn("NavigateToPose", nav_rmf_source)
+        self.assertIn("SubmitTask", nav_rmf_source)
+        self.assertIn("CancelTask", nav_rmf_source)
+        self.assertIn("ActionServer", nav_rmf_source)
+        self.assertIn("ActionClient", nav_rmf_source)
+        self.assertIn("expected_service_frames = 58 + upstream_concurrency * 6", nav_rmf_source)
+        self.assertIn("--upstream-concurrency", nav_rmf_source)
+        self.assertIn("ManagedNavLifecycle", nav_rmf_source)
+        self.assertIn("ManageLifecycleNodes", nav_rmf_source)
+        self.assertIn("nav2_lifecycle_manager lifecycle_manager", nav_rmf_source)
+        self.assertIn("nav2_lifecycle_manager_upstream", nav_rmf_source)
+        self.assertIn("lifecycle_transport", nav_rmf_source)
+        self.assertIn("nav2_compatible", nav_rmf_source)
+        self.assertIn("rmf_compatible", nav_rmf_source)
+        self.assertIn("nav2_upstream", nav_rmf_source)
+        self.assertIn("rmf_upstream", nav_rmf_source)
+
+        ns3_runner = ROOT / "scripts" / "run_ns3_docker_fleet_matrix.py"
+        self.assertTrue(ns3_runner.exists())
+        ns3_source = ns3_runner.read_text()
+        self.assertIn("fleetqox.ns3_docker_fleet_matrix.v1", ns3_source)
+        self.assertIn("high_fidelity_wireless_claim_allowed", ns3_source)
+        ns3_wifi_runner = ROOT / "scripts" / "run_ns3_docker_wifi_mobility_matrix.py"
+        self.assertTrue(ns3_wifi_runner.exists())
+        ns3_wifi_source = ns3_wifi_runner.read_text()
+        self.assertIn("fleetqox.ns3_docker_wifi_mobility_matrix.v1", ns3_wifi_source)
+        self.assertIn("roaming_handoff_claim_allowed", ns3_wifi_source)
+        self.assertIn("single_ap_80211g_infrastructure", ns3_wifi_source)
+        ns3_roaming_runner = ROOT / "scripts" / "run_ns3_docker_wifi_roaming_matrix.py"
+        self.assertTrue(ns3_roaming_runner.exists())
+        ns3_roaming_source = ns3_roaming_runner.read_text()
+        self.assertIn("fleetqox.ns3_docker_wifi_roaming_matrix.v1", ns3_roaming_source)
+        self.assertIn("bridged_dual_ap_80211g", ns3_roaming_source)
+        self.assertIn("association_transition_events_measured", ns3_roaming_source)
+        shm_header = PKG / "include" / "rmw_fleetqox_cpp" / "shared_memory_transport.hpp"
+        shm_source = PKG / "src" / "shared_memory_transport.cpp"
+        self.assertTrue(shm_header.exists())
+        self.assertTrue(shm_source.exists())
+        self.assertIn("PTHREAD_PROCESS_SHARED", shm_source.read_text())
+        self.assertIn("shm_open", shm_source.read_text())
+        shm_runner = ROOT / "scripts" / "run_rmw_docker_shared_memory_probe.py"
+        self.assertTrue(shm_runner.exists())
+        self.assertIn("fleetrmw.docker_shared_memory_probe.v1", shm_runner.read_text())
+        self.assertIn("udp_fallback", shm_runner.read_text())
+        hybrid_runner = ROOT / "scripts" / "run_rmw_docker_shm_udp_hybrid_probe.py"
+        self.assertTrue(hybrid_runner.exists())
+        self.assertIn("fleetrmw.docker_shm_udp_hybrid_probe.v1", hybrid_runner.read_text())
+        self.assertIn("duplicate_data_frames_deduped", hybrid_runner.read_text())
+        loan_probe = PKG / "src" / "loaned_message_probe.cpp"
+        self.assertTrue(loan_probe.exists())
+        self.assertIn("fleetrmw.loaned_message_probe.v1", loan_probe.read_text())
+        loan_runner = ROOT / "scripts" / "run_rmw_docker_loaned_message_probe.py"
+        self.assertTrue(loan_runner.exists())
+        self.assertIn("zero_copy_claim_allowed", loan_runner.read_text())
+        dockerfile = (ROOT / "external" / "rmw-netem" / "Dockerfile").read_text()
+        self.assertIn("libns3-dev", dockerfile)
+        self.assertIn("libgsl-dev", dockerfile)
+
+        matched_script = ROOT / "scripts" / "run_rmw_docker_router_matched_multi_topic_probe.py"
+        self.assertTrue(matched_script.exists())
+        matched_source = matched_script.read_text()
+        self.assertIn("fleetrmw.router_matched_multi_topic_probe.v1", matched_source)
+        self.assertIn("publisher-router-subscriber", matched_source)
+        self.assertIn("topic_specs_for_robot_count", matched_source)
+        self.assertIn("--reuse-build", matched_source)
+        self.assertIn("NETEM_SEED_SEMANTICS", matched_source)
+        self.assertIn("--reliable-ack-timeout-ms", matched_source)
+        self.assertIn("FLEETQOX_RMW_RELIABLE_ACK_TIMEOUT_MS", matched_source)
+        self.assertIn("ack_timeout_retransmit", matched_source)
+
+        comparison_script = ROOT / "scripts" / "run_large_scale_rmw_comparison.py"
+        self.assertTrue(comparison_script.exists())
+        comparison_source = comparison_script.read_text()
+        self.assertIn("fleetrmw.large_scale_rmw_comparison.v2", comparison_source)
+        self.assertIn("rmw_fleetqox_cpp_router", comparison_source)
+        self.assertIn("rmw_fastrtps_cpp", comparison_source)
+        self.assertIn("rmw_cyclonedds_cpp", comparison_source)
+        self.assertIn("rmw_zenoh_cpp", comparison_source)
+        self.assertIn("topology_note", comparison_source)
+        self.assertIn("split_scope_topology_caveated", comparison_source)
+        self.assertIn("direct_claim_allowed", comparison_source)
+        self.assertIn("cross_scope_superiority", comparison_source)
+        self.assertIn("run_fleetrmw(", comparison_source)
+        self.assertIn("run_direct(", comparison_source)
+
+        frontier_script = ROOT / "scripts" / "run_rmw_docker_fleet_repair_capacity_frontier.py"
+        self.assertTrue(frontier_script.exists())
+        frontier_source = frontier_script.read_text()
+        self.assertIn("fleetrmw.fleet_repair_capacity_frontier.v1", frontier_source)
+        self.assertIn("--robot-counts", frontier_source)
+        self.assertIn("8,16,32", frontier_source)
+        self.assertIn("--capacity-fractions", frontier_source)
+        self.assertIn(
+            "shared_budget_admission_actuated_repair_qoe_frontier",
+            frontier_source,
+        )
+        self.assertIn("repair_admission_qualified_ratio", frontier_source)
+        self.assertIn("fleet_repair_capacity_bytes=capacity_bytes", frontier_source)
+        self.assertIn("repair_capacity_fault=True", frontier_source)
+        self.assertIn("reuse_build=True", frontier_source)
+
+    def test_capability_manifest_scopes_unsupported_abi(self) -> None:
+        manifest_path = PKG / "capabilities.json"
+        self.assertTrue(manifest_path.exists())
+        manifest = json.loads(manifest_path.read_text())
+        self.assertEqual(manifest["schema_version"], "fleetrmw.rmw_capabilities.v1")
+        self.assertFalse(manifest["production_ready"])
+        self.assertEqual(
+            manifest["serialization_format"],
+            "fleetrmw.introspection_c.v1",
+        )
+        self.assertTrue(manifest["supported"]["source_sequence_ack_nack_repair"])
+        for capability in (
+            "publisher_events",
+            "content_filtered_topics",
+            "dynamic_messages",
+        ):
+            self.assertIn(capability, manifest["unsupported"])
+        self.assertTrue(manifest["supported"]["udp_network_flow_endpoints"])
+        self.assertTrue(
+            manifest["supported"]["new_message_request_response_callbacks"]
+        )
+        self.assertTrue(manifest["supported"]["same_host_posix_shared_memory_pubsub"])
+        self.assertTrue(manifest["supported"]["shared_memory_to_udp_fallback"])
+        self.assertTrue(manifest["supported"]["shared_memory_udp_remote_hybrid"])
+        self.assertTrue(
+            manifest["supported"]["middleware_owned_loaned_messages_introspection_c_cpp"]
+        )
+        self.assertNotIn("loaned_messages", manifest["unsupported"])
+        self.assertTrue(
+            manifest["supported"][
+                "bounded_standalone_serialization_size_introspection_c_cpp"
+            ]
+        )
+        self.assertNotIn("network_flow_endpoints", manifest["unsupported"])
+        self.assertNotIn("event_callbacks", manifest["unsupported"])
+        self.assertIn("qos_event_callbacks", manifest["unsupported"])
+        self.assertNotIn("standalone_serialization_size", manifest["unsupported"])
+        self.assertIn(
+            "unbounded_standalone_serialization_size", manifest["unsupported"]
+        )
+        claims = manifest["claim_boundaries"]
+        self.assertTrue(claims["docker_two_container_shared_memory_100kb"])
+        self.assertTrue(claims["docker_shared_memory_udp_hybrid_dedup"])
+        self.assertTrue(claims["docker_loaned_message_lifecycle_c_cpp"])
+        self.assertFalse(claims["zero_copy_loaned_message_claim"])
+        self.assertTrue(claims["native_ns3_wifi_mobility_matrix_8_16_32_3seed"])
+        self.assertTrue(claims["native_ns3_wifi_roaming_matrix_8_16_32_3seed"])
+        self.assertTrue(claims["ns3_wifi_model_claim"])
+        self.assertTrue(claims["ns3_mobility_model_claim"])
+        self.assertTrue(claims["ns3_roaming_handoff_claim"])
+        self.assertFalse(claims["high_fidelity_wireless_simulator_claim"])
+        cmake = (PKG / "CMakeLists.txt").read_text()
+        self.assertIn("FILES capabilities.json", cmake)
+
     def test_identifier_library_exports_initial_rmw_symbols(self) -> None:
         compiler = shutil.which("c++")
         if compiler is None:
@@ -1762,7 +2057,7 @@ int main()
             )
             self.assertEqual(
                 loaded.rmw_get_serialization_format().decode(),
-                "cdr",
+                "fleetrmw.introspection_c.v1",
             )
 
 

@@ -19,6 +19,20 @@ class TestbedManifestTest(unittest.TestCase):
         self.assertTrue(t0)
         self.assertTrue(all(scenario.runner == "local_python" for scenario in t0))
 
+    def test_scenario_runner_overrides_tier_placeholder(self) -> None:
+        manifest = load_manifest("experiments/testbed_manifest.json")
+        scenarios = iter_scenarios(manifest)
+        direct = next(
+            scenario
+            for scenario in scenarios
+            if scenario.name == "ros2_direct_rmw_netem_matrix"
+        )
+
+        self.assertEqual(
+            direct.runner,
+            "scripts/run_ros2_direct_rmw_netem_matrix.py",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,9 +8,17 @@ RUN apt-get update \
         iproute2 \
         build-essential \
         cmake \
+        libgsl-dev \
+        libns3-dev \
+        ns3 \
         python3-colcon-common-extensions \
         ros-jazzy-geometry-msgs \
         ros-jazzy-nav-msgs \
+        ros-jazzy-nav2-lifecycle-manager \
+        ros-jazzy-nav2-msgs \
+        ros-jazzy-rmf-fleet-msgs \
+        ros-jazzy-rmf-task-msgs \
+        ros-jazzy-rmf-traffic-msgs \
         ros-jazzy-rmw-cyclonedds-cpp \
         ros-jazzy-rosidl-default-generators \
         ros-jazzy-rosidl-default-runtime \

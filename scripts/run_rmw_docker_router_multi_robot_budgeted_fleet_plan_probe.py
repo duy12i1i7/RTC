@@ -25,6 +25,13 @@ from fleetqox.live_path_controller import (
     QoESequentialStoppingConfig,
 )
 from fleetqox.model import FlowClass
+from fleetqox.repair_scheduler import (
+    FleetRepairSchedule,
+    FleetRepairScheduler,
+    FleetRepairSchedulerConfig,
+    RepairDemand,
+    RepairPath,
+)
 from fleetqox.online_fleet_planner import (
     FleetTopicDemand,
     OnlineFleetPathPlan,
@@ -79,6 +86,16 @@ def main() -> int:
     parser.add_argument("--sequential-confidence-fallback", action="store_true")
     parser.add_argument("--sequential-fallback-extra-robots", type=int, default=0)
     parser.add_argument("--fallback-recovery-samples", type=int, default=1)
+    parser.add_argument("--fallback-repair-budget", type=int, default=16)
+    parser.add_argument("--fallback-repair-min-interval-ms", type=int, default=50)
+    parser.add_argument("--fallback-repair-max-attempts-per-sequence", type=int, default=2)
+    parser.add_argument("--fleet-repair-capacity-bytes", type=int, default=0)
+    parser.add_argument("--force-primary-drop-sequence-two", action="store_true")
+    parser.add_argument(
+        "--repair-capacity-fault",
+        action="store_true",
+        help="drop sequence 2 once on both paths for scheduled repair candidates",
+    )
     parser.add_argument(
         "--summary-json",
         default=(
@@ -113,6 +130,15 @@ def main() -> int:
         sequential_confidence_fallback=args.sequential_confidence_fallback,
         sequential_fallback_extra_robots=max(args.sequential_fallback_extra_robots, 0),
         fallback_recovery_samples=max(args.fallback_recovery_samples, 1),
+        fallback_repair_budget=max(args.fallback_repair_budget, 0),
+        fallback_repair_min_interval_ms=max(args.fallback_repair_min_interval_ms, 0),
+        fallback_repair_max_attempts_per_sequence=max(
+            args.fallback_repair_max_attempts_per_sequence,
+            0,
+        ),
+        fleet_repair_capacity_bytes=max(args.fleet_repair_capacity_bytes, 0),
+        force_primary_drop_sequence_two=args.force_primary_drop_sequence_two,
+        repair_capacity_fault=args.repair_capacity_fault,
     )
     output = ROOT / args.summary_json
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +236,7 @@ def build_budgeted_plan(
 def build_qoe_feedback_controller(
     *,
     plan_file: Path,
+    repair_plan_file: Path | None = None,
     telemetry_paths: list[Path],
     topics: list[str],
     deadline_ms: int,
@@ -236,6 +263,7 @@ def build_qoe_feedback_controller(
     return LivePathPlanController(
         LivePathPlanControllerConfig(
             plan_file=plan_file,
+            repair_plan_file=repair_plan_file,
             telemetry_files=(),
             subscriber_telemetry_files=tuple(telemetry_paths),
             demands=demands,
@@ -364,6 +392,7 @@ def collect_sequential_qoe_epoch(
     protected_robot_budget: int,
     stopping_config: QoESequentialStoppingConfig,
     previous_protected_robots: list[str],
+    sample_wait_timeout_s: float = 1.2,
 ) -> dict[str, Any]:
     started = time.monotonic()
     decisions: list[dict[str, object]] = []
@@ -377,7 +406,7 @@ def collect_sequential_qoe_epoch(
             first_sequence=first_sequence,
             last_sequence=sequence_number,
             target_samples=offset + 1,
-            timeout_s=1.2,
+            timeout_s=max(0.01, sample_wait_timeout_s),
         )
         sample_counts = delivery_sample_counts(
             telemetry_paths,
@@ -503,6 +532,12 @@ def fallback_repair_summary(
             "repair_evidence_robot_count": 0,
             "nack_retransmission_count": 0,
             "idle_repair_ack_nack_count": 0,
+            "repair_plan_frame_count": 0,
+            "repair_plan_selected_path_count": 0,
+            "repair_budget_exhausted_count": 0,
+            "repair_requests_coalesced_count": 0,
+            "repair_sequence_attempt_limit_exhausted_count": 0,
+            "repair_not_admitted_count": 0,
             "robots": [],
         }
     expected = set(repair_sequences)
@@ -515,6 +550,12 @@ def fallback_repair_summary(
     repair_evidence_robot_count = 0
     nack_retransmission_count = 0
     idle_repair_ack_nack_count = 0
+    repair_plan_frame_count = 0
+    repair_plan_selected_path_count = 0
+    repair_budget_exhausted_count = 0
+    repair_requests_coalesced_count = 0
+    repair_sequence_attempt_limit_exhausted_count = 0
+    repair_not_admitted_count = 0
     late_without_repair_evidence = False
     for row in robot_rows:
         telemetry = row.get("delivery_telemetry", [])
@@ -540,6 +581,24 @@ def fallback_repair_summary(
             subscriber.get("idle_repair_ack_nack_sent", 0) or 0
         )
         subscriber_ack_nacks = int(subscriber.get("ack_nack_sent", 0) or 0)
+        publisher_repair_plan_frames = int(
+            publisher.get("repair_plan_frames", 0) or 0
+        )
+        publisher_repair_plan_selected_paths = int(
+            publisher.get("repair_plan_selected_path_count", 0) or 0
+        )
+        publisher_repair_budget_exhausted = int(
+            publisher.get("repair_budget_exhausted", 0) or 0
+        )
+        publisher_repair_requests_coalesced = int(
+            publisher.get("repair_requests_coalesced", 0) or 0
+        )
+        publisher_repair_attempt_limit_exhausted = int(
+            publisher.get("repair_sequence_attempt_limit_exhausted", 0) or 0
+        )
+        publisher_repair_not_admitted = int(
+            publisher.get("repair_not_admitted", 0) or 0
+        )
         repair_evidence = (
             publisher_nack_retransmissions > 0
             or subscriber_idle_repair_ack_nacks > 0
@@ -548,6 +607,14 @@ def fallback_repair_summary(
             repair_evidence_robot_count += 1
         nack_retransmission_count += publisher_nack_retransmissions
         idle_repair_ack_nack_count += subscriber_idle_repair_ack_nacks
+        repair_plan_frame_count += publisher_repair_plan_frames
+        repair_plan_selected_path_count += publisher_repair_plan_selected_paths
+        repair_budget_exhausted_count += publisher_repair_budget_exhausted
+        repair_requests_coalesced_count += publisher_repair_requests_coalesced
+        repair_sequence_attempt_limit_exhausted_count += (
+            publisher_repair_attempt_limit_exhausted
+        )
+        repair_not_admitted_count += publisher_repair_not_admitted
         missing_sequence_count += len(missing)
         late_sequence_count += len(late)
         if missing:
@@ -575,6 +642,22 @@ def fallback_repair_summary(
             "publisher_nack_retransmissions": publisher_nack_retransmissions,
             "subscriber_ack_nack_sent": subscriber_ack_nacks,
             "subscriber_idle_repair_ack_nack_sent": subscriber_idle_repair_ack_nacks,
+            "publisher_repair_plan_frames": publisher_repair_plan_frames,
+            "publisher_repair_plan_selected_path_count": (
+                publisher_repair_plan_selected_paths
+            ),
+            "publisher_repair_plan_last_paths": publisher.get(
+                "repair_plan_last_paths",
+                "",
+            ),
+            "publisher_repair_budget_exhausted": publisher_repair_budget_exhausted,
+            "publisher_repair_requests_coalesced": (
+                publisher_repair_requests_coalesced
+            ),
+            "publisher_repair_sequence_attempt_limit_exhausted": (
+                publisher_repair_attempt_limit_exhausted
+            ),
+            "publisher_repair_not_admitted": publisher_repair_not_admitted,
             "repair_evidence": repair_evidence,
         })
     if unresolved_robot_count > 0:
@@ -601,6 +684,14 @@ def fallback_repair_summary(
         "repair_evidence_robot_count": repair_evidence_robot_count,
         "nack_retransmission_count": nack_retransmission_count,
         "idle_repair_ack_nack_count": idle_repair_ack_nack_count,
+        "repair_plan_frame_count": repair_plan_frame_count,
+        "repair_plan_selected_path_count": repair_plan_selected_path_count,
+        "repair_budget_exhausted_count": repair_budget_exhausted_count,
+        "repair_requests_coalesced_count": repair_requests_coalesced_count,
+        "repair_sequence_attempt_limit_exhausted_count": (
+            repair_sequence_attempt_limit_exhausted_count
+        ),
+        "repair_not_admitted_count": repair_not_admitted_count,
         "robots": rows,
     }
 
@@ -630,6 +721,13 @@ def run_probe(
     sequential_confidence_fallback: bool = False,
     sequential_fallback_extra_robots: int = 0,
     fallback_recovery_samples: int = 1,
+    fallback_repair_budget: int = 16,
+    fallback_repair_min_interval_ms: int = 50,
+    fallback_repair_max_attempts_per_sequence: int = 2,
+    fleet_repair_capacity_bytes: int = 0,
+    force_primary_drop_sequence_two: bool = False,
+    repair_capacity_fault: bool = False,
+    reuse_build: bool = False,
 ) -> dict[str, Any]:
     enabled_modes = sum(bool(value) for value in (epoch_transition, qoe_feedback, qoe_migration))
     if enabled_modes > 1:
@@ -638,6 +736,12 @@ def run_probe(
     if sequential_qoe_feedback and (not qoe_migration or not event_triggered_feedback):
         raise ValueError(
             "sequential_qoe_feedback requires qoe_migration and event_triggered_feedback"
+        )
+    if repair_capacity_fault and (
+        fleet_repair_capacity_bytes <= 0 or not sequential_qoe_feedback
+    ):
+        raise ValueError(
+            "repair_capacity_fault requires fleet repair capacity and sequential QoE feedback"
         )
     suffix = str(os.getpid())
     network = f"fleetrmw-budget-plan-net-{suffix}"
@@ -651,6 +755,8 @@ def run_probe(
     plan_dir = root / f".tmp_fleetrmw_budget_plan_{suffix}"
     plan_file = plan_dir / "path_plan.txt"
     plan_file_container = f"/work/{plan_file.relative_to(root)}"
+    repair_plan_file = plan_dir / "repair_path_plan.txt"
+    repair_plan_file_container = f"/work/{repair_plan_file.relative_to(root)}"
     publish_trigger_file = plan_dir / "publish_epoch.txt"
     publish_trigger_file_container = (
         f"/work/{publish_trigger_file.relative_to(root)}"
@@ -682,17 +788,38 @@ def run_probe(
         max_extra_protected_robots=max(0, sequential_fallback_extra_robots),
     )
     recovery_samples = max(1, int(fallback_recovery_samples))
+    sample_wait_timeout_s = (
+        max(0.05, min(0.2, float(deadline_ms) / 1000.0 * 0.25))
+        if repair_capacity_fault else
+        min(2.0, max(0.5, float(deadline_ms) / 1000.0 * 2.0))
+    )
     total_source_frames = (
         stopping_config.max_samples_per_robot * 2 + recovery_samples
         if sequential_qoe_feedback else 3
     )
+    startup_budget_ms = 6000 + robot_count * 350
+    subscriber_timeout_ms = max(
+        14000,
+        startup_budget_ms + 5000 + total_source_frames * 1000,
+    )
+    router_timeout_ms = max(30000, subscriber_timeout_ms + 8000)
+    publisher_trigger_timeout_ms = max(10000, 4000 + robot_count * 300)
+    publisher_barrier_timeout_s = max(8.0, robot_count * 0.25)
+    graph_renew_interval_ms = min(2000, max(500, 500 + max(0, robot_count - 8) * 50))
     payload_sequence = (
         [f"sample-{sequence:04d}" for sequence in range(1, total_source_frames + 1)]
         if sequential_qoe_feedback else ["one", "two", "three"]
     )
     robot_ids = [f"robot_{index:04d}" for index in range(robot_count)]
+    repair_candidate_topic_prefix = f"{topic_prefix.rstrip('/')}/repair-candidate"
     topics = [
-        f"{topic_prefix.rstrip('/')}/robot-{index:04d}/control"
+        (
+            f"{repair_candidate_topic_prefix}/robot-{index:04d}/control"
+            if repair_capacity_fault and index < protected_count else
+            f"{topic_prefix.rstrip('/')}/standard/robot-{index:04d}/control"
+            if repair_capacity_fault else
+            f"{topic_prefix.rstrip('/')}/robot-{index:04d}/control"
+        )
         for index in range(robot_count)
     ]
     telemetry_paths = [
@@ -718,9 +845,21 @@ def run_probe(
         diagnostic_path_plan(topics, protected_count)
         if feedback_enabled else initial_plan.path_plan_env
     )
+    initial_repair_path_plan = (
+        build_budgeted_plan(
+            robot_count=robot_count,
+            topics=topics,
+            deadline_ms=deadline_ms,
+            protected_robot_budget=robot_count,
+        ).path_plan_env
+        if feedback_enabled else initial_path_plan
+    )
     feedback_controller = (
         build_qoe_feedback_controller(
             plan_file=plan_file,
+            repair_plan_file=(
+                repair_plan_file if fleet_repair_capacity_bytes <= 0 else None
+            ),
             telemetry_paths=telemetry_paths,
             topics=topics,
             deadline_ms=deadline_ms,
@@ -736,6 +875,55 @@ def run_probe(
     )
     primary = netem_config_for_profile(primary_profile, netem_loss_percent=loss_percent)
     backup = netem_config_for_profile(backup_profile, netem_loss_percent=loss_percent)
+    fleet_repair_schedule: FleetRepairSchedule | None = None
+    admitted_repair_robot_ids: set[str] = set()
+    deferred_repair_robot_ids: set[str] = set()
+    if fleet_repair_capacity_bytes > 0:
+        repair_demands = [
+            RepairDemand(
+                topic=topics[index],
+                robot_id=robot_ids[index],
+                publisher_id=f"scheduled-publisher-{index:04d}",
+                source_sequence_number=2,
+                payload_bytes=700,
+                remaining_deadline_ms=max(1.0, float(deadline_ms) * 0.8),
+                qoe_debt=(1.0 - index / max(1, protected_count)) if index < protected_count else 0.0,
+                criticality=1.0,
+            )
+            for index in range(protected_count)
+        ]
+        fleet_repair_schedule = FleetRepairScheduler(
+            FleetRepairSchedulerConfig(
+                capacity_bytes=fleet_repair_capacity_bytes,
+                max_paths_per_repair=2,
+                require_failure_domain_diversity=True,
+            )
+        ).schedule(
+            repair_demands,
+            [
+                RepairPath(
+                    "primary_wifi",
+                    latency_ms=float(primary["delay_ms"]),
+                    loss=float(primary["loss_percent"]) / 100.0,
+                    failure_domain="warehouse_wifi",
+                ),
+                RepairPath(
+                    "backup_5g",
+                    latency_ms=float(backup["delay_ms"]),
+                    loss=float(backup["loss_percent"]) / 100.0,
+                    failure_domain="private_5g_core",
+                ),
+            ],
+        )
+        initial_repair_path_plan = fleet_repair_schedule.policy_text
+        admitted_repair_robot_ids = {
+            decision.robot_id for decision in fleet_repair_schedule.admitted
+        }
+        deferred_repair_robot_ids = {
+            decision.robot_id
+            for decision in fleet_repair_schedule.decisions
+            if decision.action != "repair"
+        }
     if sequential_qoe_feedback:
         router_expected_backup_frames = max(1, robot_count - protected_count)
         router_expected_primary_frames = max(1, protected_count)
@@ -760,20 +948,24 @@ def run_probe(
             path.unlink(missing_ok=True)
         plan_dir.mkdir(parents=True, exist_ok=True)
         plan_file.write_text(initial_path_plan + "\n", encoding="utf-8")
+        repair_plan_file.write_text(initial_repair_path_plan + "\n", encoding="utf-8")
         if event_triggered_feedback:
             write_trigger_epoch(publish_trigger_file, 0)
         run(["docker", "network", "create", network])
-        docker_shell(
-            root,
-            image,
-            "source /opt/ros/jazzy/setup.bash && "
-            f"rm -rf {build_base} {install_base} {log_base} && "
-            "colcon "
-            f"--log-base {log_base} "
-            "build --base-paths ros2_ws/src --packages-select rmw_fleetqox_cpp "
-            f"--build-base {build_base} --install-base {install_base} "
-            "--cmake-args -DCMAKE_BUILD_TYPE=Release",
-        )
+        reusable_install = root / install_base.removeprefix("/work/") / "setup.bash"
+        if not reuse_build or not reusable_install.exists():
+            clean_prefix = "" if reuse_build else f"rm -rf {build_base} {install_base} {log_base} && "
+            docker_shell(
+                root,
+                image,
+                "source /opt/ros/jazzy/setup.bash && "
+                f"{clean_prefix}"
+                "colcon "
+                f"--log-base {log_base} "
+                "build --base-paths ros2_ws/src --packages-select rmw_fleetqox_cpp "
+                f"--build-base {build_base} --install-base {install_base} "
+                "--cmake-args -DCMAKE_BUILD_TYPE=Release",
+            )
         primary_router_command = fleet_router_command(
             install_base=install_base,
             router_binary=router_binary,
@@ -782,8 +974,11 @@ def run_probe(
             expected_frames=router_expected_primary_frames,
             expected_ack_nack=robot_count * total_source_frames,
             robot_count=robot_count,
-            drop_sequence_two=not qoe_migration,
+            drop_sequence_two=(not qoe_migration or force_primary_drop_sequence_two),
             expected_ack_nack_forwarded=0,
+            drop_topic_prefix=(
+                repair_candidate_topic_prefix if repair_capacity_fault else ""
+            ),
         )
         backup_router_command = fleet_router_command(
             install_base=install_base,
@@ -793,15 +988,22 @@ def run_probe(
             expected_frames=router_expected_backup_frames,
             expected_ack_nack=robot_count * total_source_frames,
             robot_count=robot_count,
-            drop_sequence_two=False,
+            drop_sequence_two=repair_capacity_fault,
             expected_ack_nack_forwarded=(
                 0 if sequential_qoe_feedback else
                 router_expected_backup_frames if feedback_enabled else robot_count * total_source_frames
             ),
+            drop_topic_prefix=(
+                repair_candidate_topic_prefix if repair_capacity_fault else ""
+            ),
         )
         if sequential_qoe_feedback:
-            primary_router_command += " --post-satisfaction-ms 4000 --timeout-ms 30000"
-            backup_router_command += " --post-satisfaction-ms 4000 --timeout-ms 30000"
+            primary_router_command += (
+                f" --post-satisfaction-ms 4000 --timeout-ms {router_timeout_ms}"
+            )
+            backup_router_command += (
+                f" --post-satisfaction-ms 4000 --timeout-ms {router_timeout_ms}"
+            )
         start_router(
             root=root,
             image=image,
@@ -823,6 +1025,15 @@ def run_probe(
         for index, (name, robot_id, topic, telemetry_path) in enumerate(
             zip(subscriber_names, robot_ids, topics, telemetry_paths)
         ):
+            subscriber_payloads = payload_sequence
+            subscriber_min_ack_nack = 3
+            if repair_capacity_fault and robot_id in deferred_repair_robot_ids:
+                subscriber_payloads = [
+                    payload
+                    for sequence, payload in enumerate(payload_sequence, start=1)
+                    if sequence != 2
+                ]
+                subscriber_min_ack_nack = 2
             start_container(
                 root=root,
                 image=image,
@@ -831,13 +1042,15 @@ def run_probe(
                 command=(
                     f"source /opt/ros/jazzy/setup.bash && source {install_base}/setup.bash && "
                     "export RMW_IMPLEMENTATION=rmw_fleetqox_cpp && "
+                    f"FLEETQOX_RMW_GRAPH_RENEW_INTERVAL_MS={graph_renew_interval_ms} "
                     f"FLEETQOX_RMW_ROBOT_ID={shlex.quote(robot_id)} "
                     f"FLEETQOX_RMW_BIND=0.0.0.0:{49500 + index} "
                     f"FLEETQOX_RMW_PEERS={primary_name}:{primary_port},{backup_name}:{backup_port} "
                     f"{endpoint_binary} --mode subscriber --topic {shlex.quote(topic)} "
                     f"--robot-id {shlex.quote(robot_id)} "
-                    f"--payload-sequence {shlex.quote(','.join(payload_sequence))} "
-                    "--timeout-ms 14000 --min-ack-nack-sent 3 "
+                    f"--payload-sequence {shlex.quote(','.join(subscriber_payloads))} "
+                    f"--timeout-ms {subscriber_timeout_ms} "
+                    f"--min-ack-nack-sent {subscriber_min_ack_nack} "
                     f"--deadline-ms {deadline_ms} --subscriber-deadline-ms {deadline_ms} "
                     f"--subscriber-telemetry-file /work/{telemetry_path.name}"
                 ),
@@ -870,7 +1083,7 @@ def run_probe(
                     epoch_args += (
                         "--publish-interval-ms 0 "
                         f"--publish-trigger-file {shlex.quote(publish_trigger_file_container)} "
-                        "--publish-trigger-timeout-ms 10000 "
+                        f"--publish-trigger-timeout-ms {publisher_trigger_timeout_ms} "
                         f"--publisher-ready-file {shlex.quote(ready_file_container)} "
                     )
                 else:
@@ -883,10 +1096,20 @@ def run_probe(
                 command=(
                     f"source /opt/ros/jazzy/setup.bash && source {install_base}/setup.bash && "
                     "export RMW_IMPLEMENTATION=rmw_fleetqox_cpp && "
+                    f"FLEETQOX_RMW_GRAPH_RENEW_INTERVAL_MS={graph_renew_interval_ms} "
                     f"FLEETQOX_RMW_ROBOT_ID={shlex.quote(robot_id)} "
                     "FLEETQOX_RMW_BIND=0.0.0.0:0 "
                     "FLEETQOX_RMW_PEER_POLICY=fleet_plan "
                     f"FLEETQOX_RMW_FLEET_PATH_PLAN_FILE={shlex.quote(plan_file_container)} "
+                    f"FLEETQOX_RMW_REPAIR_PATH_PLAN_FILE={shlex.quote(repair_plan_file_container)} "
+                    "FLEETQOX_RMW_REPAIR_RETRANSMISSION_BUDGET="
+                    f"{max(int(fallback_repair_budget), 0)} "
+                    "FLEETQOX_RMW_REPAIR_MIN_INTERVAL_MS="
+                    f"{max(int(fallback_repair_min_interval_ms), 0)} "
+                    "FLEETQOX_RMW_REPAIR_MAX_ATTEMPTS_PER_SEQUENCE="
+                    f"{max(int(fallback_repair_max_attempts_per_sequence), 0)} "
+                    "FLEETQOX_RMW_REPAIR_ADMISSION_STRICT="
+                    f"{1 if fleet_repair_capacity_bytes > 0 else 0} "
                     f"FLEETQOX_RMW_PEERS=primary_wifi={primary_name}:{primary_port},"
                     f"backup_5g={backup_name}:{backup_port} "
                     f"{endpoint_binary} --mode publisher --topic {shlex.quote(topic)} "
@@ -900,7 +1123,7 @@ def run_probe(
 
         publisher_barrier_started = time.monotonic()
         publisher_barrier_ready = (
-            wait_for_paths(publisher_ready_files, timeout_s=8.0)
+            wait_for_paths(publisher_ready_files, timeout_s=publisher_barrier_timeout_s)
             if event_triggered_feedback else True
         )
         publisher_barrier_wait_ms = (
@@ -932,6 +1155,7 @@ def run_probe(
                 protected_robot_budget=protected_count,
                 stopping_config=stopping_config,
                 previous_protected_robots=[],
+                sample_wait_timeout_s=sample_wait_timeout_s,
             )
             sequential_qoe_epochs.append(first_epoch)
             first_epoch_fallback_eligible = bool(
@@ -998,6 +1222,7 @@ def run_probe(
                         protected_robot_budget=protected_count,
                         stopping_config=stopping_config,
                         previous_protected_robots=protected_robots,
+                        sample_wait_timeout_s=sample_wait_timeout_s,
                     )
                     sequential_qoe_epochs.append(second_epoch)
                     second_epoch_fallback_eligible = bool(
@@ -1230,6 +1455,20 @@ def run_probe(
                     6 if len(selected_paths) > 1 else 3
                 )
             payloads = set(subscriber.get("payloads", []))
+            is_admitted_repair = robot_id in admitted_repair_robot_ids
+            is_deferred_repair = robot_id in deferred_repair_robot_ids
+            expected_delivered_sequences = (
+                [sequence for sequence in expected_on_time_sequences if sequence != 2]
+                if repair_capacity_fault and is_deferred_repair else
+                expected_on_time_sequences
+            )
+            expected_payloads = {
+                payload
+                for sequence, payload in enumerate(payload_sequence, start=1)
+                if not (repair_capacity_fault and is_deferred_repair and sequence == 2)
+            }
+            expected_nack_repair = repair_capacity_fault and is_admitted_repair
+            expected_admission_rejection = repair_capacity_fault and is_deferred_repair
             row_ok = (
                 publisher_returncodes[index] == 0
                 and subscriber_returncodes[index] == 0
@@ -1240,9 +1479,19 @@ def run_probe(
                 and int(publisher.get("fleet_plan_redundant_frames", 0)) == expected_redundant_frames
                 and int(publisher.get("fleet_plan_selected_path_count", 0)) == expected_selected_path_count
                 and publisher.get("fleet_plan_last_paths") == ",".join(selected_paths)
-                and int(publisher.get("nack_retransmissions", 0)) == 0
-                and on_time_sequences == expected_on_time_sequences
-                and set(payload_sequence).issubset(payloads)
+                and (
+                    int(publisher.get("nack_retransmissions", 0)) >= 1
+                    and int(publisher.get("repair_plan_frames", 0)) >= 1
+                    if expected_nack_repair else
+                    int(publisher.get("nack_retransmissions", 0)) == 0
+                )
+                and (
+                    int(publisher.get("repair_not_admitted", 0)) >= 1
+                    if expected_admission_rejection else True
+                )
+                and on_time_sequences == expected_delivered_sequences
+                and expected_payloads.issubset(payloads)
+                and (payload_sequence[1] not in payloads if expected_admission_rejection else True)
             )
             robot_rows.append({
                 "robot_id": robot_id,
@@ -1252,6 +1501,11 @@ def run_probe(
                 "selected_paths": list(selected_paths),
                 "expected_redundant_frames": expected_redundant_frames,
                 "expected_selected_path_count": expected_selected_path_count,
+                "repair_capacity_role": (
+                    "admitted" if is_admitted_repair else
+                    "deferred" if is_deferred_repair else
+                    "unaffected"
+                ),
                 "on_time_sequences": on_time_sequences,
                 "recovery_on_time_sequences": [
                     sequence for sequence in on_time_sequences if sequence in recovery_sequences
@@ -1268,6 +1522,14 @@ def run_probe(
         recovery_summary = recovery_window_summary(robot_rows, recovery_sequences)
         repair_summary = fallback_repair_summary(robot_rows, fallback_repair_sequences)
         robots_ok = sum(row["status"] == "ok" for row in robot_rows)
+        repair_delivery_robots_ok = int(repair_summary.get("delivered_robot_count", 0))
+        repair_deadline_robots_ok = int(
+            repair_summary.get("deadline_ok_robot_count", 0)
+        )
+        qoe_recovery_ok = (
+            repair_summary.get("status") != "unresolved"
+            and recovery_summary.get("status") == "ok"
+        )
         success_ratios = [
             len(row["on_time_sequences"]) / max(1.0, float(total_source_frames))
             for row in robot_rows
@@ -1275,6 +1537,7 @@ def run_probe(
         jain_index = jain_fairness(success_ratios)
         actual_path_transmissions = sum(
             int(publisher.get("fleet_plan_selected_path_count", 0))
+            + int(publisher.get("repair_plan_selected_path_count", 0))
             for publisher in publishers
         )
         planned_path_transmissions = (
@@ -1284,10 +1547,42 @@ def run_probe(
             if epoch_transition or feedback_enabled else
             sum(len(decision.selected_paths) * total_source_frames for decision in plan.topic_decisions)
         )
+        repair_path_transmission_overhead = max(
+            0,
+            actual_path_transmissions - planned_path_transmissions,
+        )
         reduction_ratio = 1.0 - actual_path_transmissions / full_redundancy_path_transmissions
         total_retransmissions = sum(
             int(publisher.get("nack_retransmissions", 0)) for publisher in publishers
         )
+        repair_plan_frame_count = sum(
+            int(publisher.get("repair_plan_frames", 0)) for publisher in publishers
+        )
+        repair_plan_selected_path_count = sum(
+            int(publisher.get("repair_plan_selected_path_count", 0))
+            for publisher in publishers
+        )
+        repair_not_admitted_robot_count = sum(
+            int(publisher.get("repair_not_admitted", 0)) > 0
+            for publisher in publishers
+        )
+        expected_repair_path_transmissions = sum(
+            len(decision.selected_paths) for decision in (
+                fleet_repair_schedule.admitted if fleet_repair_schedule is not None else ()
+            )
+        )
+        repair_capacity_outcome_ok = (
+            repair_capacity_fault
+            and fleet_repair_schedule is not None
+            and int(primary_result.get("test_dropped_frames", 0)) >= protected_count
+            and int(backup_result.get("test_dropped_frames", 0)) >= protected_count
+            and repair_summary.get("repair_evidence_robot_count") == len(admitted_repair_robot_ids)
+            and repair_summary.get("unresolved_robot_count") == len(deferred_repair_robot_ids)
+            and repair_not_admitted_robot_count == len(deferred_repair_robot_ids)
+            and total_retransmissions == len(admitted_repair_robot_ids)
+            and repair_plan_frame_count == len(admitted_repair_robot_ids)
+            and repair_plan_selected_path_count == expected_repair_path_transmissions
+        ) if repair_capacity_fault else False
         primary_fault_observed = (
             qoe_migration
             and final_primary_qdisc != primary_qdisc
@@ -1354,13 +1649,19 @@ def run_probe(
             ).path_plan_env)
             and primary_fault_observed
             and int(backup_result.get("forwarded_frames", 0)) >= expected_backup_frames
-            and actual_path_transmissions == planned_path_transmissions
+            and actual_path_transmissions == (
+                planned_path_transmissions + expected_repair_path_transmissions
+                if repair_capacity_fault else planned_path_transmissions
+            )
             and (
                 sequential_qoe_feedback
                 or actual_path_transmissions == expected_backup_frames + expected_primary_frames
             )
-            and total_retransmissions == 0
-            and jain_index >= 0.999
+            and (
+                repair_capacity_outcome_ok
+                if repair_capacity_fault else total_retransmissions == 0
+            )
+            and (repair_capacity_fault or jain_index >= 0.999)
             and "netem" in primary_qdisc
             and "netem" in backup_qdisc
         )
@@ -1370,6 +1671,10 @@ def run_probe(
             "image": image,
             "robot_count": robot_count,
             "robots_ok": robots_ok,
+            "strict_robots_ok": robots_ok,
+            "repair_delivery_robots_ok": repair_delivery_robots_ok,
+            "repair_deadline_robots_ok": repair_deadline_robots_ok,
+            "qoe_recovery_ok": qoe_recovery_ok,
             "protected_robot_budget": protected_count,
             "protected_robots": protected_robots,
             "epoch_transition": epoch_transition,
@@ -1379,8 +1684,33 @@ def run_probe(
             "sequential_qoe_feedback": sequential_qoe_feedback,
             "sequential_confidence_fallback": sequential_confidence_fallback,
             "sequential_qoe_config": stopping_config.__dict__,
+            "sequential_sample_wait_timeout_ms": sample_wait_timeout_s * 1000.0,
+            "startup_budget_ms": startup_budget_ms,
+            "subscriber_timeout_ms": subscriber_timeout_ms,
+            "router_timeout_ms": router_timeout_ms,
+            "publisher_trigger_timeout_ms": publisher_trigger_timeout_ms,
+            "publisher_barrier_timeout_ms": publisher_barrier_timeout_s * 1000.0,
+            "graph_renew_interval_ms": graph_renew_interval_ms,
             "sequential_confidence_fallback_config": fallback_config.__dict__,
             "fallback_recovery_samples": recovery_samples,
+            "fallback_repair_budget": max(int(fallback_repair_budget), 0),
+            "fallback_repair_min_interval_ms": max(
+                int(fallback_repair_min_interval_ms),
+                0,
+            ),
+            "fallback_repair_max_attempts_per_sequence": max(
+                int(fallback_repair_max_attempts_per_sequence),
+                0,
+            ),
+            "fleet_repair_capacity_bytes": max(int(fleet_repair_capacity_bytes), 0),
+            "fleet_repair_schedule": (
+                None if fleet_repair_schedule is None else fleet_repair_schedule.as_dict()
+            ),
+            "force_primary_drop_sequence_two": force_primary_drop_sequence_two,
+            "repair_capacity_fault": repair_capacity_fault,
+            "repair_capacity_outcome_ok": repair_capacity_outcome_ok,
+            "admitted_repair_robot_ids": sorted(admitted_repair_robot_ids),
+            "deferred_repair_robot_ids": sorted(deferred_repair_robot_ids),
             "fallback_recovery_sequences": recovery_sequences,
             "fallback_recovery": recovery_summary,
             "fallback_repair_sequences": fallback_repair_sequences,
@@ -1431,6 +1761,15 @@ def run_probe(
             "max_latency_ms": max((row["max_latency_ms"] for row in robot_rows), default=0.0),
             "planned_path_transmissions": planned_path_transmissions,
             "actual_path_transmissions": actual_path_transmissions,
+            "repair_path_transmission_overhead": repair_path_transmission_overhead,
+            "expected_repair_path_transmissions": expected_repair_path_transmissions,
+            "repair_plan_frame_count": repair_plan_frame_count,
+            "repair_plan_selected_path_count": repair_plan_selected_path_count,
+            "repair_not_admitted_robot_count": repair_not_admitted_robot_count,
+            "repair_path_transmission_overhead_ratio": (
+                repair_path_transmission_overhead / planned_path_transmissions
+                if planned_path_transmissions else 0.0
+            ),
             "full_redundancy_path_transmissions": full_redundancy_path_transmissions,
             "path_transmission_reduction_ratio": reduction_ratio,
             "total_nack_retransmissions": total_retransmissions,
@@ -1444,6 +1783,7 @@ def run_probe(
         return {
             "schema_version": SCHEMA_VERSION,
             "status": "failed",
+            "command": exc.cmd,
             "returncode": exc.returncode,
             "stdout": exc.stdout,
             "stderr": exc.stderr,
@@ -1457,7 +1797,8 @@ def run_probe(
         for path in telemetry_paths:
             path.unlink(missing_ok=True)
         shutil.rmtree(plan_dir, ignore_errors=True)
-        docker_shell(root, image, f"rm -rf {build_base} {install_base} {log_base}", check=False)
+        if not reuse_build:
+            docker_shell(root, image, f"rm -rf {build_base} {install_base} {log_base}", check=False)
 
 
 def set_router_qdisc(container: str, netem: dict[str, float]) -> None:

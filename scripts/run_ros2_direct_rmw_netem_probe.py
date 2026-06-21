@@ -46,6 +46,12 @@ def main() -> int:
     parser.add_argument("--publish-interval-ms", type=int, default=500)
     parser.add_argument("--timeout-s", type=float, default=15.0)
     parser.add_argument(
+        "--publisher-linger-s",
+        type=float,
+        default=0.5,
+        help="keep the publisher alive after the last sample for RELIABLE repair",
+    )
+    parser.add_argument(
         "--summary-json",
         type=Path,
         default=Path("results_rmw_socket/ros2_direct_rmw_netem_probe_summary.json"),
@@ -66,6 +72,7 @@ def main() -> int:
         robot_count=args.robot_count,
         publish_interval_ms=args.publish_interval_ms,
         timeout_s=args.timeout_s,
+        publisher_linger_s=max(args.publisher_linger_s, 0.0),
     )
     args.summary_json.parent.mkdir(parents=True, exist_ok=True)
     args.summary_json.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -94,6 +101,7 @@ def run_probe(
     robot_count: int = 1,
     publish_interval_ms: int,
     timeout_s: float,
+    publisher_linger_s: float = 0.5,
 ) -> dict[str, Any]:
     if samples <= 0:
         raise ValueError("samples must be positive")
@@ -103,6 +111,8 @@ def run_probe(
         raise ValueError("publish_interval_ms must be non-negative")
     if timeout_s <= 0:
         raise ValueError("timeout_s must be positive")
+    if publisher_linger_s < 0.0:
+        raise ValueError("publisher_linger_s must be non-negative")
     if netem_loss_scale < 0.0:
         raise ValueError("netem_loss_scale must be non-negative")
     telemetry_profile = profile_by_name(profile)
@@ -122,16 +132,23 @@ def run_probe(
             "rmw_probe": availability,
         }
 
-    suffix = str(os.getpid())
-    domain_id = 120 + (os.getpid() % 80)
+    run_nonce = time.time_ns()
+    suffix = f"{os.getpid()}-{run_nonce}"
+    domain_id = 120 + (run_nonce % 80)
     network = f"fleetrmw-ros2-direct-net-{suffix}"
     subscriber_name = f"fleetrmw-ros2-direct-sub-{suffix}"
     publisher_name = f"fleetrmw-ros2-direct-pub-{suffix}"
+    zenoh_router_name = f"fleetrmw-ros2-direct-zenoh-router-{suffix}"
     work_dir = root / f".tmp_fleetrmw_ros2_direct_{suffix}"
     subscriber_script = work_dir / "subscriber.py"
     publisher_script = work_dir / "publisher.py"
     publisher_netem_status = work_dir / "publisher_netem_status.json"
     publisher_netem_status_container = f"/work/{publisher_netem_status.relative_to(root)}"
+    publisher_ready_container = "/tmp/fleetrmw_probe_ready"
+    publisher_start_container = "/tmp/fleetrmw_probe_start"
+    zenoh_session_config = work_dir / "zenoh-session-router.json5"
+    zenoh_session_config_container = f"/work/{zenoh_session_config.relative_to(root)}"
+    use_zenoh_router = rmw == "rmw_zenoh_cpp"
     netem = netem_config_for_path(
         telemetry_profile,
         path_id="primary_wifi",
@@ -147,8 +164,25 @@ def run_probe(
             topic_specs=topic_specs,
             publish_interval_ms=publish_interval_ms,
             timeout_s=timeout_s,
+            publisher_linger_s=publisher_linger_s,
         )
         run(["docker", "network", "create", network])
+        if use_zenoh_router:
+            write_zenoh_session_config(
+                zenoh_session_config,
+                router_host=zenoh_router_name,
+            )
+            start_container(
+                root=root,
+                image=image,
+                name=zenoh_router_name,
+                network=network,
+                command=(
+                    "source /opt/ros/jazzy/setup.bash && "
+                    "exec ros2 run rmw_zenoh_cpp rmw_zenohd"
+                ),
+            )
+            wait_for_container_tcp(zenoh_router_name, port=7447, timeout_s=15.0)
         start_container(
             root=root,
             image=image,
@@ -158,31 +192,52 @@ def run_probe(
                 rmw=rmw,
                 domain_id=domain_id,
                 python_path=f"/work/{subscriber_script.relative_to(root)}",
+                zenoh_session_config_uri=(
+                    zenoh_session_config_container if use_zenoh_router else None
+                ),
             ),
         )
         time.sleep(1.0)
-        publisher_prefix = (
-            netem_shell_prefix(
-                netem,
-                status_file=publisher_netem_status_container,
-                require=require_netem,
-            )
-            if enable_netem
-            else ""
-        )
         start_container(
             root=root,
             image=image,
             name=publisher_name,
             network=network,
-            command=publisher_prefix
+            command=(
+                f"export FLEETQOX_PROBE_READY_FILE={publisher_ready_container} "
+                f"FLEETQOX_PROBE_START_FILE={publisher_start_container} && "
+            )
             + ros_command(
                 rmw=rmw,
                 domain_id=domain_id,
                 python_path=f"/work/{publisher_script.relative_to(root)}",
+                zenoh_session_config_uri=(
+                    zenoh_session_config_container if use_zenoh_router else None
+                ),
             ),
             extra_args=("--cap-add", "NET_ADMIN") if enable_netem else (),
         )
+        wait_for_container_path(
+            publisher_name,
+            publisher_ready_container,
+            timeout_s=12.0,
+        )
+        if enable_netem:
+            run(
+                [
+                    "docker",
+                    "exec",
+                    publisher_name,
+                    "bash",
+                    "-lc",
+                    netem_shell_prefix(
+                        netem,
+                        status_file=publisher_netem_status_container,
+                        require=require_netem,
+                    ),
+                ]
+            )
+        run(["docker", "exec", publisher_name, "touch", publisher_start_container])
         publisher_returncode = int(run(["docker", "wait", publisher_name]).stdout.strip())
         subscriber_returncode = int(run(["docker", "wait", subscriber_name]).stdout.strip())
         publisher_log = run(["docker", "logs", publisher_name]).stdout.strip()
@@ -217,6 +272,8 @@ def run_probe(
             "robot_count": robot_count,
             "samples": samples,
             "samples_per_topic": samples,
+            "publisher_linger_s": publisher_linger_s,
+            "zenoh_router_enabled": use_zenoh_router,
             "repetition_seed": repetition_seed,
             "netem_enabled": enable_netem,
             "netem_required": require_netem,
@@ -252,12 +309,20 @@ def run_probe(
             "image": image,
             "rmw": rmw,
             "profile": profile,
+            "robot_count": robot_count,
+            "topic_count": len(topic_specs),
+            "repetition_seed": repetition_seed,
             "returncode": exc.returncode,
             "stdout_excerpt": excerpt(exc.stdout),
             "stderr_excerpt": excerpt(exc.stderr),
+            "publisher_diagnostics": container_diagnostics(publisher_name),
+            "subscriber_diagnostics": container_diagnostics(subscriber_name),
+            "zenoh_router_diagnostics": (
+                container_diagnostics(zenoh_router_name) if use_zenoh_router else {}
+            ),
         }
     finally:
-        for name in (publisher_name, subscriber_name):
+        for name in (publisher_name, subscriber_name, zenoh_router_name):
             subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True, text=True)
         subprocess.run(["docker", "network", "rm", network], check=False, capture_output=True, text=True)
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -271,6 +336,7 @@ def write_probe_scripts(
     topic_specs: list[dict[str, str]] | None = None,
     publish_interval_ms: int,
     timeout_s: float,
+    publisher_linger_s: float = 0.5,
 ) -> None:
     topic_specs = topic_specs or topic_specs_for_robot_count(1)
     topic_specs_json = json.dumps(topic_specs, sort_keys=True)
@@ -284,7 +350,9 @@ def write_probe_scripts(
         PUBLISHER_SCRIPT.replace("__SAMPLES__", str(samples)).replace(
             "__PUBLISH_INTERVAL_S__",
             repr(publish_interval_ms / 1000.0),
-        ).replace("__TOPIC_SPECS_JSON__", topic_specs_json),
+        ).replace("__PUBLISHER_LINGER_S__", repr(max(publisher_linger_s, 0.0))).replace(
+            "__TOPIC_SPECS_JSON__", topic_specs_json
+        ),
         encoding="utf-8",
     )
 
@@ -329,11 +397,93 @@ def probe_rmw_available(image: str, rmw: str) -> dict[str, object]:
     }
 
 
-def ros_command(*, rmw: str, domain_id: int, python_path: str) -> str:
-    return (
+def ros_command(
+    *,
+    rmw: str,
+    domain_id: int,
+    python_path: str,
+    zenoh_session_config_uri: str | None = None,
+) -> str:
+    command = (
         "source /opt/ros/jazzy/setup.bash && "
         f"export RMW_IMPLEMENTATION={rmw} ROS_DOMAIN_ID={domain_id} && "
-        f"python3 {python_path}"
+    )
+    if zenoh_session_config_uri:
+        command += f"export ZENOH_SESSION_CONFIG_URI={zenoh_session_config_uri} && "
+    return command + f"python3 {python_path}"
+
+
+def write_zenoh_session_config(path: Path, *, router_host: str) -> None:
+    path.write_text(
+        "{\n"
+        '  mode: "client",\n'
+        "  connect: {\n"
+        "    timeout_ms: { router: -1, peer: -1, client: 0 },\n"
+        f'    endpoints: ["tcp/{router_host}:7447"],\n'
+        "    exit_on_failure: { router: false, peer: false, client: true },\n"
+        "    retry: { period_init_ms: 200, period_max_ms: 1000, "
+        "period_increase_factor: 2 },\n"
+        "  },\n"
+        "  listen: { timeout_ms: 0, endpoints: [\"tcp/localhost:0\"], "
+        "exit_on_failure: true },\n"
+        "  scouting: {\n"
+        "    multicast: { enabled: false },\n"
+        "    gossip: { enabled: false, multihop: false, "
+        "target: { router: [\"router\", \"peer\"], peer: [\"router\"] }, "
+        "autoconnect: { router: [], peer: [\"router\", \"peer\"] }, "
+        "autoconnect_strategy: { peer: { to_router: \"always\", "
+        "to_peer: \"greater-zid\" } } },\n"
+        "  },\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+
+def wait_for_container_tcp(name: str, *, port: int, timeout_s: float) -> None:
+    deadline = time.monotonic() + timeout_s
+    probe = (
+        "import socket; "
+        f"s=socket.create_connection(('127.0.0.1',{port}),0.5); s.close()"
+    )
+    while time.monotonic() < deadline:
+        completed = subprocess.run(
+            ["docker", "exec", name, "python3", "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode == 0:
+            return
+        time.sleep(0.2)
+    raise subprocess.CalledProcessError(
+        1,
+        ["docker", "exec", name, "python3", "-c", probe],
+        stderr=f"container {name} did not listen on TCP {port}",
+    )
+
+
+def wait_for_container_path(name: str, path: str, *, timeout_s: float) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        completed = subprocess.run(
+            ["docker", "exec", name, "test", "-e", path],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode == 0:
+            return
+        if "is not running" in completed.stderr:
+            raise subprocess.CalledProcessError(
+                completed.returncode,
+                completed.args,
+                stderr=completed.stderr,
+            )
+        time.sleep(0.05)
+    raise subprocess.CalledProcessError(
+        1,
+        ["docker", "exec", name, "test", "-e", path],
+        stderr=f"timed out waiting for {path} in {name}",
     )
 
 
@@ -415,6 +565,28 @@ def excerpt(value: object, *, max_chars: int = 800) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 3] + "..."
+
+
+def container_diagnostics(name: str) -> dict[str, object]:
+    inspect = subprocess.run(
+        ["docker", "inspect", name, "--format", "{{json .State}}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    logs = subprocess.run(
+        ["docker", "logs", name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return {
+        "inspect_returncode": inspect.returncode,
+        "state": excerpt(inspect.stdout, max_chars=2000),
+        "logs_returncode": logs.returncode,
+        "stdout_excerpt": excerpt(logs.stdout, max_chars=4000),
+        "stderr_excerpt": excerpt(logs.stderr, max_chars=4000),
+    }
 
 
 def _float(value: object) -> float:
@@ -518,6 +690,8 @@ raise SystemExit(0 if result["status"] == "ok" else 1)
 
 PUBLISHER_SCRIPT = r'''
 import json
+import os
+from pathlib import Path
 import time
 
 import rclpy
@@ -545,6 +719,17 @@ while time.time() < deadline:
     if all(pub.get_subscription_count() > 0 for pub in publishers.values()):
         break
 
+ready_file = os.environ.get("FLEETQOX_PROBE_READY_FILE", "")
+start_file = os.environ.get("FLEETQOX_PROBE_START_FILE", "")
+if ready_file:
+    Path(ready_file).touch()
+if start_file:
+    start_deadline = time.time() + 15.0
+    while time.time() < start_deadline and not Path(start_file).exists():
+        rclpy.spin_once(node, timeout_sec=0.05)
+    if not Path(start_file).exists():
+        raise RuntimeError("timed out waiting for data-plane start gate")
+
 sent = {"control": 0, "state": 0}
 sent_by_topic = {spec["topic"]: 0 for spec in TOPIC_SPECS}
 for seq in range(1, SAMPLES + 1):
@@ -567,7 +752,7 @@ for seq in range(1, SAMPLES + 1):
     rclpy.spin_once(node, timeout_sec=0.05)
     time.sleep(PUBLISH_INTERVAL_S)
 
-time.sleep(0.5)
+time.sleep(__PUBLISHER_LINGER_S__)
 subscription_counts = {
     topic: pub.get_subscription_count()
     for topic, pub in publishers.items()

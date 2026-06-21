@@ -38,8 +38,24 @@ This repository starts with the part that should be proven first:
   socket-backed serialized pub/sub data-frame path with both local loopback and
   env-configured inter-process peer probes, plus a Docker
   publisher-router-subscriber-observer route and lease-aware remote-graph
-  synchronization probe, type-erased and introspection-C ROS typed publish/take
-  probes, wait/guard, and graph probes;
+  synchronization probe, type-erased and introspection-C/C++ ROS typed
+  publish/take probes, wait/guard, and graph probes; a standalone C++
+  type-support regression round-trips `String` and nested `PoseStamped`, checks
+  exact bounded `Pose` serialized-size calculation, and deliberately scopes
+  unbounded artificial sizing as unsupported; a
+  two-container `rclcpp` probe routes nested PoseStamped pub/sub plus SetBool
+  service traffic through the FleetRMW router; a separate two-container POSIX
+  shared-memory gate transfers a 100 KB payload with no UDP peer or slot
+  overwrite, reports zero network-flow endpoints in SHM mode, and proves an
+  explicit UDP fallback path under injected SHM initialization failure; a
+  hybrid gate then sends the same flow over local SHM and a remote UDP router,
+  requires router forwarding, and proves application-level duplicate removal;
+- a middleware-owned loaned-message lifecycle for introspection C/C++ where
+  publisher borrow/publish-or-return and subscription take/return pass in
+  Docker; this is explicitly a lifecycle/allocation claim, not zero-copy;
+- an installed `rmw_fleetqox_cpp/capabilities.json` contract that marks the
+  implementation `production_ready=false` and machine-scopes supported,
+  partial, and unsupported ABI surfaces;
 - a repeated ROS 2 Docker T3 harness for packet-format/RMW matrices across
   publisher seeds and named netem profiles;
 - a three-seed Wi-Fi ROS 2 packet-format/RMW matrix where
@@ -139,6 +155,43 @@ This repository starts with the part that should be proven first:
   subscriber containers under the same named Wi-Fi/WAN/roaming impairment
   profiles, records missing RMW packages as `skipped`, and seeds the future
   same-envelope DDS/Zenoh comparison against FleetRMW-native routing;
+- a repeated `8/16/32`-robot, three-repetition comparison under data-plane
+  netem where FleetRMW router, Cyclone DDS, and Zenoh pass `9/9` rows and Fast
+  DDS passes `7/9`, with equal publisher reliability horizons, Zenoh router
+  bootstrap and 95% confidence intervals; its v2 report enforces split claim
+  scopes and sets cross-topology superiority to `allowed=false`;
+- a repeated `8/16/32` actuated-repair capacity frontier where all `27/27`
+  rows and `9/9` robot/capacity groups pass: sequence `2` is dropped once on
+  both paths for repair candidates, admitted gaps are repaired on time,
+  deferred gaps are observably rejected, and live QoE coverage rises
+  monotonically from `0.625` to `0.75` to `1.0` with shared capacity;
+- a native ns-3 3.41 Docker matrix with `27/27` successful rows across
+  `8/16/32` robots, Wi-Fi/WAN/roaming parameter envelopes, and seeds
+  `7,13,29`; it compares FIFO, static-priority, and guarded FleetQoX schedules
+  on identical traces and explicitly forbids a high-fidelity wireless claim
+  because the current topology is shared CSMA plus an independent receive
+  error model;
+- a second native ns-3 matrix with `27/27` successful rows over the same fleet
+  sizes and seeds on a single-AP 802.11g infrastructure topology. Stationary,
+  moderate-mobility, and edge-mobility profiles exercise Wi-Fi contention and
+  moving stations with positive receive counts in every policy row. The
+  artifact permits Wi-Fi/mobility-model claims but explicitly forbids roaming
+  handoff claims because there is only one AP;
+- a dual-AP ns-3 roaming matrix with `27/27` successful rows and `585/585`
+  measured endpoint handoffs. AP association/disassociation trace events and
+  positive packet receive counts are mandatory gates, while a bridged
+  backhaul preserves each station's IP address across the transition. This
+  permits a scoped roaming-handoff claim, not a general high-fidelity wireless
+  or policy-superiority claim;
+- an upstream Nav2/RMF router workload where `nav2_msgs/action/NavigateToPose`
+  passes success, feedback, cancel, and result semantics while RMF
+  `SubmitTask`/`CancelTask` services carry nested task types through the same
+  FleetRMW router; an additional batch proves four concurrent upstream
+  navigation goals and four RMF submissions; the upstream
+  `nav2_lifecycle_manager` C++ node drives a lifecycle companion through
+  configure/activate/deactivate/cleanup, bringing the contract to `82/82`
+  service frames with zero invalid frames;
+  local compatible actions remain as CI fallbacks;
 - a controller-level live plan scale probe that drives the same planner across
   N robots and 2N ROS-style topics, measuring decision latency, final rule
   count, plan byte size, and redundant/unicast mode shape before larger

@@ -1,0 +1,14 @@
+string task_id
+string robot_id
+string category
+uint32 priority
+string[] phases
+---
+bool success
+string outcome
+builtin_interfaces/Time completion_time
+---
+string state
+float32 progress
+string active_phase
+uint32 completed_phases

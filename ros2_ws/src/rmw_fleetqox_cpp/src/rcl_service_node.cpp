@@ -21,6 +21,10 @@
 namespace
 {
 
+extern "C" rmw_ret_t rmw_fleetqox_cpp_send_malformed_response(
+  const rmw_service_t * service,
+  rmw_request_id_t * request_header);
+
 std::string json_escape(const std::string & value)
 {
   std::ostringstream out;
@@ -54,6 +58,16 @@ std::string string_arg(int argc, char ** argv, const char * name, const std::str
     }
   }
   return default_value;
+}
+
+bool bool_arg(int argc, char ** argv, const char * name)
+{
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == name) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void cleanup_rcl(
@@ -91,6 +105,8 @@ int main(int argc, char ** argv)
   const std::string service_name = string_arg(argc, argv, "--service", "/fleetqox/set_bool");
   const int hold_ms = int_arg(argc, argv, "--hold-ms", 5500);
   const int response_delay_ms = int_arg(argc, argv, "--response-delay-ms", 0);
+  const bool malformed_response = bool_arg(argc, argv, "--malformed-response");
+  const bool exit_after_request = bool_arg(argc, argv, "--exit-after-request");
 
   rcl_allocator_t allocator = rcl_get_default_allocator();
   rcl_init_options_t init_options = rcl_get_zero_initialized_init_options();
@@ -147,27 +163,38 @@ int main(int argc, char ** argv)
       if (response_delay_ms > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(response_delay_ms));
       }
-      std_srvs__srv__SetBool_Response response;
-      if (!std_srvs__srv__SetBool_Response__init(&response)) {
-        std_srvs__srv__SetBool_Request__fini(&request);
-        ret = RCL_RET_BAD_ALLOC;
-        break;
-      }
-      response.success = request.data;
-      const std::string message = request.data ? "fleetqox set_bool accepted" : "fleetqox set_bool rejected";
-      if (!rosidl_runtime_c__String__assignn(&response.message, message.data(), message.size())) {
+      if (malformed_response) {
+        const rmw_service_t * rmw_service = rcl_service_get_rmw_handle(&service);
+        ret = static_cast<rcl_ret_t>(
+          rmw_fleetqox_cpp_send_malformed_response(rmw_service, &request_header));
+      } else {
+        std_srvs__srv__SetBool_Response response;
+        if (!std_srvs__srv__SetBool_Response__init(&response)) {
+          std_srvs__srv__SetBool_Request__fini(&request);
+          ret = RCL_RET_BAD_ALLOC;
+          break;
+        }
+        response.success = request.data;
+        const std::string message =
+          request.data ? "fleetqox set_bool accepted" : "fleetqox set_bool rejected";
+        if (!rosidl_runtime_c__String__assignn(&response.message, message.data(), message.size())) {
+          std_srvs__srv__SetBool_Response__fini(&response);
+          std_srvs__srv__SetBool_Request__fini(&request);
+          ret = RCL_RET_BAD_ALLOC;
+          break;
+        }
+        ret = rcl_send_response(&service, &request_header, &response);
         std_srvs__srv__SetBool_Response__fini(&response);
-        std_srvs__srv__SetBool_Request__fini(&request);
-        ret = RCL_RET_BAD_ALLOC;
-        break;
       }
-      ret = rcl_send_response(&service, &request_header, &response);
-      std_srvs__srv__SetBool_Response__fini(&response);
       if (ret != RCL_RET_OK) {
         std_srvs__srv__SetBool_Request__fini(&request);
         break;
       }
       ++request_count;
+      if (exit_after_request) {
+        std_srvs__srv__SetBool_Request__fini(&request);
+        break;
+      }
     } else if (take_ret == RCL_RET_SERVICE_TAKE_FAILED) {
       rcl_reset_error();
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -185,6 +212,7 @@ int main(int argc, char ** argv)
   std::cout << "\"service\":\"" << json_escape(service_name) << "\",";
   std::cout << "\"type\":\"std_srvs/srv/SetBool\",";
   std::cout << "\"response_delay_ms\":" << response_delay_ms << ",";
+  std::cout << "\"malformed_response\":" << (malformed_response ? "true" : "false") << ",";
   std::cout << "\"request_count\":" << request_count << "}" << std::endl;
 
   cleanup_rcl(&service, &node, &context, &init_options);

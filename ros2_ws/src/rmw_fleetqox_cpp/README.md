@@ -4,6 +4,11 @@ This package is the first C++ transport-boundary reference for FleetRMW.  It is
 not yet a complete ROS 2 RMW implementation.  The current scope is deliberately
 smaller:
 
+The installed `share/rmw_fleetqox_cpp/capabilities.json` is the normative,
+machine-readable capability boundary. It intentionally reports
+`production_ready=false` and lists supported, partial, and unsupported ABI
+surfaces; prose and benchmark claims must not exceed that manifest.
+
 - encode and decode `fleetrmw.data_frame.v1`;
 - observe source sequences at a receiver;
 - emit `fleetrmw.ack_nack.v1`;
@@ -16,13 +21,17 @@ smaller:
   `fleetrmw.data_frame.v1` frames over a UDP loopback socket transport;
 - export a minimal type-erased typed publish/take path for fixed-size FleetRMW
   probe messages through `rmw_publish` and `rmw_take`;
-- serialize and deserialize ROS messages with introspection C type support for
+- serialize and deserialize ROS messages with introspection C/C++ type support for
   scalar primitives, strings, nested messages, and basic arrays, currently
   verified with `std_msgs/msg/String` and `geometry_msgs/msg/Twist`;
-- register as a ROS 2 RMW implementation for introspection C messages and pass
+- expose standalone `rmw_serialize`/`rmw_deserialize` through the same codec
+  and identify it as `fleetrmw.introspection_c.v1` rather than DDS CDR;
+- register as a ROS 2 RMW implementation for introspection C/C++ messages and pass
   the first `rcl` publish/take probe with a real `std_msgs/msg/String`;
 - dispatch `rosidl_typesupport_c` handles to introspection C handles when ROS 2
   client libraries provide the generic C type-support map;
+- dispatch `rosidl_typesupport_cpp` handles to introspection C++ handles and
+  preserve the same FleetRMW wire encoding across C and C++ layouts;
 - pass the first ROS CLI graph smoke where `ros2 topic list --no-daemon -t`
   observes a FleetRMW `rcl` talker topic and its `std_msgs/msg/String` type;
 - pass the first ROS CLI endpoint-info smoke where
@@ -37,14 +46,21 @@ smaller:
 - pass a ROS CLI message matrix covering `std_msgs/msg/String`,
   `builtin_interfaces/msg/Time`, `builtin_interfaces/msg/Duration`,
   `geometry_msgs/msg/Twist`, `geometry_msgs/msg/PoseStamped`,
-  `sensor_msgs/msg/LaserScan`, `nav_msgs/msg/Odometry`, and
-  `nav_msgs/msg/Path`, exercising signed/unsigned time fields, nested messages,
-  fixed arrays, dynamic primitive sequences, and dynamic sequences of nested
-  messages through the introspection-C serializer;
+  `sensor_msgs/msg/LaserScan`, `sensor_msgs/msg/PointCloud2`,
+  `nav_msgs/msg/Odometry`, `nav_msgs/msg/Path`,
+  `trajectory_msgs/msg/JointTrajectory`,
+  `diagnostic_msgs/msg/DiagnosticArray`,
+  `fleetrmw_interfaces/msg/SampleIdentity`, and
+  `fleetrmw_interfaces/msg/ProjectionQuality`, exercising signed/unsigned time
+  fields, nested messages, fixed arrays, dynamic primitive sequences, dynamic
+  sequences of nested messages, binary blobs, and FleetRMW quality metadata
+  through the introspection-C serializer;
 - export explicit ABI stubs for optional or not-yet-supported RMW surfaces
-  such as loaned messages, events, dynamic messages, network-flow endpoints,
-  and callbacks, so `rcl` loader resolution is clean
-  while unsupported features fail with controlled `RMW_RET_UNSUPPORTED`;
+  such as loaned messages, QoS events, and dynamic messages, so `rcl` loader
+  resolution is clean while unsupported features fail with controlled
+  `RMW_RET_UNSUPPORTED`;
+- expose UDP/IPv4 network-flow metadata and invoke on-new-message/request/
+  response callbacks outside internal transport locks;
 - export service/client handle lifecycle, service/client graph registration,
   service/client graph advertisements, by-node service/client graph queries, and
   service availability from graph state;
@@ -63,10 +79,14 @@ smaller:
 - pass a ROS CLI service timeout probe where `ros2 service call` sends a real
   request through FleetRMW, the service intentionally delays the response, and
   the client times out without receiving a fabricated response;
+- pass a router-mediated malformed-response probe where the service emits a
+  correctly addressed frame with an invalid serialized body, the router
+  forwards it, and `ros2 service call` exits with a concrete deserialize error
+  and no fabricated `Response`;
 - define a dependency-light `fleetrmw.action_frame.v1` contract for goal,
   feedback, status, result, and cancel role payloads, and pass an action-frame
-  probe that round-trips those roles with lifespan checks before real
-  `rcl_action` APIs are wired in;
+  probe that round-trips those roles with lifespan checks as the low-level
+  frame contract under the real `rclpy.action` probes;
 - route `fleetrmw.action_frame.v1` traffic through `fleetrmw_udp_router_probe`
   after learning `action_server` and `action_client` graph advertisements,
   with `goal/cancel` delivered to the server and `feedback/status/result`
@@ -85,11 +105,33 @@ smaller:
   deadline ordering places feedback before status in an action burst;
 - support env-configured inter-process UDP peers with
   `FLEETQOX_RMW_BIND=host:port` and `FLEETQOX_RMW_PEERS=host:port,...`;
+- support local-only inter-process POSIX shared memory with
+  `FLEETQOX_RMW_LOCAL_TRANSPORT=shm` and
+  `FLEETQOX_RMW_SHM_NAME=/segment_name`. The fixed ring carries payloads up to
+  256 KiB, records overwrite telemetry, and requires a shared IPC namespace
+  across containers. `FLEETQOX_RMW_SHM_FALLBACK_UDP=1` permits explicit UDP
+  fallback; SHM mode reports an empty network-flow endpoint list rather than a
+  false UDP data path. When UDP peers are configured, mode
+  `shm_udp_hybrid` writes local traffic to SHM and remote traffic to UDP;
+  received UDP frames are bridged into the local ring and existing source
+  sequence de-duplication prevents double application delivery;
 - support path-labeled inter-process peers with
   `FLEETQOX_RMW_PEERS=primary_wifi=host:port,backup_5g=host:port` plus
   `FLEETQOX_RMW_PEER_POLICY=fleet_plan` and
   either `FLEETQOX_RMW_FLEET_PATH_PLAN=/topic=backup_5g+primary_wifi` or
   `FLEETQOX_RMW_FLEET_PATH_PLAN_FILE=/path/to/plan.txt`;
+- route NACK retransmissions through a separately reloadable repair policy with
+  `FLEETQOX_RMW_REPAIR_PATH_PLAN`,
+  `FLEETQOX_RMW_REPAIR_PATH_PLAN_FILE`, and a per-publisher
+  `FLEETQOX_RMW_REPAIR_RETRANSMISSION_BUDGET`; expose repair-plan frames,
+  selected paths, budget exhaustion, and last repair paths separately from
+  normal fleet-plan traffic; coalesce duplicate repair requests with
+  `FLEETQOX_RMW_REPAIR_MIN_INTERVAL_MS` and bound each source sequence with
+  `FLEETQOX_RMW_REPAIR_MAX_ATTEMPTS_PER_SEQUENCE`; accept sequence-scoped
+  controller policies in the form
+  `topic=path_a+path_b|sequences=2,5|attempts=1`, and enforce them with
+  `FLEETQOX_RMW_REPAIR_ADMISSION_STRICT=1`, exposing rejected requests through
+  `repair_not_admitted`;
 - resolve Docker/container hostnames and route frames through
   `fleetrmw_udp_router_probe` after subscriber route advertisements;
 - let `fleetrmw_udp_router_probe` write per-path JSONL telemetry records with
@@ -100,6 +142,11 @@ smaller:
   with latency/deadline/robot-ID fields;
 - expose duplicate/out-of-order data-frame and ACK/NACK counters so redundant
   fleet-plan delivery can prove de-duplication before application `take`;
+- support middleware-owned loaned messages for introspection C/C++ publishers
+  and subscriptions, including borrow/publish, borrow/return, take/return, and
+  outstanding-loan cleanup on endpoint destruction. Subscription take
+  currently deserializes into the middleware-owned object, so this does not
+  claim zero-copy;
 - route service request/response frames through `fleetrmw_udp_router_probe` by
   learning service/client endpoints from graph advertisements, so a client and
   server can peer only with the router and still complete a `SetBool` service
@@ -162,7 +209,7 @@ Expected smoke behavior:
 
 Current verification:
 
-- local unit suite: `python3 -m unittest discover tests` -> `414` tests pass;
+- local unit suite: `python3 -m unittest discover tests` -> `439` tests pass;
 - Docker ROS Jazzy build:
   `colcon build --base-paths ros2_ws/src --packages-select fleetrmw_interfaces rmw_fleetqox_cpp`;
 - Docker artifacts:
@@ -180,6 +227,8 @@ Current verification:
   `results_rmw_socket/docker_rmw_service_error_probe_summary.json`;
 - ROS CLI service-timeout artifact:
   `results_rmw_socket/docker_ros2_service_timeout_probe_summary.json`;
+- router-mediated malformed-service-response artifact:
+  `results_rmw_socket/docker_router_ros2_malformed_service_response_probe_summary.json`;
 - action-frame contract artifact:
   `results_rmw_socket/docker_rmw_action_frame_probe_summary.json`;
 - router-mediated action-frame artifact:
@@ -272,6 +321,16 @@ Current verification:
   `results_rmw_socket/docker_ros2_pub_echo_probe_summary.json`;
 - ROS CLI multi-message matrix artifact:
   `results_rmw_socket/docker_ros2_cli_message_matrix_summary.json`;
+- standalone C++ type-support, bounded serialized-size, and unbounded-scope artifact:
+  `results_rmw_socket/docker_cpp_typesupport_probe_summary.json`;
+- router-mediated C++ interprocess pub/sub/service artifact:
+  `results_rmw_socket/docker_router_rclcpp_interprocess_probe_summary.json`;
+- Nav2/RMF-compatible action workload artifact:
+  `results_rmw_socket/docker_router_upstream_nav2_rmf_workload_v5_lifecycle_manager_concurrency4_summary.json`;
+- `8/16/32` repair capacity-frontier artifact:
+  `results_rmw_socket/docker_fleet_repair_capacity_frontier_8_16_32_seed7_summary.json`;
+- large-scale RMW comparison artifact:
+  `results_rmw_socket/large_scale_rmw_comparison_8_16_32_seed7_summary.json`;
 - wait/guard ABI artifact:
   `results_rmw_socket/docker_rmw_wait_probe_summary.json`;
 - graph ABI artifact:
@@ -283,17 +342,16 @@ Current verification:
 - multi-container router/remote-graph artifact:
   `results_rmw_socket/docker_rmw_multicontainer_router_probe_summary.json`.
 
-The next step is expanding from the current introspection-C CLI coverage,
+The next step is expanding from the current introspection-C CLI and upstream
+Nav2 introspection-C++ coverage,
 service request/response path, measured queue and service QoS/error subsets,
-minimal action-frame contract, router-mediated action-frame transport, first
-same-process real `rclpy.action` smoke, router-mediated real `rclpy.action`
-operation smoke, router QoS scheduler, adaptive multi-robot QoS netem evidence,
-live multi-epoch router adaptive admission, first repeated-loss scheduler
-smoke, repeated-loss scheduled ACK/NACK repair, and first ACK/NACK
-retransmission loops
-through one-hop and multi-hop router paths plus dual-router path diversity
-toward concurrent ACK/NACK-repaired mixed action/control/state scheduling,
-C++ type-support-backed serialization,
-broader caller-visible service cancellation/error semantics, and deeper
-telemetry-scored network-aware QoS/QoE scheduling beyond the current
-NACK-scored path memory and deadline-triggered redundancy modes.
+minimal action-frame contract, router-mediated action-frame transport, real
+`rclpy.action` success/cancel smokes, a Nav2/RMF-compatible action workload,
+router QoS scheduling, adaptive multi-robot QoS netem evidence, live multi-epoch
+router adaptive admission, repeated-loss scheduled ACK/NACK repair, strict
+fleet-wide repair admission, and the first `8/16/32` capacity-frontier plus
+RMW-comparison artifacts toward production-grade coverage. The remaining gap is
+not another per-publisher tuning pass; it is repeated multi-seed fleet
+statistics, a dedicated cross-language C/C++ matrix, real Nav2 planner/controller
+components, equivalent DDS/Zenoh topology, and reduction of the observed `32`-robot
+tail latency.

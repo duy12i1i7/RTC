@@ -2,7 +2,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <deque>
@@ -19,9 +21,17 @@
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
 #include "rosidl_typesupport_c/identifier.h"
+#include "rosidl_typesupport_c/message_type_support_dispatch.h"
 #include "rosidl_typesupport_c/service_type_support_dispatch.h"
+#include "rosidl_typesupport_cpp/identifier.hpp"
+#include "rosidl_typesupport_cpp/message_type_support_dispatch.hpp"
+#include "rosidl_typesupport_cpp/service_type_support_dispatch.hpp"
 #include "rosidl_typesupport_introspection_c/identifier.h"
+#include "rosidl_typesupport_introspection_c/message_introspection.h"
 #include "rosidl_typesupport_introspection_c/service_introspection.h"
+#include "rosidl_typesupport_introspection_cpp/identifier.hpp"
+#include "rosidl_typesupport_introspection_cpp/message_introspection.hpp"
+#include "rosidl_typesupport_introspection_cpp/service_introspection.hpp"
 #include "rmw/allocators.h"
 #include "rmw/dynamic_message_type_support.h"
 #include "rmw/error_handling.h"
@@ -33,9 +43,11 @@
 #include "rmw/names_and_types.h"
 #include "rmw/qos_profiles.h"
 #include "rmw/rmw.h"
+#include "rmw/serialized_message.h"
 
 extern "C" bool rmw_fleetqox_cpp_publisher_gid(const rmw_publisher_t * publisher, rmw_gid_t * gid);
 extern "C" const char * rmw_fleetqox_cpp_socket_bound_endpoint();
+extern "C" const char * rmw_fleetqox_cpp_transport_mode();
 extern "C" rmw_ret_t rmw_fleetqox_cpp_send_graph_advertisement(
   const char * action,
   const char * entity_kind,
@@ -52,6 +64,33 @@ extern "C" bool rmw_fleetqox_cpp_serialize_introspection_message(
   std::vector<std::uint8_t> * payload);
 extern "C" bool rmw_fleetqox_cpp_deserialize_introspection_message(
   const rosidl_typesupport_introspection_c__MessageMembers * members,
+  const std::vector<std::uint8_t> * payload,
+  void * ros_message);
+extern "C" bool rmw_fleetqox_cpp_serialize_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  const void * ros_message,
+  std::vector<std::uint8_t> * payload);
+extern "C" bool rmw_fleetqox_cpp_max_serialized_size_introspection_message(
+  const rosidl_typesupport_introspection_c__MessageMembers * members,
+  size_t * size);
+extern "C" bool rmw_fleetqox_cpp_max_serialized_size_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  size_t * size);
+extern "C" rmw_ret_t rmw_fleetqox_cpp_borrow_publisher_loan(
+  const rmw_publisher_t * publisher,
+  const rosidl_message_type_support_t * type_support,
+  void ** ros_message);
+extern "C" rmw_ret_t rmw_fleetqox_cpp_release_publisher_loan(
+  const rmw_publisher_t * publisher,
+  void * ros_message);
+extern "C" rmw_ret_t rmw_fleetqox_cpp_borrow_subscription_loan(
+  const rmw_subscription_t * subscription,
+  void ** ros_message);
+extern "C" rmw_ret_t rmw_fleetqox_cpp_release_subscription_loan(
+  const rmw_subscription_t * subscription,
+  void * ros_message);
+extern "C" bool rmw_fleetqox_cpp_deserialize_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
   const std::vector<std::uint8_t> * payload,
   void * ros_message);
 extern "C" void rmw_fleetqox_cpp_graph_register_service_endpoint(
@@ -89,6 +128,13 @@ struct FleetQoxServiceData
   const rosidl_typesupport_introspection_c__ServiceMembers * service_members;
   const rosidl_typesupport_introspection_c__MessageMembers * request_members;
   const rosidl_typesupport_introspection_c__MessageMembers * response_members;
+  const rosidl_typesupport_introspection_cpp::ServiceMembers * cpp_service_members;
+  const rosidl_typesupport_introspection_cpp::MessageMembers * cpp_request_members;
+  const rosidl_typesupport_introspection_cpp::MessageMembers * cpp_response_members;
+  rmw_event_callback_t on_new_request_callback;
+  const void * on_new_request_user_data;
+  rmw_event_callback_t on_new_response_callback;
+  const void * on_new_response_user_data;
   std::int64_t next_sequence_id;
   std::deque<rmw_fleetqox_cpp::ServiceFrame> request_queue;
   std::deque<rmw_fleetqox_cpp::ServiceFrame> response_queue;
@@ -330,11 +376,14 @@ FleetQoxServiceData * allocate_service_data(
   const std::string & node_namespace,
   const std::string & endpoint_id,
   const std::array<std::uint8_t, RMW_GID_STORAGE_SIZE> & endpoint_gid,
-  const rosidl_typesupport_introspection_c__ServiceMembers * service_members)
+  const rosidl_typesupport_introspection_c__ServiceMembers * service_members,
+  const rosidl_typesupport_introspection_cpp::ServiceMembers * cpp_service_members)
 {
   if (!rcutils_allocator_is_valid(&allocator) || service_name == nullptr || qos == nullptr ||
-    service_members == nullptr || service_members->request_members_ == nullptr ||
-    service_members->response_members_ == nullptr)
+    ((service_members == nullptr || service_members->request_members_ == nullptr ||
+    service_members->response_members_ == nullptr) &&
+    (cpp_service_members == nullptr || cpp_service_members->request_members_ == nullptr ||
+    cpp_service_members->response_members_ == nullptr)))
   {
     return nullptr;
   }
@@ -353,8 +402,15 @@ FleetQoxServiceData * allocate_service_data(
     endpoint_id,
     endpoint_gid,
     service_members,
-    service_members->request_members_,
-    service_members->response_members_,
+    service_members == nullptr ? nullptr : service_members->request_members_,
+    service_members == nullptr ? nullptr : service_members->response_members_,
+    cpp_service_members,
+    cpp_service_members == nullptr ? nullptr : cpp_service_members->request_members_,
+    cpp_service_members == nullptr ? nullptr : cpp_service_members->response_members_,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
     1,
     std::deque<rmw_fleetqox_cpp::ServiceFrame>{},
     std::deque<rmw_fleetqox_cpp::ServiceFrame>{},
@@ -379,6 +435,42 @@ void deallocate_service_data(FleetQoxServiceData * data)
   }
   data->~FleetQoxServiceData();
   allocator.deallocate(data, allocator.state);
+}
+
+bool serialize_service_message(
+  const FleetQoxServiceData * data,
+  bool request,
+  const void * ros_message,
+  std::vector<std::uint8_t> * payload)
+{
+  if (data == nullptr) {
+    return false;
+  }
+  const auto * c_members = request ? data->request_members : data->response_members;
+  if (c_members != nullptr) {
+    return rmw_fleetqox_cpp_serialize_introspection_message(c_members, ros_message, payload);
+  }
+  const auto * cpp_members = request ? data->cpp_request_members : data->cpp_response_members;
+  return rmw_fleetqox_cpp_serialize_introspection_cpp_message(
+    cpp_members, ros_message, payload);
+}
+
+bool deserialize_service_message(
+  const FleetQoxServiceData * data,
+  bool request,
+  const std::vector<std::uint8_t> * payload,
+  void * ros_message)
+{
+  if (data == nullptr) {
+    return false;
+  }
+  const auto * c_members = request ? data->request_members : data->response_members;
+  if (c_members != nullptr) {
+    return rmw_fleetqox_cpp_deserialize_introspection_message(c_members, payload, ros_message);
+  }
+  const auto * cpp_members = request ? data->cpp_request_members : data->cpp_response_members;
+  return rmw_fleetqox_cpp_deserialize_introspection_cpp_message(
+    cpp_members, payload, ros_message);
 }
 
 std::string ros_type_name_from_service_members(
@@ -411,6 +503,95 @@ const rosidl_typesupport_introspection_c__ServiceMembers * service_introspection
   return static_cast<const rosidl_typesupport_introspection_c__ServiceMembers *>(type_support->data);
 }
 
+const rosidl_typesupport_introspection_c__MessageMembers * message_introspection_members(
+  const rosidl_message_type_support_t * type_support)
+{
+  if (type_support == nullptr ||
+    type_support->typesupport_identifier == nullptr ||
+    std::strcmp(type_support->typesupport_identifier, rosidl_typesupport_introspection_c__identifier) != 0 ||
+    type_support->data == nullptr)
+  {
+    return nullptr;
+  }
+  return static_cast<const rosidl_typesupport_introspection_c__MessageMembers *>(type_support->data);
+}
+
+const rosidl_typesupport_introspection_cpp::ServiceMembers * service_cpp_introspection_members(
+  const rosidl_service_type_support_t * type_support)
+{
+  if (type_support == nullptr || type_support->typesupport_identifier == nullptr ||
+    std::strcmp(
+      type_support->typesupport_identifier,
+      rosidl_typesupport_introspection_cpp::typesupport_identifier) != 0 ||
+    type_support->data == nullptr)
+  {
+    return nullptr;
+  }
+  return static_cast<const rosidl_typesupport_introspection_cpp::ServiceMembers *>(
+    type_support->data);
+}
+
+const rosidl_typesupport_introspection_cpp::MessageMembers * message_cpp_introspection_members(
+  const rosidl_message_type_support_t * type_support)
+{
+  if (type_support == nullptr || type_support->typesupport_identifier == nullptr ||
+    std::strcmp(
+      type_support->typesupport_identifier,
+      rosidl_typesupport_introspection_cpp::typesupport_identifier) != 0 ||
+    type_support->data == nullptr)
+  {
+    return nullptr;
+  }
+  return static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
+    type_support->data);
+}
+
+const rosidl_message_type_support_t * resolve_effective_message_type_support(
+  const rosidl_message_type_support_t * type_support)
+{
+  if (type_support == nullptr || type_support->typesupport_identifier == nullptr) {
+    return type_support;
+  }
+  if (std::strcmp(
+      type_support->typesupport_identifier,
+      rosidl_typesupport_introspection_c__identifier) == 0)
+  {
+    return type_support;
+  }
+  if (std::strcmp(
+      type_support->typesupport_identifier,
+      rosidl_typesupport_c__typesupport_identifier) == 0)
+  {
+    const rosidl_message_type_support_t * resolved =
+      rosidl_typesupport_c__get_message_typesupport_handle_function(
+      type_support,
+      rosidl_typesupport_introspection_c__identifier);
+    if (resolved != nullptr) {
+      return resolved;
+    }
+  }
+  if (std::strcmp(
+      type_support->typesupport_identifier,
+      rosidl_typesupport_cpp::typesupport_identifier) == 0)
+  {
+    const rosidl_message_type_support_t * resolved =
+      rosidl_typesupport_cpp::get_message_typesupport_handle_function(
+      type_support,
+      rosidl_typesupport_introspection_cpp::typesupport_identifier);
+    if (resolved != nullptr) {
+      return resolved;
+    }
+  }
+  if (type_support->func != nullptr) {
+    const rosidl_message_type_support_t * resolved =
+      type_support->func(type_support, rosidl_typesupport_introspection_c__identifier);
+    if (resolved != nullptr) {
+      return resolved;
+    }
+  }
+  return type_support;
+}
+
 const rosidl_service_type_support_t * resolve_effective_service_type_support(
   const rosidl_service_type_support_t * type_support)
 {
@@ -432,6 +613,18 @@ const rosidl_service_type_support_t * resolve_effective_service_type_support(
       return resolved;
     }
   }
+  if (std::strcmp(
+      type_support->typesupport_identifier,
+      rosidl_typesupport_cpp::typesupport_identifier) == 0)
+  {
+    const rosidl_service_type_support_t * resolved =
+      rosidl_typesupport_cpp::get_service_typesupport_handle_function(
+      type_support,
+      rosidl_typesupport_introspection_cpp::typesupport_identifier);
+    if (resolved != nullptr) {
+      return resolved;
+    }
+  }
   if (type_support->func != nullptr) {
     const rosidl_service_type_support_t * resolved =
       type_support->func(type_support, rosidl_typesupport_introspection_c__identifier);
@@ -444,9 +637,22 @@ const rosidl_service_type_support_t * resolve_effective_service_type_support(
 
 std::string service_type_name_from_type_support(const rosidl_service_type_support_t * type_support)
 {
-  const auto * members = service_introspection_members(resolve_effective_service_type_support(type_support));
+  const auto * effective = resolve_effective_service_type_support(type_support);
+  const auto * members = service_introspection_members(effective);
   if (members != nullptr) {
     return ros_type_name_from_service_members(members);
+  }
+  const auto * cpp_members = service_cpp_introspection_members(effective);
+  if (cpp_members != nullptr && cpp_members->service_namespace_ != nullptr &&
+    cpp_members->service_name_ != nullptr)
+  {
+    std::string namespace_text = cpp_members->service_namespace_;
+    size_t separator = 0;
+    while ((separator = namespace_text.find("::", separator)) != std::string::npos) {
+      namespace_text.replace(separator, 2, "/");
+      separator += 1;
+    }
+    return namespace_text + "/" + cpp_members->service_name_;
   }
   return type_support != nullptr && type_support->typesupport_identifier != nullptr ?
          type_support->typesupport_identifier : "unknown";
@@ -567,7 +773,7 @@ FleetQoxServiceData * client_data_from_waitable_locked(const void * waitable)
   return nullptr;
 }
 
-rmw_ret_t fill_empty_network_flow_endpoints(
+rmw_ret_t fill_udp_network_flow_endpoint(
   rcutils_allocator_t * allocator,
   rmw_network_flow_endpoint_array_t * endpoints)
 {
@@ -575,7 +781,50 @@ rmw_ret_t fill_empty_network_flow_endpoints(
     RMW_SET_ERROR_MSG("invalid allocator or network flow endpoint output");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  return rmw_network_flow_endpoint_array_init(endpoints, 0, allocator);
+  const char * transport_mode = rmw_fleetqox_cpp_transport_mode();
+  if (transport_mode != nullptr && std::strcmp(transport_mode, "shm") == 0) {
+    *endpoints = rmw_get_zero_initialized_network_flow_endpoint_array();
+    return RMW_RET_OK;
+  }
+  const char * bound_endpoint = rmw_fleetqox_cpp_socket_bound_endpoint();
+  if (bound_endpoint == nullptr || bound_endpoint[0] == '\0') {
+    RMW_SET_ERROR_MSG("FleetRMW UDP socket has no bound endpoint");
+    return RMW_RET_ERROR;
+  }
+  const std::string endpoint(bound_endpoint);
+  const size_t separator = endpoint.rfind(':');
+  if (separator == std::string::npos || separator == 0 || separator + 1 >= endpoint.size()) {
+    RMW_SET_ERROR_MSG("FleetRMW UDP bound endpoint is malformed");
+    return RMW_RET_ERROR;
+  }
+  const std::string address = endpoint.substr(0, separator);
+  const std::string port_text = endpoint.substr(separator + 1);
+  char * port_end = nullptr;
+  errno = 0;
+  const long port = std::strtol(port_text.c_str(), &port_end, 10);
+  if (errno != 0 || port_end == port_text.c_str() || *port_end != '\0' ||
+    port < 0 || port > 65535)
+  {
+    RMW_SET_ERROR_MSG("FleetRMW UDP bound endpoint port is invalid");
+    return RMW_RET_ERROR;
+  }
+  rmw_ret_t ret = rmw_network_flow_endpoint_array_init(endpoints, 1, allocator);
+  if (ret != RMW_RET_OK) {
+    return ret;
+  }
+  rmw_network_flow_endpoint_t & flow = endpoints->network_flow_endpoint[0];
+  flow.transport_protocol = RMW_TRANSPORT_PROTOCOL_UDP;
+  flow.internet_protocol = RMW_INTERNET_PROTOCOL_IPV4;
+  flow.transport_port = static_cast<std::uint16_t>(port);
+  flow.flow_label = 0;
+  flow.dscp = 0;
+  ret = rmw_network_flow_endpoint_set_internet_address(
+    &flow, address.c_str(), address.size());
+  if (ret != RMW_RET_OK) {
+    rmw_network_flow_endpoint_array_fini(endpoints);
+    return ret;
+  }
+  return RMW_RET_OK;
 }
 
 void fill_pointer_gid(const void * entity, rmw_gid_t * gid)
@@ -611,26 +860,39 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
   if (drop_if_expired_service_frame(*frame)) {
     return true;
   }
-  std::lock_guard<std::mutex> lock(g_service_bus_mutex);
-  if (frame->role == "request") {
-    for (FleetQoxServiceData * data : g_service_bus_endpoints) {
-      if (data != nullptr && data->is_service && data->service_name != nullptr &&
-        frame->service_name == data->service_name)
-      {
-        data->request_queue.push_back(*frame);
-        trace_service_event("enqueue_request", data, &*frame, data->request_queue.size());
+  std::vector<std::pair<rmw_event_callback_t, const void *>> callbacks;
+  {
+    std::lock_guard<std::mutex> lock(g_service_bus_mutex);
+    if (frame->role == "request") {
+      for (FleetQoxServiceData * data : g_service_bus_endpoints) {
+        if (data != nullptr && data->is_service && data->service_name != nullptr &&
+          frame->service_name == data->service_name)
+        {
+          data->request_queue.push_back(*frame);
+          trace_service_event("enqueue_request", data, &*frame, data->request_queue.size());
+          if (data->on_new_request_callback != nullptr) {
+            callbacks.emplace_back(
+              data->on_new_request_callback, data->on_new_request_user_data);
+          }
+        }
+      }
+    } else if (frame->role == "response") {
+      for (FleetQoxServiceData * data : g_service_bus_endpoints) {
+        if (data != nullptr && !data->is_service &&
+          frame->client_endpoint_id == data->endpoint_id)
+        {
+          data->response_queue.push_back(*frame);
+          trace_service_event("enqueue_response", data, &*frame, data->response_queue.size());
+          if (data->on_new_response_callback != nullptr) {
+            callbacks.emplace_back(
+              data->on_new_response_callback, data->on_new_response_user_data);
+          }
+        }
       }
     }
-    return true;
   }
-  if (frame->role == "response") {
-    for (FleetQoxServiceData * data : g_service_bus_endpoints) {
-      if (data != nullptr && !data->is_service && frame->client_endpoint_id == data->endpoint_id) {
-        data->response_queue.push_back(*frame);
-        trace_service_event("enqueue_response", data, &*frame, data->response_queue.size());
-      }
-    }
-    return true;
+  for (const auto & callback : callbacks) {
+    callback.first(callback.second, 1);
   }
   return true;
 }
@@ -650,7 +912,21 @@ bool rmw_fleetqox_cpp_waitable_client_has_response(const void * waitable)
     return false;
   }
   std::lock_guard<std::mutex> lock(g_service_bus_mutex);
-  return client_has_response_locked(client_data_from_waitable_locked(waitable));
+  FleetQoxServiceData * matched = client_data_from_waitable_locked(waitable);
+  if (matched == nullptr && trace_service_enabled()) {
+    for (FleetQoxServiceData * data : g_service_bus_endpoints) {
+      if (client_has_response_locked(data)) {
+        std::fprintf(
+          stderr,
+          "fleetqox service event=waitable_client_unmatched waitable=%p pending_data=%p endpoint=%s\n",
+          waitable,
+          static_cast<void *>(data),
+          data->endpoint_id.c_str());
+        break;
+      }
+    }
+  }
+  return client_has_response_locked(matched);
 }
 
 std::uint64_t rmw_fleetqox_cpp_service_expired_frames_dropped()
@@ -705,7 +981,7 @@ rmw_ret_t rmw_borrow_loaned_message(
     RMW_SET_ERROR_MSG("loaned publisher message arguments are invalid");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  return unsupported("publisher loaned messages are not supported by rmw_fleetqox_cpp yet");
+  return rmw_fleetqox_cpp_borrow_publisher_loan(publisher, type_support, ros_message);
 }
 
 rmw_ret_t rmw_return_loaned_message_from_publisher(
@@ -720,7 +996,7 @@ rmw_ret_t rmw_return_loaned_message_from_publisher(
     RMW_SET_ERROR_MSG("loaned publisher message is null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  return unsupported("publisher loaned messages are not supported by rmw_fleetqox_cpp yet");
+  return rmw_fleetqox_cpp_release_publisher_loan(publisher, loaned_message);
 }
 
 rmw_ret_t rmw_publish_loaned_message(
@@ -737,7 +1013,11 @@ rmw_ret_t rmw_publish_loaned_message(
     RMW_SET_ERROR_MSG("loaned publisher message is null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  return unsupported("publisher loaned messages are not supported by rmw_fleetqox_cpp yet");
+  ret = rmw_publish(publisher, ros_message, allocation);
+  if (ret != RMW_RET_OK) {
+    return ret;
+  }
+  return rmw_fleetqox_cpp_release_publisher_loan(publisher, ros_message);
 }
 
 rmw_ret_t rmw_publisher_event_init(
@@ -788,7 +1068,21 @@ rmw_ret_t rmw_get_serialized_message_size(
     RMW_SET_ERROR_MSG("serialized message size arguments must be non-null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  return unsupported("standalone serialization sizing is not supported by rmw_fleetqox_cpp yet");
+  const auto * effective = resolve_effective_message_type_support(type_support);
+  const auto * members = message_introspection_members(effective);
+  const auto * cpp_members = message_cpp_introspection_members(effective);
+  if (members == nullptr && cpp_members == nullptr) {
+    return unsupported(
+      "standalone serialization sizing requires introspection C or C++ type support");
+  }
+  const bool computed = members != nullptr ?
+    rmw_fleetqox_cpp_max_serialized_size_introspection_message(members, size) :
+    rmw_fleetqox_cpp_max_serialized_size_introspection_cpp_message(cpp_members, size);
+  if (!computed) {
+    return unsupported(
+      "standalone serialization sizing requires a statically bounded message type");
+  }
+  return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_serialize(
@@ -800,7 +1094,33 @@ rmw_ret_t rmw_serialize(
     RMW_SET_ERROR_MSG("serialize arguments must be non-null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  return unsupported("standalone rmw_serialize is not supported by rmw_fleetqox_cpp yet");
+  const auto * effective = resolve_effective_message_type_support(type_support);
+  const auto * members = message_introspection_members(effective);
+  const auto * cpp_members = message_cpp_introspection_members(effective);
+  if (members == nullptr && cpp_members == nullptr) {
+    RMW_SET_ERROR_MSG("rmw_serialize requires introspection C or C++ type support");
+    return RMW_RET_UNSUPPORTED;
+  }
+  std::vector<std::uint8_t> payload;
+  const bool serialized = members != nullptr ?
+    rmw_fleetqox_cpp_serialize_introspection_message(members, ros_message, &payload) :
+    rmw_fleetqox_cpp_serialize_introspection_cpp_message(cpp_members, ros_message, &payload);
+  if (!serialized) {
+    RMW_SET_ERROR_MSG("failed to serialize message with introspection type support");
+    return RMW_RET_ERROR;
+  }
+  if (payload.size() > serialized_message->buffer_capacity) {
+    const rmw_ret_t resize_ret = rmw_serialized_message_resize(serialized_message, payload.size());
+    if (resize_ret != RMW_RET_OK) {
+      RMW_SET_ERROR_MSG("failed to resize standalone serialized message");
+      return resize_ret;
+    }
+  }
+  if (!payload.empty()) {
+    std::memcpy(serialized_message->buffer, payload.data(), payload.size());
+  }
+  serialized_message->buffer_length = payload.size();
+  return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_deserialize(
@@ -812,7 +1132,33 @@ rmw_ret_t rmw_deserialize(
     RMW_SET_ERROR_MSG("deserialize arguments must be non-null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  return unsupported("standalone rmw_deserialize is not supported by rmw_fleetqox_cpp yet");
+  if (serialized_message->buffer_length > serialized_message->buffer_capacity ||
+    (serialized_message->buffer_length > 0 && serialized_message->buffer == nullptr))
+  {
+    RMW_SET_ERROR_MSG("serialized message buffer is invalid");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  const auto * effective = resolve_effective_message_type_support(type_support);
+  const auto * members = message_introspection_members(effective);
+  const auto * cpp_members = message_cpp_introspection_members(effective);
+  if (members == nullptr && cpp_members == nullptr) {
+    RMW_SET_ERROR_MSG("rmw_deserialize requires introspection C or C++ type support");
+    return RMW_RET_UNSUPPORTED;
+  }
+  std::vector<std::uint8_t> payload;
+  if (serialized_message->buffer_length > 0) {
+    payload.assign(
+      serialized_message->buffer,
+      serialized_message->buffer + serialized_message->buffer_length);
+  }
+  const bool deserialized = members != nullptr ?
+    rmw_fleetqox_cpp_deserialize_introspection_message(members, &payload, ros_message) :
+    rmw_fleetqox_cpp_deserialize_introspection_cpp_message(cpp_members, &payload, ros_message);
+  if (!deserialized) {
+    RMW_SET_ERROR_MSG("failed to deserialize message with introspection type support");
+    return RMW_RET_ERROR;
+  }
+  return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_init_subscription_allocation(
@@ -900,8 +1246,23 @@ rmw_ret_t rmw_take_loaned_message(
     RMW_SET_ERROR_MSG("loaned subscription message arguments are invalid");
     return RMW_RET_INVALID_ARGUMENT;
   }
+  if (*loaned_message != nullptr) {
+    RMW_SET_ERROR_MSG("loaned subscription message output must be null");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
   *taken = false;
-  return unsupported("subscription loaned messages are not supported by rmw_fleetqox_cpp yet");
+  ret = rmw_fleetqox_cpp_borrow_subscription_loan(subscription, loaned_message);
+  if (ret != RMW_RET_OK) {
+    return ret;
+  }
+  ret = rmw_take(subscription, *loaned_message, taken, allocation);
+  if (ret != RMW_RET_OK || !*taken) {
+    const rmw_ret_t release_ret =
+      rmw_fleetqox_cpp_release_subscription_loan(subscription, *loaned_message);
+    *loaned_message = nullptr;
+    return ret != RMW_RET_OK ? ret : release_ret;
+  }
+  return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_take_loaned_message_with_info(
@@ -911,8 +1272,29 @@ rmw_ret_t rmw_take_loaned_message_with_info(
   rmw_message_info_t * message_info,
   rmw_subscription_allocation_t * allocation)
 {
-  (void)message_info;
-  return rmw_take_loaned_message(subscription, loaned_message, taken, allocation);
+  rmw_ret_t ret = validate_subscription(subscription);
+  if (ret != RMW_RET_OK) {
+    return ret;
+  }
+  if (loaned_message == nullptr || taken == nullptr || message_info == nullptr ||
+    *loaned_message != nullptr)
+  {
+    RMW_SET_ERROR_MSG("loaned subscription message-with-info arguments are invalid");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  *taken = false;
+  ret = rmw_fleetqox_cpp_borrow_subscription_loan(subscription, loaned_message);
+  if (ret != RMW_RET_OK) {
+    return ret;
+  }
+  ret = rmw_take_with_info(subscription, *loaned_message, taken, message_info, allocation);
+  if (ret != RMW_RET_OK || !*taken) {
+    const rmw_ret_t release_ret =
+      rmw_fleetqox_cpp_release_subscription_loan(subscription, *loaned_message);
+    *loaned_message = nullptr;
+    return ret != RMW_RET_OK ? ret : release_ret;
+  }
+  return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_return_loaned_message_from_subscription(
@@ -927,7 +1309,7 @@ rmw_ret_t rmw_return_loaned_message_from_subscription(
     RMW_SET_ERROR_MSG("loaned subscription message is null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  return unsupported("subscription loaned messages are not supported by rmw_fleetqox_cpp yet");
+  return rmw_fleetqox_cpp_release_subscription_loan(subscription, loaned_message);
 }
 
 rmw_client_t * rmw_create_client(
@@ -952,9 +1334,10 @@ rmw_client_t * rmw_create_client(
   const rosidl_service_type_support_t * effective_type_support =
     resolve_effective_service_type_support(type_support);
   const auto * service_members = service_introspection_members(effective_type_support);
-  if (service_members == nullptr) {
+  const auto * cpp_service_members = service_cpp_introspection_members(effective_type_support);
+  if (service_members == nullptr && cpp_service_members == nullptr) {
     rmw_client_free(client);
-    RMW_SET_ERROR_MSG("client requires introspection C service type support");
+    RMW_SET_ERROR_MSG("client requires introspection C or C++ service type support");
     return nullptr;
   }
   const std::string type_name = service_type_name_from_type_support(effective_type_support);
@@ -972,7 +1355,8 @@ rmw_client_t * rmw_create_client(
     std::string(node->namespace_ != nullptr ? node->namespace_ : ""),
     endpoint_id,
     endpoint_gid,
-    service_members);
+    service_members,
+    cpp_service_members);
   if (data == nullptr) {
     rmw_client_free(client);
     RMW_SET_ERROR_MSG("failed to allocate client data");
@@ -1041,13 +1425,15 @@ rmw_ret_t rmw_send_request(
     return RMW_RET_INVALID_ARGUMENT;
   }
   FleetQoxServiceData * data = client_data(client);
-  if (data == nullptr || data->service_name == nullptr || data->request_members == nullptr) {
+  if (data == nullptr || data->service_name == nullptr ||
+    (data->request_members == nullptr && data->cpp_request_members == nullptr))
+  {
     RMW_SET_ERROR_MSG("client data is invalid");
     return RMW_RET_INVALID_ARGUMENT;
   }
   std::vector<std::uint8_t> payload;
-  if (!rmw_fleetqox_cpp_serialize_introspection_message(data->request_members, ros_request, &payload)) {
-    RMW_SET_ERROR_MSG("failed to serialize service request with introspection C type support");
+  if (!serialize_service_message(data, true, ros_request, &payload)) {
+    RMW_SET_ERROR_MSG("failed to serialize service request with introspection type support");
     return RMW_RET_UNSUPPORTED;
   }
   std::int64_t next_sequence = 0;
@@ -1090,7 +1476,9 @@ rmw_ret_t rmw_take_response(
     return RMW_RET_INVALID_ARGUMENT;
   }
   FleetQoxServiceData * data = client_data(client);
-  if (data == nullptr || data->response_members == nullptr) {
+  if (data == nullptr ||
+    (data->response_members == nullptr && data->cpp_response_members == nullptr))
+  {
     RMW_SET_ERROR_MSG("client data is invalid");
     return RMW_RET_INVALID_ARGUMENT;
   }
@@ -1111,14 +1499,11 @@ rmw_ret_t rmw_take_response(
       return RMW_RET_OK;
     }
   }
-  if (!rmw_fleetqox_cpp_deserialize_introspection_message(
-      data->response_members,
-      &frame.serialized_payload,
-      ros_response))
+  if (!deserialize_service_message(data, false, &frame.serialized_payload, ros_response))
   {
     *taken = false;
     trace_service_event("take_response_deserialize_failed", data, &frame);
-    RMW_SET_ERROR_MSG("failed to deserialize service response with introspection C type support");
+    RMW_SET_ERROR_MSG("failed to deserialize service response with introspection type support");
     return RMW_RET_UNSUPPORTED;
   }
   request_header->source_timestamp = frame.source_timestamp_ns;
@@ -1127,6 +1512,52 @@ rmw_ret_t rmw_take_response(
   *taken = true;
   trace_service_event("take_response", data, &frame);
   return RMW_RET_OK;
+}
+
+rmw_ret_t rmw_fleetqox_cpp_send_malformed_response(
+  const rmw_service_t * service,
+  rmw_request_id_t * request_header)
+{
+  rmw_ret_t ret = validate_service(service);
+  if (ret != RMW_RET_OK) {
+    return ret;
+  }
+  if (request_header == nullptr) {
+    RMW_SET_ERROR_MSG("malformed response request header is null");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  FleetQoxServiceData * data = service_data(service);
+  if (data == nullptr || data->service_name == nullptr) {
+    RMW_SET_ERROR_MSG("service data is invalid");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  std::string client_endpoint_id;
+  {
+    std::lock_guard<std::mutex> lock(g_service_bus_mutex);
+    const auto found = data->pending_response_clients.find(request_key(*request_header));
+    if (found != data->pending_response_clients.end()) {
+      client_endpoint_id = found->second;
+      data->pending_response_clients.erase(found);
+    }
+  }
+  if (client_endpoint_id.empty()) {
+    trace_service_event("send_malformed_response_unknown_target", data);
+    RMW_SET_ERROR_MSG("malformed service response target is unknown");
+    return RMW_RET_ERROR;
+  }
+  const rmw_fleetqox_cpp::ServiceFrame frame{
+    "response",
+    data->service_name,
+    data->type_name,
+    client_endpoint_id,
+    data->endpoint_id,
+    request_header->sequence_number,
+    monotonic_timestamp_ns(),
+    qos_duration_ns(data->qos.lifespan),
+    std::vector<std::uint8_t>{0xff}};
+  trace_service_event("send_malformed_response", data, &frame);
+  const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(frame);
+  return rmw_fleetqox_cpp_send_encoded_frame(encoded.data(), encoded.size());
 }
 
 rmw_service_t * rmw_create_service(
@@ -1151,9 +1582,10 @@ rmw_service_t * rmw_create_service(
   const rosidl_service_type_support_t * effective_type_support =
     resolve_effective_service_type_support(type_support);
   const auto * service_members = service_introspection_members(effective_type_support);
-  if (service_members == nullptr) {
+  const auto * cpp_service_members = service_cpp_introspection_members(effective_type_support);
+  if (service_members == nullptr && cpp_service_members == nullptr) {
     rmw_service_free(service);
-    RMW_SET_ERROR_MSG("service requires introspection C service type support");
+    RMW_SET_ERROR_MSG("service requires introspection C or C++ service type support");
     return nullptr;
   }
   const std::string type_name = service_type_name_from_type_support(effective_type_support);
@@ -1171,7 +1603,8 @@ rmw_service_t * rmw_create_service(
     std::string(node->namespace_ != nullptr ? node->namespace_ : ""),
     endpoint_id,
     endpoint_gid,
-    service_members);
+    service_members,
+    cpp_service_members);
   if (data == nullptr) {
     rmw_service_free(service);
     RMW_SET_ERROR_MSG("failed to allocate service data");
@@ -1241,7 +1674,9 @@ rmw_ret_t rmw_take_request(
     return RMW_RET_INVALID_ARGUMENT;
   }
   FleetQoxServiceData * data = service_data(service);
-  if (data == nullptr || data->request_members == nullptr) {
+  if (data == nullptr ||
+    (data->request_members == nullptr && data->cpp_request_members == nullptr))
+  {
     RMW_SET_ERROR_MSG("service data is invalid");
     return RMW_RET_INVALID_ARGUMENT;
   }
@@ -1262,14 +1697,11 @@ rmw_ret_t rmw_take_request(
       return RMW_RET_OK;
     }
   }
-  if (!rmw_fleetqox_cpp_deserialize_introspection_message(
-      data->request_members,
-      &frame.serialized_payload,
-      ros_request))
+  if (!deserialize_service_message(data, true, &frame.serialized_payload, ros_request))
   {
     *taken = false;
     trace_service_event("take_request_deserialize_failed", data, &frame);
-    RMW_SET_ERROR_MSG("failed to deserialize service request with introspection C type support");
+    RMW_SET_ERROR_MSG("failed to deserialize service request with introspection type support");
     return RMW_RET_UNSUPPORTED;
   }
   const std::array<std::uint8_t, RMW_GID_STORAGE_SIZE> client_gid =
@@ -1300,14 +1732,16 @@ rmw_ret_t rmw_send_response(
     return RMW_RET_INVALID_ARGUMENT;
   }
   FleetQoxServiceData * data = service_data(service);
-  if (data == nullptr || data->service_name == nullptr || data->response_members == nullptr) {
+  if (data == nullptr || data->service_name == nullptr ||
+    (data->response_members == nullptr && data->cpp_response_members == nullptr))
+  {
     RMW_SET_ERROR_MSG("service data is invalid");
     return RMW_RET_INVALID_ARGUMENT;
   }
   std::vector<std::uint8_t> payload;
-  if (!rmw_fleetqox_cpp_serialize_introspection_message(data->response_members, ros_response, &payload)) {
+  if (!serialize_service_message(data, false, ros_response, &payload)) {
     trace_service_event("send_response_serialize_failed", data);
-    RMW_SET_ERROR_MSG("failed to serialize service response with introspection C type support");
+    RMW_SET_ERROR_MSG("failed to serialize service response with introspection type support");
     return RMW_RET_UNSUPPORTED;
   }
   std::string client_endpoint_id;
@@ -1518,7 +1952,7 @@ rmw_ret_t rmw_publisher_get_network_flow_endpoints(
   if (ret != RMW_RET_OK) {
     return ret;
   }
-  return fill_empty_network_flow_endpoints(allocator, network_flow_endpoint_array);
+  return fill_udp_network_flow_endpoint(allocator, network_flow_endpoint_array);
 }
 
 rmw_ret_t rmw_subscription_get_network_flow_endpoints(
@@ -1530,7 +1964,7 @@ rmw_ret_t rmw_subscription_get_network_flow_endpoints(
   if (ret != RMW_RET_OK) {
     return ret;
   }
-  return fill_empty_network_flow_endpoints(allocator, network_flow_endpoint_array);
+  return fill_udp_network_flow_endpoint(allocator, network_flow_endpoint_array);
 }
 
 rmw_ret_t rmw_client_request_publisher_get_actual_qos(
@@ -1566,11 +2000,24 @@ rmw_ret_t rmw_service_set_on_new_request_callback(
   rmw_event_callback_t callback,
   const void * user_data)
 {
-  (void)callback;
-  (void)user_data;
   rmw_ret_t ret = validate_service(service);
   if (ret != RMW_RET_OK) {
     return ret;
+  }
+  FleetQoxServiceData * data = service_data(service);
+  if (data == nullptr) {
+    RMW_SET_ERROR_MSG("service data is null");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  size_t pending = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_service_bus_mutex);
+    data->on_new_request_callback = callback;
+    data->on_new_request_user_data = user_data;
+    pending = data->request_queue.size();
+  }
+  if (callback != nullptr && pending > 0) {
+    callback(user_data, pending);
   }
   return RMW_RET_OK;
 }
@@ -1580,11 +2027,24 @@ rmw_ret_t rmw_client_set_on_new_response_callback(
   rmw_event_callback_t callback,
   const void * user_data)
 {
-  (void)callback;
-  (void)user_data;
   rmw_ret_t ret = validate_client(client);
   if (ret != RMW_RET_OK) {
     return ret;
+  }
+  FleetQoxServiceData * data = client_data(client);
+  if (data == nullptr) {
+    RMW_SET_ERROR_MSG("client data is null");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  size_t pending = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_service_bus_mutex);
+    data->on_new_response_callback = callback;
+    data->on_new_response_user_data = user_data;
+    pending = data->response_queue.size();
+  }
+  if (callback != nullptr && pending > 0) {
+    callback(user_data, pending);
   }
   return RMW_RET_OK;
 }

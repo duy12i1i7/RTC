@@ -30,15 +30,21 @@
 #include <unistd.h>
 
 #include "rmw_fleetqox_cpp/data_frame.hpp"
+#include "rmw_fleetqox_cpp/shared_memory_transport.hpp"
 
 #include "rcutils/allocator.h"
 #include "rosidl_runtime_c/string.h"
 #include "rosidl_runtime_c/string_functions.h"
 #include "rosidl_typesupport_c/identifier.h"
 #include "rosidl_typesupport_c/message_type_support_dispatch.h"
+#include "rosidl_typesupport_cpp/identifier.hpp"
+#include "rosidl_typesupport_cpp/message_type_support_dispatch.hpp"
 #include "rosidl_typesupport_introspection_c/field_types.h"
 #include "rosidl_typesupport_introspection_c/identifier.h"
 #include "rosidl_typesupport_introspection_c/message_introspection.h"
+#include "rosidl_typesupport_introspection_cpp/field_types.hpp"
+#include "rosidl_typesupport_introspection_cpp/identifier.hpp"
+#include "rosidl_typesupport_introspection_cpp/message_introspection.hpp"
 #include "rmw/allocators.h"
 #include "rmw/error_handling.h"
 #include "rmw/rmw.h"
@@ -109,20 +115,53 @@ struct FleetQoxSubscriptionData
   const void * on_new_message_user_data;
 };
 
+struct ReliableRetransmitEntry
+{
+  std::string encoded_frame;
+  rmw_qos_profile_t qos;
+  std::string publisher_id;
+  std::uint64_t source_sequence_number;
+  std::int64_t source_timestamp_ns;
+  std::int64_t last_send_ns;
+  std::uint64_t timeout_retransmissions;
+  bool reliable;
+  bool acknowledged;
+};
+
 struct FleetQoxTypeErasedMessageDescriptor
 {
   std::uint32_t schema_version;
   size_t message_size;
 };
 
+enum class LoanOwnerKind
+{
+  Publisher,
+  Subscription,
+};
+
+struct LoanRecord
+{
+  const void * owner;
+  LoanOwnerKind owner_kind;
+  rcutils_allocator_t allocator;
+  const rosidl_typesupport_introspection_c__MessageMembers * c_members;
+  const rosidl_typesupport_introspection_cpp::MessageMembers * cpp_members;
+};
+
 std::mutex g_bus_mutex;
 std::vector<FleetQoxPublisherData *> g_publishers;
 std::vector<FleetQoxSubscriptionData *> g_subscriptions;
 std::vector<rmw_subscription_t *> g_subscription_handles;
-std::unordered_map<std::string, std::string> g_retransmit_ledger;
+std::unordered_map<std::string, ReliableRetransmitEntry> g_retransmit_ledger;
 std::atomic<std::uint64_t> g_next_publisher_id{1};
 std::atomic<std::uint64_t> g_next_subscription_id{1};
 std::atomic<bool> g_pubsub_graph_renewal_started{false};
+std::atomic<bool> g_reliable_retransmit_started{false};
+std::atomic<bool> g_reliable_retransmit_running{false};
+std::mutex g_reliable_retransmit_lifecycle_mutex;
+std::thread g_reliable_retransmit_thread;
+std::once_flag g_reliable_retransmit_atexit_once;
 
 std::mutex g_last_take_mutex;
 std::string g_last_take_topic;
@@ -133,11 +172,123 @@ std::int64_t g_last_take_timestamp_ns{0};
 std::atomic<std::uint64_t> g_duplicate_data_frames_deduped{0};
 std::atomic<std::uint64_t> g_out_of_order_data_frames_observed{0};
 std::atomic<std::uint64_t> g_idle_repair_ack_nack_sent{0};
+std::atomic<std::uint64_t> g_reliable_timeout_retransmissions{0};
+std::mutex g_loan_mutex;
+std::unordered_map<void *, LoanRecord> g_loans;
 
 void enqueue_received_frame(const std::string & encoded_frame);
 bool apply_received_graph_advertisement(const std::string & encoded_frame);
 bool handle_ack_nack_feedback(const std::string & encoded_frame);
 std::string retransmit_ledger_key(const std::string & publisher_id, std::uint64_t sequence);
+std::int64_t monotonic_timestamp_ns();
+const rosidl_typesupport_introspection_c__MessageMembers * introspection_c_members(
+  const rosidl_message_type_support_t * type_support);
+const rosidl_typesupport_introspection_cpp::MessageMembers * introspection_cpp_members(
+  const rosidl_message_type_support_t * type_support);
+const rosidl_message_type_support_t * resolve_effective_type_support(
+  const rosidl_message_type_support_t * type_support);
+std::string type_name_from_type_support(const rosidl_message_type_support_t * type_support);
+
+void fini_loan(void * message, const LoanRecord & record)
+{
+  if (record.c_members != nullptr && record.c_members->fini_function != nullptr) {
+    record.c_members->fini_function(message);
+  } else if (record.cpp_members != nullptr && record.cpp_members->fini_function != nullptr) {
+    record.cpp_members->fini_function(message);
+  }
+  record.allocator.deallocate(message, record.allocator.state);
+}
+
+rmw_ret_t borrow_loan(
+  const rosidl_message_type_support_t * type_support,
+  size_t typed_message_size,
+  const std::string & expected_type_name,
+  rcutils_allocator_t allocator,
+  const void * owner,
+  LoanOwnerKind owner_kind,
+  void ** ros_message)
+{
+  if (type_support == nullptr || ros_message == nullptr || *ros_message != nullptr ||
+    owner == nullptr || !rcutils_allocator_is_valid(&allocator))
+  {
+    RMW_SET_ERROR_MSG("invalid loaned message allocation arguments");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  const auto * effective = resolve_effective_type_support(type_support);
+  if (type_name_from_type_support(effective) != expected_type_name) {
+    RMW_SET_ERROR_MSG("loaned message type support does not match endpoint type");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  const auto * c_members = introspection_c_members(effective);
+  const auto * cpp_members = introspection_cpp_members(effective);
+  const size_t message_size = c_members != nullptr ? c_members->size_of_ :
+    (cpp_members != nullptr ? cpp_members->size_of_ : typed_message_size);
+  if (message_size == 0) {
+    RMW_SET_ERROR_MSG("loaned message requires introspection C/C++ or a sized type-erased descriptor");
+    return RMW_RET_UNSUPPORTED;
+  }
+  void * message = allocator.allocate(message_size, allocator.state);
+  if (message == nullptr) {
+    RMW_SET_ERROR_MSG("failed to allocate loaned message");
+    return RMW_RET_BAD_ALLOC;
+  }
+  std::memset(message, 0, message_size);
+  if (c_members != nullptr && c_members->init_function != nullptr) {
+    c_members->init_function(message, ROSIDL_RUNTIME_C_MSG_INIT_ALL);
+  } else if (cpp_members != nullptr && cpp_members->init_function != nullptr) {
+    cpp_members->init_function(message, rosidl_runtime_cpp::MessageInitialization::ALL);
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_loan_mutex);
+    g_loans.emplace(
+      message,
+      LoanRecord{owner, owner_kind, allocator, c_members, cpp_members});
+  }
+  *ros_message = message;
+  return RMW_RET_OK;
+}
+
+rmw_ret_t release_loan(const void * owner, LoanOwnerKind owner_kind, void * ros_message)
+{
+  if (owner == nullptr || ros_message == nullptr) {
+    RMW_SET_ERROR_MSG("loaned message owner and pointer must be non-null");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  LoanRecord record{};
+  {
+    std::lock_guard<std::mutex> lock(g_loan_mutex);
+    const auto found = g_loans.find(ros_message);
+    if (found == g_loans.end() || found->second.owner != owner ||
+      found->second.owner_kind != owner_kind)
+    {
+      RMW_SET_ERROR_MSG("loaned message is not owned by this endpoint");
+      return RMW_RET_INVALID_ARGUMENT;
+    }
+    record = found->second;
+    g_loans.erase(found);
+  }
+  fini_loan(ros_message, record);
+  return RMW_RET_OK;
+}
+
+void release_owner_loans(const void * owner, LoanOwnerKind owner_kind)
+{
+  std::vector<std::pair<void *, LoanRecord>> loans;
+  {
+    std::lock_guard<std::mutex> lock(g_loan_mutex);
+    for (auto it = g_loans.begin(); it != g_loans.end();) {
+      if (it->second.owner == owner && it->second.owner_kind == owner_kind) {
+        loans.push_back(*it);
+        it = g_loans.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (const auto & loan : loans) {
+    fini_loan(loan.first, loan.second);
+  }
+}
 
 bool parse_ipv4_endpoint(const std::string & endpoint, sockaddr_in * address)
 {
@@ -231,6 +382,20 @@ struct FleetPathPlanRule
   std::vector<std::string> path_ids;
 };
 
+struct FleetRepairPlanRule
+{
+  std::string topic;
+  std::vector<std::string> path_ids;
+  std::vector<std::uint64_t> source_sequences;
+  int max_attempts = 0;
+};
+
+struct RepairAttemptState
+{
+  std::int64_t last_request_ns = 0;
+  std::uint64_t attempts = 0;
+};
+
 bool parse_peer_endpoints(
   const char * peer_env,
   std::vector<sockaddr_in> * peer_addresses,
@@ -322,6 +487,51 @@ std::vector<std::uint64_t> parse_sequence_list(const char * sequence_env)
     start = comma + 1;
   }
   return sequences;
+}
+
+std::vector<FleetRepairPlanRule> parse_fleet_repair_plan(const char * plan_env)
+{
+  std::vector<FleetRepairPlanRule> rules;
+  if (plan_env == nullptr || plan_env[0] == '\0') {
+    return rules;
+  }
+  for (const std::string & rule_text : split_nonempty(plan_env, ';')) {
+    const std::vector<std::string> fields = split_nonempty(rule_text, '|');
+    if (fields.empty()) {
+      continue;
+    }
+    const size_t equals = fields[0].find('=');
+    if (equals == std::string::npos || equals == 0 || equals + 1 >= fields[0].size()) {
+      continue;
+    }
+    FleetRepairPlanRule rule;
+    rule.topic = trim_copy(fields[0].substr(0, equals));
+    rule.path_ids = split_nonempty(fields[0].substr(equals + 1), '+');
+    for (size_t i = 1; i < fields.size(); ++i) {
+      const size_t field_equals = fields[i].find('=');
+      if (field_equals == std::string::npos || field_equals == 0 ||
+        field_equals + 1 >= fields[i].size())
+      {
+        continue;
+      }
+      const std::string key = trim_copy(fields[i].substr(0, field_equals));
+      const std::string value = trim_copy(fields[i].substr(field_equals + 1));
+      if (key == "sequences") {
+        rule.source_sequences = parse_sequence_list(value.c_str());
+      } else if (key == "attempts") {
+        char * end = nullptr;
+        errno = 0;
+        const long parsed = std::strtol(value.c_str(), &end, 10);
+        if (errno == 0 && end != value.c_str() && *end == '\0' && parsed >= 0) {
+          rule.max_attempts = static_cast<int>(std::min<long>(parsed, 1000));
+        }
+      }
+    }
+    if (!rule.topic.empty() && !rule.path_ids.empty()) {
+      rules.push_back(rule);
+    }
+  }
+  return rules;
 }
 
 int parse_nonnegative_int_env(const char * name, int default_value, int max_value)
@@ -483,7 +693,7 @@ public:
       RMW_SET_ERROR_MSG("encoded FleetRMW frame is empty");
       return RMW_RET_INVALID_ARGUMENT;
     }
-    if (encoded_frame.size() > kMaxUdpPayloadBytes) {
+    if (!shared_memory_only() && encoded_frame.size() > kMaxUdpPayloadBytes) {
       RMW_SET_ERROR_MSG("encoded FleetRMW frame exceeds UDP loopback payload limit");
       return RMW_RET_UNSUPPORTED;
     }
@@ -495,14 +705,22 @@ public:
     const std::optional<rmw_fleetqox_cpp::DataFrame> data_frame =
       rmw_fleetqox_cpp::decode_data_frame(encoded_frame);
     const bool is_data_frame = data_frame.has_value();
+    const bool include_udp_local = !shared_memory_active();
     const std::vector<sockaddr_in> targets =
-      is_data_frame ? data_frame_targets(true, qos, data_frame) : frame_targets(true);
-    if (targets.empty()) {
+      is_data_frame ? data_frame_targets(include_udp_local, qos, data_frame) :
+      frame_targets(include_udp_local);
+    if (targets.empty() && !shared_memory_only()) {
       RMW_SET_ERROR_MSG("socket transport has no local or peer target for frame");
       return RMW_RET_ERROR;
     }
     auto send_once = [&]() -> rmw_ret_t {
-      const rmw_ret_t send_ret = send_payload_to_targets(encoded_frame, targets, "FleetRMW frame");
+      rmw_ret_t send_ret = RMW_RET_OK;
+      if (shared_memory_active()) {
+        send_ret = send_shared_memory_payload(encoded_frame);
+      }
+      if (send_ret == RMW_RET_OK && !shared_memory_only()) {
+        send_ret = send_payload_to_targets(encoded_frame, targets, "FleetRMW frame");
+      }
       if (send_ret == RMW_RET_OK) {
         frames_sent_.fetch_add(1, std::memory_order_relaxed);
       }
@@ -535,9 +753,74 @@ public:
 
   rmw_ret_t send_retransmission_frame(const std::string & encoded_frame)
   {
-    const rmw_ret_t ret = send_frame(encoded_frame);
+    const auto data_frame = rmw_fleetqox_cpp::decode_data_frame(encoded_frame);
+    const std::optional<FleetRepairPlanRule> repair_rule =
+      data_frame.has_value() ? repair_plan_rule_for_frame(*data_frame) : std::nullopt;
+    if (data_frame.has_value() && repair_plan_configured() && !repair_rule.has_value()) {
+      repair_not_admitted_.fetch_add(1, std::memory_order_relaxed);
+      return RMW_RET_OK;
+    }
+    std::string repair_key;
+    if (data_frame.has_value()) {
+      repair_key = retransmit_ledger_key(
+        data_frame->publisher_id,
+        data_frame->source_sequence_number);
+      const std::int64_t now = monotonic_timestamp_ns();
+      std::lock_guard<std::mutex> lock(repair_attempt_mutex_);
+      RepairAttemptState & state = repair_attempts_[repair_key];
+      const std::int64_t min_interval_ns =
+        static_cast<std::int64_t>(repair_min_interval_ms_) * 1000000ll;
+      if (min_interval_ns > 0 && state.last_request_ns > 0 &&
+        now - state.last_request_ns < min_interval_ns)
+      {
+        repair_requests_coalesced_.fetch_add(1, std::memory_order_relaxed);
+        return RMW_RET_OK;
+      }
+      state.last_request_ns = now;
+      const int max_attempts =
+        repair_rule.has_value() && repair_rule->max_attempts > 0 ?
+        repair_rule->max_attempts : repair_max_attempts_per_sequence_;
+      if (max_attempts > 0 &&
+        state.attempts >= static_cast<std::uint64_t>(max_attempts))
+      {
+        repair_sequence_attempt_limit_exhausted_.fetch_add(1, std::memory_order_relaxed);
+        return RMW_RET_OK;
+      }
+    }
+    if (repair_retransmission_budget_ >= 0 &&
+      nack_retransmissions_.load(std::memory_order_relaxed) >=
+      static_cast<std::uint64_t>(repair_retransmission_budget_))
+    {
+      repair_budget_exhausted_.fetch_add(1, std::memory_order_relaxed);
+      return RMW_RET_OK;
+    }
+    const std::vector<sockaddr_in> repair_targets = repair_rule.has_value() ?
+      repair_targets_for_path_ids(repair_rule->path_ids) : std::vector<sockaddr_in>{};
+    rmw_ret_t ret = RMW_RET_OK;
+    if (repair_targets.empty()) {
+      ret = send_frame(encoded_frame);
+    } else {
+      ret = send_payload_to_targets(
+        encoded_frame,
+        repair_targets,
+        "FleetRMW repair frame");
+      if (ret == RMW_RET_OK) {
+        frames_sent_.fetch_add(1, std::memory_order_relaxed);
+        repair_plan_frames_.fetch_add(1, std::memory_order_relaxed);
+        repair_plan_selected_path_count_.fetch_add(
+          repair_targets.size(),
+          std::memory_order_relaxed);
+        if (repair_targets.size() > 1) {
+          repair_plan_redundant_frames_.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+    }
     if (ret == RMW_RET_OK) {
       nack_retransmissions_.fetch_add(1, std::memory_order_relaxed);
+      if (!repair_key.empty()) {
+        std::lock_guard<std::mutex> lock(repair_attempt_mutex_);
+        repair_attempts_[repair_key].attempts += 1;
+      }
     }
     return ret;
   }
@@ -616,6 +899,62 @@ public:
   {
     std::lock_guard<std::mutex> lock(fleet_plan_mutex_);
     return fleet_plan_last_paths_;
+  }
+
+  std::uint64_t repair_plan_frames() const
+  {
+    return repair_plan_frames_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t repair_plan_redundant_frames() const
+  {
+    return repair_plan_redundant_frames_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t repair_plan_selected_path_count() const
+  {
+    return repair_plan_selected_path_count_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t repair_budget_exhausted() const
+  {
+    return repair_budget_exhausted_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t repair_requests_coalesced() const
+  {
+    return repair_requests_coalesced_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t repair_sequence_attempt_limit_exhausted() const
+  {
+    return repair_sequence_attempt_limit_exhausted_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t repair_not_admitted() const
+  {
+    return repair_not_admitted_.load(std::memory_order_relaxed);
+  }
+
+  int repair_retransmission_budget() const
+  {
+    return repair_retransmission_budget_;
+  }
+
+  int repair_min_interval_ms() const
+  {
+    return repair_min_interval_ms_;
+  }
+
+  int repair_max_attempts_per_sequence() const
+  {
+    return repair_max_attempts_per_sequence_;
+  }
+
+  std::string repair_plan_last_paths() const
+  {
+    std::lock_guard<std::mutex> lock(repair_plan_mutex_);
+    return repair_plan_last_paths_;
   }
 
   std::uint64_t adaptive_peer_score_sum() const
@@ -775,6 +1114,26 @@ public:
   const std::string & bound_endpoint() const
   {
     return bound_endpoint_;
+  }
+
+  const std::string & transport_mode() const
+  {
+    return transport_mode_;
+  }
+
+  std::uint64_t shared_memory_frames_sent() const
+  {
+    return shared_memory_transport_.frames_sent();
+  }
+
+  std::uint64_t shared_memory_frames_received() const
+  {
+    return shared_memory_transport_.frames_received();
+  }
+
+  std::uint64_t shared_memory_overwritten_frames() const
+  {
+    return shared_memory_transport_.overwritten_frames();
   }
 
   size_t peer_count() const
@@ -951,6 +1310,97 @@ private:
     fleet_path_plan_file_contents_ = plan_text;
   }
 
+  std::vector<sockaddr_in> repair_targets_for_path_ids(
+    const std::vector<std::string> & path_ids)
+  {
+    if (path_ids.empty()) {
+      return {};
+    }
+    std::vector<sockaddr_in> targets;
+    std::ostringstream selected_paths;
+    for (const std::string & path_id : path_ids) {
+      for (size_t i = 0; i < peer_addresses_.size() && i < peer_path_ids_.size(); ++i) {
+        if (peer_path_ids_[i] != path_id) {
+          continue;
+        }
+        if (std::none_of(targets.begin(), targets.end(), [&](const sockaddr_in & target) {
+            return endpoints_match(target, peer_addresses_[i]);
+          }))
+        {
+          if (selected_paths.tellp() > 0) {
+            selected_paths << ",";
+          }
+          selected_paths << path_id;
+          targets.push_back(peer_addresses_[i]);
+        }
+      }
+    }
+    if (!targets.empty()) {
+      std::lock_guard<std::mutex> lock(repair_plan_mutex_);
+      repair_plan_last_paths_ = selected_paths.str();
+    }
+    return targets;
+  }
+
+  std::optional<FleetRepairPlanRule> repair_plan_rule_for_frame(
+    const rmw_fleetqox_cpp::DataFrame & frame) const
+  {
+    refresh_repair_path_plan_from_file();
+    std::lock_guard<std::mutex> lock(repair_plan_mutex_);
+    for (const FleetRepairPlanRule & rule : repair_path_plan_) {
+      if (rule.topic == frame.topic && repair_rule_admits_sequence(rule, frame.source_sequence_number)) {
+        return rule;
+      }
+    }
+    for (const FleetRepairPlanRule & rule : repair_path_plan_) {
+      if (rule.topic == "*" && repair_rule_admits_sequence(rule, frame.source_sequence_number)) {
+        return rule;
+      }
+    }
+    return std::nullopt;
+  }
+
+  bool repair_plan_configured() const
+  {
+    refresh_repair_path_plan_from_file();
+    std::lock_guard<std::mutex> lock(repair_plan_mutex_);
+    return repair_admission_strict_ || !repair_path_plan_.empty();
+  }
+
+  static bool repair_rule_admits_sequence(
+    const FleetRepairPlanRule & rule,
+    std::uint64_t sequence)
+  {
+    return rule.source_sequences.empty() ||
+           std::find(
+      rule.source_sequences.begin(),
+      rule.source_sequences.end(),
+      sequence) != rule.source_sequences.end();
+  }
+
+  void refresh_repair_path_plan_from_file() const
+  {
+    if (repair_path_plan_file_.empty()) {
+      return;
+    }
+    std::ifstream input(repair_path_plan_file_);
+    if (!input) {
+      return;
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    const std::string plan_text = trim_copy(buffer.str());
+    std::lock_guard<std::mutex> lock(repair_plan_mutex_);
+    if (plan_text.empty() && !repair_path_plan_file_contents_.empty()) {
+      return;
+    }
+    if (plan_text == repair_path_plan_file_contents_) {
+      return;
+    }
+    repair_path_plan_ = parse_fleet_repair_plan(plan_text.c_str());
+    repair_path_plan_file_contents_ = plan_text;
+  }
+
   rmw_ret_t send_payload_to_targets(
     const std::string & payload,
     const std::vector<sockaddr_in> & targets,
@@ -1017,10 +1467,21 @@ private:
       return RMW_RET_INVALID_ARGUMENT;
     }
     if (payload.size() > kMaxUdpPayloadBytes) {
-      RMW_SET_ERROR_MSG("FleetRMW control payload exceeds UDP payload limit");
-      return RMW_RET_UNSUPPORTED;
+      if (!shared_memory_only()) {
+        RMW_SET_ERROR_MSG("FleetRMW control payload exceeds UDP payload limit");
+        return RMW_RET_UNSUPPORTED;
+      }
     }
-    return send_payload_to_targets(payload, frame_targets(include_local), "FleetRMW control payload");
+    if (shared_memory_active()) {
+      const rmw_ret_t shm_ret = send_shared_memory_payload(payload);
+      if (shm_ret != RMW_RET_OK || shared_memory_only()) {
+        return shm_ret;
+      }
+    }
+    return send_payload_to_targets(
+      payload,
+      frame_targets(hybrid_transport() ? false : include_local),
+      "FleetRMW control payload");
   }
 
   void start()
@@ -1088,6 +1549,25 @@ private:
       fleet_path_plan_file_ = plan_file_env;
       refresh_fleet_path_plan_from_file();
     }
+    repair_path_plan_ = parse_fleet_repair_plan(std::getenv("FLEETQOX_RMW_REPAIR_PATH_PLAN"));
+    if (const char * repair_plan_file_env = std::getenv("FLEETQOX_RMW_REPAIR_PATH_PLAN_FILE");
+      repair_plan_file_env != nullptr && repair_plan_file_env[0] != '\0')
+    {
+      repair_path_plan_file_ = repair_plan_file_env;
+      refresh_repair_path_plan_from_file();
+    }
+    repair_retransmission_budget_ = parse_nonnegative_int_env(
+      "FLEETQOX_RMW_REPAIR_RETRANSMISSION_BUDGET", -1, 1000000);
+    repair_min_interval_ms_ = parse_nonnegative_int_env(
+      "FLEETQOX_RMW_REPAIR_MIN_INTERVAL_MS", 0, 5000);
+    repair_max_attempts_per_sequence_ = parse_nonnegative_int_env(
+      "FLEETQOX_RMW_REPAIR_MAX_ATTEMPTS_PER_SEQUENCE", 0, 1000);
+    if (const char * strict_env = std::getenv("FLEETQOX_RMW_REPAIR_ADMISSION_STRICT");
+      strict_env != nullptr)
+    {
+      const std::string value = trim_copy(strict_env);
+      repair_admission_strict_ = value == "1" || value == "true" || value == "yes";
+    }
     drop_source_sequences_ = parse_sequence_list(std::getenv("FLEETQOX_RMW_DROP_SOURCE_SEQUENCES"));
     proactive_data_repeats_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_PROACTIVE_DATA_REPEATS", 0, 5);
@@ -1111,6 +1591,36 @@ private:
     }
     adaptive_peer_scores_.assign(peer_addresses_.size(), 0);
 
+    if (const char * local_transport = std::getenv("FLEETQOX_RMW_LOCAL_TRANSPORT");
+      local_transport != nullptr && trim_copy(local_transport) == "shm")
+    {
+      const char * fallback_env = std::getenv("FLEETQOX_RMW_SHM_FALLBACK_UDP");
+      const bool fallback_udp = fallback_env == nullptr ||
+        trim_copy(fallback_env) == "1" || trim_copy(fallback_env) == "true" ||
+        trim_copy(fallback_env) == "yes";
+      const char * name_env = std::getenv("FLEETQOX_RMW_SHM_NAME");
+      const std::string shm_name = name_env != nullptr && name_env[0] != '\0' ?
+        name_env : "/fleetrmw_default";
+      const char * unlink_env = std::getenv("FLEETQOX_RMW_SHM_UNLINK_OWNER");
+      const bool unlink_owner = unlink_env != nullptr &&
+        (trim_copy(unlink_env) == "1" || trim_copy(unlink_env) == "true" ||
+        trim_copy(unlink_env) == "yes");
+      if (shared_memory_transport_.start(
+          shm_name,
+          [this](const std::string & payload) {handle_received_payload(payload);},
+          unlink_owner))
+      {
+        transport_mode_ = peer_addresses_.empty() ? "shm" : "shm_udp_hybrid";
+      } else if (fallback_udp) {
+        transport_mode_ = "udp_fallback";
+      } else {
+        init_error_ = shared_memory_transport_.error();
+        ::close(fd_);
+        fd_ = -1;
+        return;
+      }
+    }
+
     running_.store(true, std::memory_order_release);
     try {
       receive_thread_ = std::thread([this]() { receive_loop(); });
@@ -1126,6 +1636,7 @@ private:
 
   void stop()
   {
+    shared_memory_transport_.stop();
     running_.store(false, std::memory_order_release);
     if (fd_ >= 0) {
       ::shutdown(fd_, SHUT_RDWR);
@@ -1157,19 +1668,58 @@ private:
       if (received == 0) {
         continue;
       }
-      frames_received_.fetch_add(1, std::memory_order_relaxed);
       const std::string encoded_frame(buffer.data(), static_cast<size_t>(received));
-      if (handle_ack_nack_feedback(encoded_frame)) {
-        continue;
+      if (hybrid_transport()) {
+        if (!shared_memory_transport_.send(encoded_frame)) {
+          handle_received_payload(encoded_frame);
+        }
+      } else {
+        handle_received_payload(encoded_frame);
       }
-      if (apply_received_graph_advertisement(encoded_frame)) {
-        continue;
-      }
-      if (rmw_fleetqox_cpp_handle_service_frame(encoded_frame.data(), encoded_frame.size())) {
-        continue;
-      }
-      enqueue_received_frame(encoded_frame);
     }
+  }
+
+  bool shared_memory_only() const
+  {
+    return transport_mode_ == "shm" && shared_memory_transport_.ready() &&
+           peer_addresses_.empty();
+  }
+
+  bool hybrid_transport() const
+  {
+    return transport_mode_ == "shm_udp_hybrid" && shared_memory_transport_.ready();
+  }
+
+  bool shared_memory_active() const
+  {
+    return shared_memory_only() || hybrid_transport();
+  }
+
+  rmw_ret_t send_shared_memory_payload(const std::string & payload)
+  {
+    if (!shared_memory_transport_.send(payload)) {
+      RMW_SET_ERROR_MSG(shared_memory_transport_.error().empty() ?
+        "failed to send FleetRMW payload through shared memory" :
+        shared_memory_transport_.error().c_str());
+      return payload.size() > rmw_fleetqox_cpp::SharedMemoryTransport::max_payload_size() ?
+             RMW_RET_UNSUPPORTED : RMW_RET_ERROR;
+    }
+    return RMW_RET_OK;
+  }
+
+  void handle_received_payload(const std::string & encoded_frame)
+  {
+    frames_received_.fetch_add(1, std::memory_order_relaxed);
+    if (handle_ack_nack_feedback(encoded_frame)) {
+      return;
+    }
+    if (apply_received_graph_advertisement(encoded_frame)) {
+      return;
+    }
+    if (rmw_fleetqox_cpp_handle_service_frame(encoded_frame.data(), encoded_frame.size())) {
+      return;
+    }
+    enqueue_received_frame(encoded_frame);
   }
 
   int fd_{-1};
@@ -1190,11 +1740,20 @@ private:
   std::atomic<std::uint64_t> fleet_plan_frames_{0};
   std::atomic<std::uint64_t> fleet_plan_redundant_frames_{0};
   std::atomic<std::uint64_t> fleet_plan_selected_path_count_{0};
+  std::atomic<std::uint64_t> repair_plan_frames_{0};
+  std::atomic<std::uint64_t> repair_plan_redundant_frames_{0};
+  std::atomic<std::uint64_t> repair_plan_selected_path_count_{0};
+  std::atomic<std::uint64_t> repair_budget_exhausted_{0};
+  std::atomic<std::uint64_t> repair_requests_coalesced_{0};
+  std::atomic<std::uint64_t> repair_sequence_attempt_limit_exhausted_{0};
+  std::atomic<std::uint64_t> repair_not_admitted_{0};
   std::atomic<size_t> adaptive_selected_peer_index_{0};
   std::int64_t adaptive_redundant_deadline_ns_{50000000ll};
   bool ready_{false};
   std::string init_error_;
   std::string bound_endpoint_;
+  std::string transport_mode_{"udp"};
+  rmw_fleetqox_cpp::SharedMemoryTransport shared_memory_transport_;
   std::string peer_policy_{"all"};
   std::vector<sockaddr_in> peer_addresses_;
   std::vector<std::string> peer_path_ids_;
@@ -1211,6 +1770,17 @@ private:
   std::vector<std::uint64_t> adaptive_peer_scores_;
   mutable std::mutex fleet_plan_mutex_;
   std::string fleet_plan_last_paths_;
+  mutable std::vector<FleetRepairPlanRule> repair_path_plan_;
+  mutable std::string repair_path_plan_file_;
+  mutable std::string repair_path_plan_file_contents_;
+  mutable std::mutex repair_plan_mutex_;
+  std::string repair_plan_last_paths_;
+  int repair_retransmission_budget_{-1};
+  int repair_min_interval_ms_{0};
+  int repair_max_attempts_per_sequence_{0};
+  bool repair_admission_strict_{false};
+  std::mutex repair_attempt_mutex_;
+  std::unordered_map<std::string, RepairAttemptState> repair_attempts_;
 };
 
 LoopbackSocketTransport & socket_transport()
@@ -1236,8 +1806,19 @@ bool handle_ack_nack_feedback(const std::string & encoded_frame)
         const auto found = g_retransmit_ledger.find(
           retransmit_ledger_key(ack_nack->publisher_id, sequence));
         if (found != g_retransmit_ledger.end()) {
-          retransmit_frames.push_back(found->second);
+          retransmit_frames.push_back(found->second.encoded_frame);
         }
+      }
+    }
+    for (auto & entry : g_retransmit_ledger) {
+      ReliableRetransmitEntry & state = entry.second;
+      if (state.publisher_id != ack_nack->publisher_id) {
+        continue;
+      }
+      if (state.source_sequence_number == ack_nack->ack_sequence_number ||
+        state.source_sequence_number <= ack_nack->highest_contiguous_sequence)
+      {
+        state.acknowledged = true;
       }
     }
   }
@@ -1417,6 +1998,22 @@ const rosidl_typesupport_introspection_c__MessageMembers * introspection_c_membe
   return static_cast<const rosidl_typesupport_introspection_c__MessageMembers *>(type_support->data);
 }
 
+const rosidl_typesupport_introspection_cpp::MessageMembers * introspection_cpp_members(
+  const rosidl_message_type_support_t * type_support)
+{
+  if (type_support == nullptr ||
+    type_support->typesupport_identifier == nullptr ||
+    std::strcmp(
+      type_support->typesupport_identifier,
+      rosidl_typesupport_introspection_cpp::typesupport_identifier) != 0 ||
+    type_support->data == nullptr)
+  {
+    return nullptr;
+  }
+  return static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
+    type_support->data);
+}
+
 const rosidl_message_type_support_t * resolve_effective_type_support(
   const rosidl_message_type_support_t * type_support)
 {
@@ -1441,6 +2038,18 @@ const rosidl_message_type_support_t * resolve_effective_type_support(
       return resolved;
     }
   }
+  if (std::strcmp(
+      type_support->typesupport_identifier,
+      rosidl_typesupport_cpp::typesupport_identifier) == 0)
+  {
+    const rosidl_message_type_support_t * resolved =
+      rosidl_typesupport_cpp::get_message_typesupport_handle_function(
+      type_support,
+      rosidl_typesupport_introspection_cpp::typesupport_identifier);
+    if (resolved != nullptr) {
+      return resolved;
+    }
+  }
   if (type_support->func != nullptr) {
     const rosidl_message_type_support_t * resolved =
       type_support->func(type_support, rosidl_typesupport_introspection_c__identifier);
@@ -1453,9 +2062,22 @@ const rosidl_message_type_support_t * resolve_effective_type_support(
 
 std::string type_name_from_type_support(const rosidl_message_type_support_t * type_support)
 {
-  const auto * introspection_members = introspection_c_members(resolve_effective_type_support(type_support));
+  const auto * effective = resolve_effective_type_support(type_support);
+  const auto * introspection_members = introspection_c_members(effective);
   if (introspection_members != nullptr) {
     return ros_type_name_from_introspection_members(introspection_members);
+  }
+  const auto * cpp_members = introspection_cpp_members(effective);
+  if (cpp_members != nullptr && cpp_members->message_namespace_ != nullptr &&
+    cpp_members->message_name_ != nullptr)
+  {
+    std::string namespace_text = cpp_members->message_namespace_;
+    size_t separator = 0;
+    while ((separator = namespace_text.find("::", separator)) != std::string::npos) {
+      namespace_text.replace(separator, 2, "/");
+      separator += 1;
+    }
+    return namespace_text + "/" + cpp_members->message_name_;
   }
   return type_support != nullptr && type_support->typesupport_identifier != nullptr ?
          type_support->typesupport_identifier : "unknown";
@@ -1496,6 +2118,140 @@ size_t primitive_size(uint8_t type_id)
     default:
       return 0;
   }
+}
+
+bool checked_size_add(size_t left, size_t right, size_t * result)
+{
+  if (result == nullptr || right > std::numeric_limits<size_t>::max() - left) {
+    return false;
+  }
+  *result = left + right;
+  return true;
+}
+
+bool checked_size_multiply(size_t left, size_t right, size_t * result)
+{
+  if (result == nullptr || (left != 0 && right > std::numeric_limits<size_t>::max() / left)) {
+    return false;
+  }
+  *result = left * right;
+  return true;
+}
+
+bool max_serialized_size_introspection_c_message(
+  const rosidl_typesupport_introspection_c__MessageMembers * members,
+  size_t * size);
+
+bool max_serialized_size_introspection_c_member(
+  const rosidl_typesupport_introspection_c__MessageMember & member,
+  size_t * size)
+{
+  if (size == nullptr) {
+    return false;
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_c__ROS_TYPE_STRING) {
+    if (member.string_upper_bound_ == 0) {
+      return false;
+    }
+    return checked_size_add(8, member.string_upper_bound_, size);
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_c__ROS_TYPE_MESSAGE) {
+    return max_serialized_size_introspection_c_message(
+      introspection_c_members(member.members_), size);
+  }
+  *size = primitive_size(member.type_id_);
+  return *size > 0;
+}
+
+bool max_serialized_size_introspection_c_message(
+  const rosidl_typesupport_introspection_c__MessageMembers * members,
+  size_t * size)
+{
+  if (members == nullptr || size == nullptr) {
+    return false;
+  }
+  size_t total = 8;
+  for (uint32_t i = 0; i < members->member_count_; ++i) {
+    const auto & member = members->members_[i];
+    size_t element_size = 0;
+    if (!max_serialized_size_introspection_c_member(member, &element_size)) {
+      return false;
+    }
+    size_t field_size = element_size;
+    if (member.is_array_) {
+      if (member.array_size_ == 0) {
+        return false;
+      }
+      if (!checked_size_multiply(element_size, member.array_size_, &field_size) ||
+        !checked_size_add(8, field_size, &field_size))
+      {
+        return false;
+      }
+    }
+    if (!checked_size_add(total, field_size, &total)) {
+      return false;
+    }
+  }
+  *size = total;
+  return true;
+}
+
+bool max_serialized_size_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  size_t * size);
+
+bool max_serialized_size_introspection_cpp_member(
+  const rosidl_typesupport_introspection_cpp::MessageMember & member,
+  size_t * size)
+{
+  if (size == nullptr) {
+    return false;
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING) {
+    if (member.string_upper_bound_ == 0) {
+      return false;
+    }
+    return checked_size_add(8, member.string_upper_bound_, size);
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
+    return max_serialized_size_introspection_cpp_message(
+      introspection_cpp_members(member.members_), size);
+  }
+  *size = primitive_size(member.type_id_);
+  return *size > 0;
+}
+
+bool max_serialized_size_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  size_t * size)
+{
+  if (members == nullptr || size == nullptr) {
+    return false;
+  }
+  size_t total = 8;
+  for (uint32_t i = 0; i < members->member_count_; ++i) {
+    const auto & member = members->members_[i];
+    size_t element_size = 0;
+    if (!max_serialized_size_introspection_cpp_member(member, &element_size)) {
+      return false;
+    }
+    size_t field_size = element_size;
+    if (member.is_array_) {
+      if (member.array_size_ == 0) {
+        return false;
+      }
+      if (!checked_size_multiply(element_size, member.array_size_, &field_size) ||
+        !checked_size_add(8, field_size, &field_size))
+      {
+        return false;
+      }
+    }
+    if (!checked_size_add(total, field_size, &total)) {
+      return false;
+    }
+  }
+  *size = total;
+  return true;
 }
 
 void append_u64(std::vector<std::uint8_t> * out, std::uint64_t value)
@@ -1749,6 +2505,229 @@ bool deserialize_introspection_c_message(
   return true;
 }
 
+bool serialize_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  const void * ros_message,
+  std::vector<std::uint8_t> * out);
+
+bool deserialize_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  void * ros_message);
+
+bool serialize_introspection_cpp_member(
+  const rosidl_typesupport_introspection_cpp::MessageMember & member,
+  const void * member_data,
+  std::vector<std::uint8_t> * out)
+{
+  if (out == nullptr || member_data == nullptr) {
+    return false;
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING) {
+    const auto & value = *static_cast<const std::string *>(member_data);
+    append_u64(out, static_cast<std::uint64_t>(value.size()));
+    if (!value.empty()) {
+      append_bytes(out, value.data(), value.size());
+    }
+    return true;
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
+    return serialize_introspection_cpp_message(
+      introspection_cpp_members(member.members_), member_data, out);
+  }
+  const size_t size = primitive_size(member.type_id_);
+  if (size == 0) {
+    return false;
+  }
+  append_bytes(out, member_data, size);
+  return true;
+}
+
+const void * cpp_array_const_member_ptr(
+  const rosidl_typesupport_introspection_cpp::MessageMember & member,
+  const void * array_data,
+  size_t index)
+{
+  if (member.get_const_function != nullptr) {
+    return member.get_const_function(array_data, index);
+  }
+  const auto * nested_members =
+    member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE ?
+    introspection_cpp_members(member.members_) : nullptr;
+  const size_t element_size =
+    member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE ?
+    (nested_members == nullptr ? 0 : nested_members->size_of_) : primitive_size(member.type_id_);
+  if (element_size == 0) {
+    return nullptr;
+  }
+  return static_cast<const std::uint8_t *>(array_data) + (element_size * index);
+}
+
+void * cpp_array_member_ptr(
+  const rosidl_typesupport_introspection_cpp::MessageMember & member,
+  void * array_data,
+  size_t index)
+{
+  if (member.get_function != nullptr) {
+    return member.get_function(array_data, index);
+  }
+  const auto * nested_members =
+    member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE ?
+    introspection_cpp_members(member.members_) : nullptr;
+  const size_t element_size =
+    member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE ?
+    (nested_members == nullptr ? 0 : nested_members->size_of_) : primitive_size(member.type_id_);
+  if (element_size == 0) {
+    return nullptr;
+  }
+  return static_cast<std::uint8_t *>(array_data) + (element_size * index);
+}
+
+bool serialize_introspection_cpp_field(
+  const rosidl_typesupport_introspection_cpp::MessageMember & member,
+  const void * ros_message,
+  std::vector<std::uint8_t> * out)
+{
+  const auto * member_data = static_cast<const std::uint8_t *>(ros_message) + member.offset_;
+  if (!member.is_array_) {
+    return serialize_introspection_cpp_member(member, member_data, out);
+  }
+  const size_t element_count = member.size_function != nullptr ?
+    member.size_function(member_data) : member.array_size_;
+  append_u64(out, static_cast<std::uint64_t>(element_count));
+  for (size_t i = 0; i < element_count; ++i) {
+    const void * element = cpp_array_const_member_ptr(member, member_data, i);
+    union PrimitiveScratch
+    {
+      long double alignment;
+      std::uint8_t bytes[32];
+    } scratch{};
+    if (element == nullptr && member.fetch_function != nullptr &&
+      primitive_size(member.type_id_) <= sizeof(scratch.bytes))
+    {
+      member.fetch_function(member_data, i, scratch.bytes);
+      element = scratch.bytes;
+    }
+    if (element == nullptr || !serialize_introspection_cpp_member(member, element, out)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool serialize_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  const void * ros_message,
+  std::vector<std::uint8_t> * out)
+{
+  if (members == nullptr || ros_message == nullptr || out == nullptr) {
+    return false;
+  }
+  append_u64(out, static_cast<std::uint64_t>(members->member_count_));
+  for (uint32_t i = 0; i < members->member_count_; ++i) {
+    if (!serialize_introspection_cpp_field(members->members_[i], ros_message, out)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool deserialize_introspection_cpp_member(
+  const rosidl_typesupport_introspection_cpp::MessageMember & member,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  void * member_data)
+{
+  if (offset == nullptr || member_data == nullptr) {
+    return false;
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING) {
+    std::uint64_t size = 0;
+    if (!read_u64(payload, offset, &size) || *offset + size > payload.size() ||
+      (member.string_upper_bound_ > 0 && size > member.string_upper_bound_))
+    {
+      return false;
+    }
+    auto & value = *static_cast<std::string *>(member_data);
+    value.assign(reinterpret_cast<const char *>(payload.data() + *offset), static_cast<size_t>(size));
+    *offset += static_cast<size_t>(size);
+    return true;
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
+    return deserialize_introspection_cpp_message(
+      introspection_cpp_members(member.members_), payload, offset, member_data);
+  }
+  const size_t size = primitive_size(member.type_id_);
+  return size > 0 && read_bytes(payload, offset, member_data, size);
+}
+
+bool deserialize_introspection_cpp_field(
+  const rosidl_typesupport_introspection_cpp::MessageMember & member,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  void * ros_message)
+{
+  auto * member_data = static_cast<std::uint8_t *>(ros_message) + member.offset_;
+  if (!member.is_array_) {
+    return deserialize_introspection_cpp_member(member, payload, offset, member_data);
+  }
+  std::uint64_t element_count = 0;
+  if (!read_u64(payload, offset, &element_count) ||
+    (member.is_upper_bound_ && element_count > member.array_size_))
+  {
+    return false;
+  }
+  if (member.resize_function != nullptr) {
+    member.resize_function(member_data, static_cast<size_t>(element_count));
+  } else if (element_count != member.array_size_) {
+    return false;
+  }
+  for (size_t i = 0; i < static_cast<size_t>(element_count); ++i) {
+    void * element = cpp_array_member_ptr(member, member_data, i);
+    if (element != nullptr) {
+      if (!deserialize_introspection_cpp_member(member, payload, offset, element)) {
+        return false;
+      }
+      continue;
+    }
+    const size_t size = primitive_size(member.type_id_);
+    union PrimitiveScratch
+    {
+      long double alignment;
+      std::uint8_t bytes[32];
+    } scratch{};
+    if (member.assign_function == nullptr || size == 0 || size > sizeof(scratch.bytes) ||
+      !read_bytes(payload, offset, scratch.bytes, size))
+    {
+      return false;
+    }
+    member.assign_function(member_data, i, scratch.bytes);
+  }
+  return true;
+}
+
+bool deserialize_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  void * ros_message)
+{
+  if (members == nullptr || offset == nullptr || ros_message == nullptr) {
+    return false;
+  }
+  std::uint64_t member_count = 0;
+  if (!read_u64(payload, offset, &member_count) || member_count != members->member_count_) {
+    return false;
+  }
+  for (uint32_t i = 0; i < members->member_count_; ++i) {
+    if (!deserialize_introspection_cpp_field(members->members_[i], payload, offset, ros_message)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 template<typename T, typename... Args>
 T * allocate_data(rcutils_allocator_t allocator, Args &&... args)
 {
@@ -1807,10 +2786,148 @@ rmw_ret_t publish_payload(FleetQoxPublisherData * data, const std::vector<std::u
   const std::string encoded_frame = rmw_fleetqox_cpp::encode_data_frame(frame);
   {
     std::lock_guard<std::mutex> lock(g_bus_mutex);
-    g_retransmit_ledger[retransmit_ledger_key(data->publisher_id, source_sequence)] = encoded_frame;
+    const size_t history_limit =
+      data->qos.history == RMW_QOS_POLICY_HISTORY_KEEP_LAST ?
+      std::max<size_t>(1, data->qos.depth) : 4096;
+    size_t publisher_history_size = 0;
+    for (auto it = g_retransmit_ledger.begin(); it != g_retransmit_ledger.end();) {
+      const ReliableRetransmitEntry & entry = it->second;
+      if (entry.publisher_id != data->publisher_id) {
+        ++it;
+        continue;
+      }
+      if (entry.acknowledged || frame_exceeds_lifespan(entry.qos, entry.source_timestamp_ns)) {
+        it = g_retransmit_ledger.erase(it);
+        continue;
+      }
+      ++publisher_history_size;
+      ++it;
+    }
+    while (publisher_history_size >= history_limit) {
+      auto oldest = g_retransmit_ledger.end();
+      for (auto it = g_retransmit_ledger.begin(); it != g_retransmit_ledger.end(); ++it) {
+        if (it->second.publisher_id == data->publisher_id &&
+          (oldest == g_retransmit_ledger.end() ||
+          it->second.source_sequence_number < oldest->second.source_sequence_number))
+        {
+          oldest = it;
+        }
+      }
+      if (oldest == g_retransmit_ledger.end()) {
+        break;
+      }
+      g_retransmit_ledger.erase(oldest);
+      --publisher_history_size;
+    }
+    g_retransmit_ledger[retransmit_ledger_key(data->publisher_id, source_sequence)] =
+      ReliableRetransmitEntry{
+      encoded_frame,
+      data->qos,
+      data->publisher_id,
+      source_sequence,
+      frame.source_timestamp_ns,
+      frame.source_timestamp_ns,
+      0,
+      data->qos.reliability == RMW_QOS_POLICY_RELIABILITY_RELIABLE,
+      false};
   }
   maybe_renew_publisher_graph(data);
   return socket_transport().send_data_frame(encoded_frame, data->qos);
+}
+
+int reliable_ack_timeout_ms()
+{
+  static const int timeout_ms = parse_nonnegative_int_env(
+    "FLEETQOX_RMW_RELIABLE_ACK_TIMEOUT_MS", 0, 30000);
+  return timeout_ms;
+}
+
+int reliable_max_timeout_retransmissions()
+{
+  static const int max_retransmissions = parse_nonnegative_int_env(
+    "FLEETQOX_RMW_RELIABLE_MAX_RETRANSMISSIONS", 3, 100);
+  return max_retransmissions;
+}
+
+void reliable_retransmit_loop()
+{
+  const int timeout_ms = reliable_ack_timeout_ms();
+  const int max_retransmissions = reliable_max_timeout_retransmissions();
+  if (timeout_ms <= 0 || max_retransmissions <= 0) {
+    return;
+  }
+  const auto poll_interval = std::chrono::milliseconds(
+    std::max(5, std::min(50, timeout_ms / 4)));
+  const std::int64_t timeout_ns = static_cast<std::int64_t>(timeout_ms) * 1000000ll;
+  while (g_reliable_retransmit_running.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(poll_interval);
+    if (!g_reliable_retransmit_running.load(std::memory_order_acquire)) {
+      break;
+    }
+    const std::int64_t now = monotonic_timestamp_ns();
+    std::vector<std::pair<std::string, rmw_qos_profile_t>> pending;
+    {
+      std::lock_guard<std::mutex> lock(g_bus_mutex);
+      for (auto it = g_retransmit_ledger.begin(); it != g_retransmit_ledger.end();) {
+        ReliableRetransmitEntry & entry = it->second;
+        if (entry.acknowledged || frame_exceeds_lifespan(entry.qos, entry.source_timestamp_ns)) {
+          it = g_retransmit_ledger.erase(it);
+          continue;
+        }
+        if (!entry.reliable ||
+          entry.timeout_retransmissions >= static_cast<std::uint64_t>(max_retransmissions))
+        {
+          ++it;
+          continue;
+        }
+        if (now - entry.last_send_ns < timeout_ns) {
+          ++it;
+          continue;
+        }
+        entry.last_send_ns = now;
+        ++entry.timeout_retransmissions;
+        pending.emplace_back(entry.encoded_frame, entry.qos);
+        ++it;
+      }
+    }
+    for (const auto & retransmission : pending) {
+      if (socket_transport().send_data_frame(retransmission.first, retransmission.second) ==
+        RMW_RET_OK)
+      {
+        g_reliable_timeout_retransmissions.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+  }
+}
+
+void stop_reliable_retransmit_thread()
+{
+  std::lock_guard<std::mutex> lifecycle_lock(g_reliable_retransmit_lifecycle_mutex);
+  g_reliable_retransmit_running.store(false, std::memory_order_release);
+  if (g_reliable_retransmit_thread.joinable()) {
+    g_reliable_retransmit_thread.join();
+  }
+  g_reliable_retransmit_started.store(false, std::memory_order_release);
+}
+
+void ensure_reliable_retransmit_thread()
+{
+  if (reliable_ack_timeout_ms() <= 0 || reliable_max_timeout_retransmissions() <= 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lifecycle_lock(g_reliable_retransmit_lifecycle_mutex);
+  if (g_reliable_retransmit_started.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (g_reliable_retransmit_thread.joinable()) {
+    g_reliable_retransmit_thread.join();
+  }
+  g_reliable_retransmit_running.store(true, std::memory_order_release);
+  g_reliable_retransmit_started.store(true, std::memory_order_release);
+  g_reliable_retransmit_thread = std::thread(reliable_retransmit_loop);
+  std::call_once(g_reliable_retransmit_atexit_once, []() {
+    std::atexit(stop_reliable_retransmit_thread);
+  });
 }
 
 int repair_nack_interval_ms()
@@ -1937,26 +3054,6 @@ rmw_ret_t take_payload(
   }
 }
 
-size_t count_publishers_locked(const std::string & topic_name)
-{
-  return static_cast<size_t>(std::count_if(
-    g_publishers.begin(),
-    g_publishers.end(),
-    [&](const FleetQoxPublisherData * data) {
-      return data != nullptr && data->topic_name == topic_name;
-    }));
-}
-
-size_t count_subscriptions_locked(const std::string & topic_name)
-{
-  return static_cast<size_t>(std::count_if(
-    g_subscriptions.begin(),
-    g_subscriptions.end(),
-    [&](const FleetQoxSubscriptionData * data) {
-      return data != nullptr && data->topic_name == topic_name;
-    }));
-}
-
 void send_publisher_graph_advertisement(const FleetQoxPublisherData * data, const char * action)
 {
   if (data == nullptr || action == nullptr) {
@@ -2002,9 +3099,11 @@ void send_subscription_graph_advertisement(const FleetQoxSubscriptionData * data
 
 void pubsub_graph_renewal_loop()
 {
-  constexpr auto kRenewInterval = std::chrono::milliseconds(500);
+  const auto renew_interval = std::chrono::milliseconds(std::max(
+      100,
+      parse_nonnegative_int_env("FLEETQOX_RMW_GRAPH_RENEW_INTERVAL_MS", 500, 4000)));
   while (true) {
-    std::this_thread::sleep_for(kRenewInterval);
+    std::this_thread::sleep_for(renew_interval);
     std::lock_guard<std::mutex> lock(g_bus_mutex);
     for (const FleetQoxPublisherData * data : g_publishers) {
       send_publisher_graph_advertisement(data, "add");
@@ -2236,6 +3335,11 @@ std::uint64_t rmw_fleetqox_cpp_socket_nack_retransmissions()
   return socket_transport().nack_retransmissions();
 }
 
+std::uint64_t rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions()
+{
+  return g_reliable_timeout_retransmissions.load(std::memory_order_relaxed);
+}
+
 std::uint64_t rmw_fleetqox_cpp_socket_idle_repair_ack_nack_sent()
 {
   return g_idle_repair_ack_nack_sent.load(std::memory_order_relaxed);
@@ -2327,6 +3431,63 @@ const char * rmw_fleetqox_cpp_socket_fleet_plan_last_paths()
   return paths.c_str();
 }
 
+std::uint64_t rmw_fleetqox_cpp_socket_repair_plan_frames()
+{
+  return socket_transport().repair_plan_frames();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_repair_plan_redundant_frames()
+{
+  return socket_transport().repair_plan_redundant_frames();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_repair_plan_selected_path_count()
+{
+  return socket_transport().repair_plan_selected_path_count();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_repair_budget_exhausted()
+{
+  return socket_transport().repair_budget_exhausted();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_repair_requests_coalesced()
+{
+  return socket_transport().repair_requests_coalesced();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_repair_sequence_attempt_limit_exhausted()
+{
+  return socket_transport().repair_sequence_attempt_limit_exhausted();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_repair_not_admitted()
+{
+  return socket_transport().repair_not_admitted();
+}
+
+int rmw_fleetqox_cpp_socket_repair_retransmission_budget()
+{
+  return socket_transport().repair_retransmission_budget();
+}
+
+int rmw_fleetqox_cpp_socket_repair_min_interval_ms()
+{
+  return socket_transport().repair_min_interval_ms();
+}
+
+int rmw_fleetqox_cpp_socket_repair_max_attempts_per_sequence()
+{
+  return socket_transport().repair_max_attempts_per_sequence();
+}
+
+const char * rmw_fleetqox_cpp_socket_repair_plan_last_paths()
+{
+  static thread_local std::string paths;
+  paths = socket_transport().repair_plan_last_paths();
+  return paths.c_str();
+}
+
 std::uint64_t rmw_fleetqox_cpp_socket_adaptive_peer_score_sum()
 {
   return socket_transport().adaptive_peer_score_sum();
@@ -2345,6 +3506,26 @@ const char * rmw_fleetqox_cpp_socket_peer_policy()
 const char * rmw_fleetqox_cpp_socket_bound_endpoint()
 {
   return socket_transport().bound_endpoint().c_str();
+}
+
+const char * rmw_fleetqox_cpp_transport_mode()
+{
+  return socket_transport().transport_mode().c_str();
+}
+
+std::uint64_t rmw_fleetqox_cpp_shared_memory_frames_sent()
+{
+  return socket_transport().shared_memory_frames_sent();
+}
+
+std::uint64_t rmw_fleetqox_cpp_shared_memory_frames_received()
+{
+  return socket_transport().shared_memory_frames_received();
+}
+
+std::uint64_t rmw_fleetqox_cpp_shared_memory_overwritten_frames()
+{
+  return socket_transport().shared_memory_overwritten_frames();
 }
 
 bool rmw_fleetqox_cpp_socket_ensure_started()
@@ -2411,6 +3592,73 @@ bool rmw_fleetqox_cpp_serialize_introspection_message(
   return serialize_introspection_c_message(members, ros_message, payload);
 }
 
+bool rmw_fleetqox_cpp_max_serialized_size_introspection_message(
+  const rosidl_typesupport_introspection_c__MessageMembers * members,
+  size_t * size)
+{
+  return max_serialized_size_introspection_c_message(members, size);
+}
+
+bool rmw_fleetqox_cpp_max_serialized_size_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  size_t * size)
+{
+  return max_serialized_size_introspection_cpp_message(members, size);
+}
+
+rmw_ret_t rmw_fleetqox_cpp_borrow_publisher_loan(
+  const rmw_publisher_t * publisher,
+  const rosidl_message_type_support_t * type_support,
+  void ** ros_message)
+{
+  FleetQoxPublisherData * data = publisher_data(publisher);
+  if (data == nullptr) {
+    RMW_SET_ERROR_MSG("publisher data is null while borrowing message");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  return borrow_loan(
+    type_support,
+    data->typed_message_size,
+    data->type_name,
+    data->allocator,
+    publisher,
+    LoanOwnerKind::Publisher,
+    ros_message);
+}
+
+rmw_ret_t rmw_fleetqox_cpp_release_publisher_loan(
+  const rmw_publisher_t * publisher,
+  void * ros_message)
+{
+  return release_loan(publisher, LoanOwnerKind::Publisher, ros_message);
+}
+
+rmw_ret_t rmw_fleetqox_cpp_borrow_subscription_loan(
+  const rmw_subscription_t * subscription,
+  void ** ros_message)
+{
+  FleetQoxSubscriptionData * data = subscription_data(subscription);
+  if (data == nullptr) {
+    RMW_SET_ERROR_MSG("subscription data is null while borrowing message");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  return borrow_loan(
+    data->type_support,
+    data->typed_message_size,
+    data->type_name,
+    data->allocator,
+    subscription,
+    LoanOwnerKind::Subscription,
+    ros_message);
+}
+
+rmw_ret_t rmw_fleetqox_cpp_release_subscription_loan(
+  const rmw_subscription_t * subscription,
+  void * ros_message)
+{
+  return release_loan(subscription, LoanOwnerKind::Subscription, ros_message);
+}
+
 bool rmw_fleetqox_cpp_deserialize_introspection_message(
   const rosidl_typesupport_introspection_c__MessageMembers * members,
   const std::vector<std::uint8_t> * payload,
@@ -2421,6 +3669,28 @@ bool rmw_fleetqox_cpp_deserialize_introspection_message(
   }
   size_t offset = 0;
   return deserialize_introspection_c_message(members, *payload, &offset, ros_message) &&
+         offset == payload->size();
+}
+
+bool rmw_fleetqox_cpp_serialize_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  const void * ros_message,
+  std::vector<std::uint8_t> * payload)
+{
+  return members != nullptr && ros_message != nullptr && payload != nullptr &&
+         serialize_introspection_cpp_message(members, ros_message, payload);
+}
+
+bool rmw_fleetqox_cpp_deserialize_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  const std::vector<std::uint8_t> * payload,
+  void * ros_message)
+{
+  if (members == nullptr || payload == nullptr || ros_message == nullptr) {
+    return false;
+  }
+  size_t offset = 0;
+  return deserialize_introspection_cpp_message(members, *payload, &offset, ros_message) &&
          offset == payload->size();
 }
 
@@ -2502,10 +3772,14 @@ rmw_publisher_t * rmw_create_publisher(
   publisher->data = data;
   publisher->topic_name = data->topic_name.c_str();
   publisher->options = *publisher_options;
-  publisher->can_loan_messages = false;
+  publisher->can_loan_messages =
+    introspection_c_members(data->type_support) != nullptr ||
+    introspection_cpp_members(data->type_support) != nullptr || data->typed_message_size > 0;
 
-  std::lock_guard<std::mutex> lock(g_bus_mutex);
-  g_publishers.push_back(data);
+  {
+    std::lock_guard<std::mutex> lock(g_bus_mutex);
+    g_publishers.push_back(data);
+  }
   rmw_fleetqox_cpp_graph_register_publisher_endpoint(
     data->node_name.c_str(),
     data->node_namespace.c_str(),
@@ -2517,6 +3791,7 @@ rmw_publisher_t * rmw_create_publisher(
     &data->qos);
   send_publisher_graph_advertisement(data, "add");
   ensure_pubsub_graph_renewal_thread();
+  ensure_reliable_retransmit_thread();
   return publisher;
 }
 
@@ -2549,6 +3824,15 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t * node, rmw_publisher_t * publisher)
       }
     }
   }
+  bool stop_retransmit = false;
+  {
+    std::lock_guard<std::mutex> lock(g_bus_mutex);
+    stop_retransmit = g_publishers.empty();
+  }
+  if (stop_retransmit) {
+    stop_reliable_retransmit_thread();
+  }
+  release_owner_loans(publisher, LoanOwnerKind::Publisher);
   deallocate_data(data);
   rmw_publisher_free(publisher);
   return RMW_RET_OK;
@@ -2619,7 +3903,9 @@ rmw_subscription_t * rmw_create_subscription(
   subscription->data = data;
   subscription->topic_name = data->topic_name.c_str();
   subscription->options = *subscription_options;
-  subscription->can_loan_messages = false;
+  subscription->can_loan_messages =
+    introspection_c_members(data->type_support) != nullptr ||
+    introspection_cpp_members(data->type_support) != nullptr || data->typed_message_size > 0;
   subscription->is_cft_enabled = false;
 
   std::lock_guard<std::mutex> lock(g_bus_mutex);
@@ -2663,6 +3949,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t * node, rmw_subscription_t * subsc
       std::remove(g_subscription_handles.begin(), g_subscription_handles.end(), subscription),
       g_subscription_handles.end());
   }
+  release_owner_loans(subscription, LoanOwnerKind::Subscription);
   deallocate_data(data);
   rmw_subscription_free(subscription);
   return RMW_RET_OK;
@@ -2696,8 +3983,17 @@ rmw_ret_t rmw_publish(
     }
     return publish_payload(data, payload);
   }
+  const auto * introspection_cpp = introspection_cpp_members(data->type_support);
+  if (introspection_cpp != nullptr) {
+    std::vector<std::uint8_t> payload;
+    if (!serialize_introspection_cpp_message(introspection_cpp, ros_message, &payload)) {
+      RMW_SET_ERROR_MSG("failed to serialize ROS message with introspection C++ type support");
+      return RMW_RET_UNSUPPORTED;
+    }
+    return publish_payload(data, payload);
+  }
   if (data->typed_message_size == 0) {
-    RMW_SET_ERROR_MSG("typed rmw_publish requires introspection C type support or rmw_fleetqox_cpp type-erased descriptor");
+    RMW_SET_ERROR_MSG("typed rmw_publish requires introspection C/C++ type support or rmw_fleetqox_cpp type-erased descriptor");
     return RMW_RET_UNSUPPORTED;
   }
   const auto * typed_bytes = static_cast<const std::uint8_t *>(ros_message);
@@ -2795,9 +4091,26 @@ rmw_ret_t rmw_take(
     }
     return RMW_RET_OK;
   }
+  const auto * introspection_cpp = introspection_cpp_members(data->type_support);
+  if (introspection_cpp != nullptr) {
+    std::vector<std::uint8_t> payload;
+    ret = take_payload(data, &payload, taken);
+    if (ret != RMW_RET_OK || !*taken) {
+      return ret;
+    }
+    size_t offset = 0;
+    if (!deserialize_introspection_cpp_message(
+        introspection_cpp, payload, &offset, ros_message) || offset != payload.size())
+    {
+      *taken = false;
+      RMW_SET_ERROR_MSG("failed to deserialize ROS message with introspection C++ type support");
+      return RMW_RET_ERROR;
+    }
+    return RMW_RET_OK;
+  }
   if (data->typed_message_size == 0) {
     *taken = false;
-    RMW_SET_ERROR_MSG("typed rmw_take requires introspection C type support or rmw_fleetqox_cpp type-erased descriptor");
+    RMW_SET_ERROR_MSG("typed rmw_take requires introspection C/C++ type support or rmw_fleetqox_cpp type-erased descriptor");
     return RMW_RET_UNSUPPORTED;
   }
   std::vector<std::uint8_t> payload;

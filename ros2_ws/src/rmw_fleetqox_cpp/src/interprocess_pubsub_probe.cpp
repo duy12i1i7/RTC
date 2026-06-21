@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -10,6 +11,7 @@
 #include "rcutils/allocator.h"
 #include "rmw/init.h"
 #include "rmw/init_options.h"
+#include "rmw/get_network_flow_endpoints.h"
 #include "rmw/publisher_options.h"
 #include "rmw/qos_profiles.h"
 #include "rmw/rmw.h"
@@ -21,6 +23,11 @@ extern "C" std::uint64_t rmw_fleetqox_cpp_socket_frames_sent();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_frames_received();
 extern "C" const char * rmw_fleetqox_cpp_socket_bound_endpoint();
 extern "C" size_t rmw_fleetqox_cpp_socket_peer_count();
+extern "C" const char * rmw_fleetqox_cpp_transport_mode();
+extern "C" std::uint64_t rmw_fleetqox_cpp_shared_memory_frames_sent();
+extern "C" std::uint64_t rmw_fleetqox_cpp_shared_memory_frames_received();
+extern "C" std::uint64_t rmw_fleetqox_cpp_shared_memory_overwritten_frames();
+extern "C" std::uint64_t rmw_fleetqox_cpp_duplicate_data_frames_deduped();
 extern "C" std::int64_t rmw_fleetqox_cpp_last_take_source_timestamp_ns();
 extern "C" std::int64_t rmw_fleetqox_cpp_last_take_timestamp_ns();
 
@@ -38,6 +45,7 @@ struct ProbeConfig
   int lifespan_ms{0};
   int deadline_ms{0};
   int pre_publish_ms{0};
+  int post_take_ms{0};
   int payload_output_limit{256};
   bool expect_taken{true};
 };
@@ -84,6 +92,8 @@ ProbeConfig parse_args(int argc, char ** argv)
       config.deadline_ms = std::stoi(argv[++i]);
     } else if (arg == "--pre-publish-ms" && i + 1 < argc) {
       config.pre_publish_ms = std::max(0, std::stoi(argv[++i]));
+    } else if (arg == "--post-take-ms" && i + 1 < argc) {
+      config.post_take_ms = std::max(0, std::stoi(argv[++i]));
     } else if (arg == "--payload-output-limit" && i + 1 < argc) {
       config.payload_output_limit = std::max(0, std::stoi(argv[++i]));
     } else if (arg == "--expect-taken" && i + 1 < argc) {
@@ -132,6 +142,36 @@ bool init_context(
   return true;
 }
 
+size_t publisher_network_flow_count(
+  const rmw_publisher_t * publisher,
+  rcutils_allocator_t * allocator)
+{
+  rmw_network_flow_endpoint_array_t endpoints =
+    rmw_get_zero_initialized_network_flow_endpoint_array();
+  const rmw_ret_t ret = publisher == nullptr ? RMW_RET_INVALID_ARGUMENT :
+    rmw_publisher_get_network_flow_endpoints(publisher, allocator, &endpoints);
+  const size_t count = ret == RMW_RET_OK ? endpoints.size : std::numeric_limits<size_t>::max();
+  if (endpoints.allocator != nullptr) {
+    rmw_network_flow_endpoint_array_fini(&endpoints);
+  }
+  return count;
+}
+
+size_t subscription_network_flow_count(
+  const rmw_subscription_t * subscription,
+  rcutils_allocator_t * allocator)
+{
+  rmw_network_flow_endpoint_array_t endpoints =
+    rmw_get_zero_initialized_network_flow_endpoint_array();
+  const rmw_ret_t ret = subscription == nullptr ? RMW_RET_INVALID_ARGUMENT :
+    rmw_subscription_get_network_flow_endpoints(subscription, allocator, &endpoints);
+  const size_t count = ret == RMW_RET_OK ? endpoints.size : std::numeric_limits<size_t>::max();
+  if (endpoints.allocator != nullptr) {
+    rmw_network_flow_endpoint_array_fini(&endpoints);
+  }
+  return count;
+}
+
 void print_json_result(
   const ProbeConfig & config,
   const std::string & status,
@@ -139,6 +179,10 @@ void print_json_result(
   size_t peer_count,
   std::uint64_t socket_frames_sent,
   std::uint64_t socket_frames_received,
+  std::uint64_t shared_memory_frames_sent,
+  std::uint64_t shared_memory_frames_received,
+  size_t network_flow_endpoint_count,
+  std::uint64_t duplicate_data_frames_deduped,
   bool taken,
   size_t bytes,
   const std::string & payload,
@@ -157,8 +201,15 @@ void print_json_result(
   std::cout << "\"expect_taken\":" << (config.expect_taken ? "true" : "false") << ",";
   std::cout << "\"endpoint\":\"" << json_escape(endpoint) << "\",";
   std::cout << "\"peer_count\":" << peer_count << ",";
+  std::cout << "\"transport_mode\":\"" << json_escape(rmw_fleetqox_cpp_transport_mode()) << "\",";
   std::cout << "\"socket_frames_sent\":" << socket_frames_sent << ",";
   std::cout << "\"socket_frames_received\":" << socket_frames_received << ",";
+  std::cout << "\"shared_memory_frames_sent\":" << shared_memory_frames_sent << ",";
+  std::cout << "\"shared_memory_frames_received\":" << shared_memory_frames_received << ",";
+  std::cout << "\"shared_memory_overwritten_frames\":"
+            << rmw_fleetqox_cpp_shared_memory_overwritten_frames() << ",";
+  std::cout << "\"network_flow_endpoint_count\":" << network_flow_endpoint_count << ",";
+  std::cout << "\"duplicate_data_frames_deduped\":" << duplicate_data_frames_deduped << ",";
   std::cout << "\"taken\":" << (taken ? "true" : "false") << ",";
   std::cout << "\"bytes\":" << bytes << ",";
   std::cout << "\"take_age_ms\":" << take_age_ms << ",";
@@ -202,6 +253,7 @@ int run_publisher(const ProbeConfig & config)
   }
 
   const std::uint64_t sent_before = rmw_fleetqox_cpp_socket_frames_sent();
+  const std::uint64_t shm_sent_before = rmw_fleetqox_cpp_shared_memory_frames_sent();
   if (config.pre_publish_ms > 0) {
     std::this_thread::sleep_for(std::chrono::milliseconds(config.pre_publish_ms));
   }
@@ -218,6 +270,10 @@ int run_publisher(const ProbeConfig & config)
     endpoint,
     peer_count,
     sent_delta,
+    0,
+    rmw_fleetqox_cpp_shared_memory_frames_sent() - shm_sent_before,
+    0,
+    publisher_network_flow_count(publisher, &allocator),
     0,
     false,
     outgoing.buffer_length,
@@ -270,6 +326,8 @@ int run_subscriber(const ProbeConfig & config)
   rmw_serialized_message_t incoming = rmw_get_zero_initialized_serialized_message();
   const bool message_init_ok = rmw_serialized_message_init(&incoming, 1, &allocator) == RMW_RET_OK;
   const std::uint64_t received_before = rmw_fleetqox_cpp_socket_frames_received();
+  const std::uint64_t shm_received_before = rmw_fleetqox_cpp_shared_memory_frames_received();
+  const std::uint64_t duplicate_before = rmw_fleetqox_cpp_duplicate_data_frames_deduped();
 
   bool taken = false;
   rmw_ret_t take_ret = RMW_RET_OK;
@@ -287,6 +345,9 @@ int run_subscriber(const ProbeConfig & config)
     received_payload.assign(
       reinterpret_cast<const char *>(incoming.buffer),
       reinterpret_cast<const char *>(incoming.buffer + incoming.buffer_length));
+  }
+  if (taken && config.post_take_ms > 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(config.post_take_ms));
   }
   const std::uint64_t received_delta =
     rmw_fleetqox_cpp_socket_frames_received() - received_before;
@@ -309,6 +370,10 @@ int run_subscriber(const ProbeConfig & config)
     peer_count,
     0,
     received_delta,
+    0,
+    rmw_fleetqox_cpp_shared_memory_frames_received() - shm_received_before,
+    subscription_network_flow_count(subscription, &allocator),
+    rmw_fleetqox_cpp_duplicate_data_frames_deduped() - duplicate_before,
     taken,
     incoming.buffer_length,
     received_payload,

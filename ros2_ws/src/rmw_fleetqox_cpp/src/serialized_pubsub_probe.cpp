@@ -48,6 +48,7 @@ void cleanup_context(rmw_context_t * context, rmw_init_options_t * options)
 
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_frames_sent();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_frames_received();
+extern "C" const char * rmw_fleetqox_cpp_transport_mode();
 
 int main()
 {
@@ -158,6 +159,7 @@ int main()
   std::cout << "\"data_frame_wrapped\":true,";
   std::cout << "\"data_frame_schema\":\"fleetrmw.data_frame.v1\",";
   std::cout << "\"socket_backed\":true,";
+  std::cout << "\"transport_mode\":\"" << rmw_fleetqox_cpp_transport_mode() << "\",";
   std::cout << "\"socket_frames_sent\":" << socket_frames_sent << ",";
   std::cout << "\"socket_frames_received\":" << socket_frames_received << ",";
   std::cout << "\"matched_publishers\":" << matched_publishers << ",";

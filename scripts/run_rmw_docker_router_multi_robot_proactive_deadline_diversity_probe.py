@@ -412,6 +412,7 @@ def fleet_router_command(
     robot_count: int,
     drop_sequence_two: bool,
     expected_ack_nack_forwarded: int,
+    drop_topic_prefix: str = "",
 ) -> str:
     command = router_command(
         install_base=install_base,
@@ -421,7 +422,7 @@ def fleet_router_command(
         drop_sequence_two=drop_sequence_two,
         expected_ack_nack_forwarded=expected_ack_nack_forwarded,
     )
-    return command.replace(
+    command = command.replace(
         "--expected-frames 3 --expected-ack-nack-frames 3 ",
         f"--expected-frames {expected_frames} "
         f"--expected-ack-nack-frames {expected_ack_nack} ",
@@ -430,6 +431,9 @@ def fleet_router_command(
         f"--expected-route-advertisements {robot_count} "
         f"--expected-graph-advertisements {robot_count * 2} ",
     ).replace("--timeout-ms 12000", "--timeout-ms 18000")
+    if drop_topic_prefix:
+        command += f" --drop-topic-prefix {shlex.quote(drop_topic_prefix)}"
+    return command
 
 
 def jain_fairness(values: list[float]) -> float:

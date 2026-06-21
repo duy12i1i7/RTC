@@ -33,10 +33,22 @@ extern "C" std::uint64_t rmw_fleetqox_cpp_socket_fleet_plan_frames();
 extern "C" const char * rmw_fleetqox_cpp_socket_fleet_plan_last_paths();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_fleet_plan_redundant_frames();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_fleet_plan_selected_path_count();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_repair_plan_frames();
+extern "C" const char * rmw_fleetqox_cpp_socket_repair_plan_last_paths();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_repair_plan_redundant_frames();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_repair_plan_selected_path_count();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_repair_budget_exhausted();
+extern "C" int rmw_fleetqox_cpp_socket_repair_max_attempts_per_sequence();
+extern "C" int rmw_fleetqox_cpp_socket_repair_min_interval_ms();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_repair_requests_coalesced();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_repair_sequence_attempt_limit_exhausted();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_repair_not_admitted();
+extern "C" int rmw_fleetqox_cpp_socket_repair_retransmission_budget();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_frames_received();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_frames_sent();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_idle_repair_ack_nack_sent();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_nack_retransmissions();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions();
 extern "C" std::uint64_t rmw_fleetqox_cpp_duplicate_data_frames_deduped();
 extern "C" std::uint64_t rmw_fleetqox_cpp_out_of_order_data_frames_observed();
 extern "C" std::uint64_t rmw_fleetqox_cpp_last_take_source_sequence();
@@ -257,6 +269,28 @@ void print_result(
     rmw_fleetqox_cpp_socket_fleet_plan_selected_path_count() << ",";
   std::cout << "\"fleet_plan_last_paths\":\"" <<
     json_escape(rmw_fleetqox_cpp_socket_fleet_plan_last_paths()) << "\",";
+  std::cout << "\"repair_plan_frames\":" <<
+    rmw_fleetqox_cpp_socket_repair_plan_frames() << ",";
+  std::cout << "\"repair_plan_redundant_frames\":" <<
+    rmw_fleetqox_cpp_socket_repair_plan_redundant_frames() << ",";
+  std::cout << "\"repair_plan_selected_path_count\":" <<
+    rmw_fleetqox_cpp_socket_repair_plan_selected_path_count() << ",";
+  std::cout << "\"repair_plan_last_paths\":\"" <<
+    json_escape(rmw_fleetqox_cpp_socket_repair_plan_last_paths()) << "\",";
+  std::cout << "\"repair_retransmission_budget\":" <<
+    rmw_fleetqox_cpp_socket_repair_retransmission_budget() << ",";
+  std::cout << "\"repair_min_interval_ms\":" <<
+    rmw_fleetqox_cpp_socket_repair_min_interval_ms() << ",";
+  std::cout << "\"repair_max_attempts_per_sequence\":" <<
+    rmw_fleetqox_cpp_socket_repair_max_attempts_per_sequence() << ",";
+  std::cout << "\"repair_budget_exhausted\":" <<
+    rmw_fleetqox_cpp_socket_repair_budget_exhausted() << ",";
+  std::cout << "\"repair_requests_coalesced\":" <<
+    rmw_fleetqox_cpp_socket_repair_requests_coalesced() << ",";
+  std::cout << "\"repair_sequence_attempt_limit_exhausted\":" <<
+    rmw_fleetqox_cpp_socket_repair_sequence_attempt_limit_exhausted() << ",";
+  std::cout << "\"repair_not_admitted\":" <<
+    rmw_fleetqox_cpp_socket_repair_not_admitted() << ",";
   std::cout << "\"deadline_ms\":" << config.deadline_ms << ",";
   std::cout << "\"pre_publish_wait_ms\":" << std::max(config.pre_publish_wait_ms, 0) << ",";
   std::cout << "\"publish_interval_ms\":" << config.publish_interval_ms << ",";
@@ -312,6 +346,8 @@ void print_result(
   std::cout << "\"idle_repair_ack_nack_sent\":" <<
     rmw_fleetqox_cpp_socket_idle_repair_ack_nack_sent() << ",";
   std::cout << "\"nack_retransmissions\":" << rmw_fleetqox_cpp_socket_nack_retransmissions() << ",";
+  std::cout << "\"reliable_timeout_retransmissions\":" <<
+    rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions() << ",";
   std::cout << "\"duplicate_data_frames_deduped\":" <<
     rmw_fleetqox_cpp_duplicate_data_frames_deduped() << ",";
   std::cout << "\"out_of_order_data_frames_observed\":" <<

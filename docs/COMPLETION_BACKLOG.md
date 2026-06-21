@@ -6,13 +6,14 @@ project. It is ordered by dependency and regression value.
 
 ## Current Baseline
 
-- The Python/dependency-free suite passes locally and on the `udy` runner:
-  `428` unit tests.
+- The Python/dependency-free suite passes locally on the `udy` runner:
+  `450` unit tests.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
   evidence with source-sequence ACK/NACK, liveliness-backed retransmit horizon,
   QoE quota recovery, and typed projection feedback.
 - `rmw_fleetqox_cpp` has a working ROS 2 RMW skeleton with serialized and typed
-  pub/sub, introspection-C message serialization, ROS CLI topic pub/echo,
+  pub/sub, introspection-C/C++ message serialization, standalone
+  `rmw_serialize`/`rmw_deserialize`, ROS CLI topic pub/echo,
   topic/node/service graph discovery, SetBool request/response, queue
   QoS/lifespan checks, stale service request/response drops, ACK/NACK
   retransmission, C-level service no-response/malformed-response error checks,
@@ -25,23 +26,95 @@ project. It is ordered by dependency and regression value.
 - The matched four-robot FleetRMW router/redundancy matrix passes `9/9` rows,
   but direct DDS/Zenoh rows remain single-path, so the comparison map still has
   `direct_claim_allowed=false`.
+- The repeated `8/16/32` actuated-repair v3 frontier passes `27/27` rows over
+  repetition IDs `7,13,29`; all `9/9` groups are monotonic. Every row proves
+  dual-path forced loss, admitted NACK repair, deferred rejection, and healthy
+  unaffected robots. The maximum observed latency is `397.314 ms` under the
+  `400 ms` diagnostic deadline.
+- The Nav2/RMF workload now combines local fallback actions with upstream APIs.
+  `nav2_msgs/action/NavigateToPose` passes success/cancel and RMF
+  `SubmitTask`/`CancelTask` pass nested service serialization through
+  `rmw_fleetqox_cpp`. A four-way concurrent batch also passes for both upstream
+  APIs. The official Nav2 C++ lifecycle manager drives a lifecycle companion
+  through configure/activate/deactivate/cleanup; the router accounts for
+  `82/82` service frames with zero invalid frames. The
+  ROS CLI message matrix covers `13/13` message shapes.
+- A standalone `rosidl_typesupport_cpp` Docker regression round-trips C++
+  `std_msgs/String` and nested `geometry_msgs/PoseStamped` through
+  `rmw_serialize`/`rmw_deserialize` (40 and 129 serialized bytes).
+- A two-container `rclcpp` regression routes nested `PoseStamped` request/reply
+  and a C++ `SetBool` service through the FleetRMW router. Both endpoints pass,
+  the router forwards `2/2` service frames, and invalid frames remain zero.
+- The same C++ regression validates publisher/subscription UDP network-flow
+  endpoint metadata and observes real on-new-request/on-new-response callbacks;
+  these ABI surfaces are no longer placeholder successes.
+- The repeated large-scale RMW comparison spans FleetRMW router, Fast DDS,
+  Cyclone DDS, and Zenoh at `8/16/32` robots over repetition IDs `7,13,29`.
+  FleetRMW, Cyclone, and Zenoh pass `9/9`; Fast DDS passes `7/9`. The report
+  includes 95% confidence intervals. The v2 artifact separates direct-RMW
+  delivery/latency from FleetRMW router value and machine-enforces
+  `direct_claim_allowed=false` for cross-scope superiority.
+- Native ns-3 3.41 now runs in the project Docker image. The first repeated
+  T2S matrix passes `27/27` rows at `8/16/32` robots over Wi-Fi/WAN/roaming
+  parameter envelopes and seeds `7,13,29`, using identical traces for FIFO,
+  static priority, and guarded FleetQoX. Its artifact machine-disallows a
+  high-fidelity wireless claim because topology is shared CSMA with an
+  independent receive error model.
+- The follow-on native Wi-Fi/mobility matrix also passes `27/27` rows at
+  `8/16/32` robots and seeds `7,13,29`. It uses one 802.11g infrastructure AP,
+  moving stations, three PHY-rate/spacing/speed profiles, and requires a
+  positive receive count in every policy row. Wi-Fi and mobility model claims
+  are allowed; this single-AP artifact itself disallows roaming handoff.
+  Guarded FleetQoX has the highest utility in `8/27`
+  rows, static priority in `16/27`, and FIFO in `3/27`, so no general policy
+  superiority claim is allowed from this campaign.
+- The dedicated dual-AP roaming campaign passes `27/27` rows and observes
+  `585/585` required endpoint handoffs over `8/16/32` robots, three handoff
+  profiles, and seeds `7,13,29`. Association/disassociation events come from
+  `StaWifiMac` traces, every policy row receives packets, and bridged backhaul
+  preserves station IP addresses across handoff. Its scoped roaming claim is
+  allowed, while `high_fidelity_wireless_simulator_claim` remains false. The
+  utility winner is static priority in `20/27` rows, FleetQoX guarded in `5/27`,
+  and FIFO in `2/27`; general policy superiority remains disallowed.
 
 ## P0: Make The RMW ABI Complete Enough For Real ROS 2 Workloads
 
-- Expand C++ type-support-backed serialization/deserialization beyond the
-  current introspection-C CLI matrix.
+- Expand the now-working introspection-C++ path beyond Nav2 manager,
+  String/PoseStamped standalone, and C++ interprocess Pose/SetBool probes into
+  sequence-heavy services and cross-language C/C++ matrices.
 - Add regression coverage for more ROS message shapes: bounded/unbounded
   sequences, nested arrays, time/duration-heavy messages, and common Nav2/RMF
   message families.
 - Complete service timeout, cancellation, stale request/response, and error
   semantics instead of only proving the successful SetBool path.
-- Implement action transport on top of pub/sub plus service reliability:
-  goal, result, feedback, cancel, and status.
-- Add lifecycle/Nav2 action smoke tests that use `rmw_fleetqox_cpp` as the
-  selected RMW.
-- Replace or deliberately scope optional ABI stubs for events, dynamic
-  messages, content-filtered topics, loaned messages, network-flow endpoints,
-  and callbacks.
+- Harden action transport on top of pub/sub plus service reliability:
+  goal, result, feedback, cancel, status, deadlines, and larger concurrent
+  action/client counts.
+- Extend the proven upstream Nav2 lifecycle-manager transport from the
+  companion node to real planner/controller components and larger repeated
+  client counts.
+- Replace or deliberately scope the remaining optional ABI stubs for QoS
+  events, dynamic messages, and content-filtered topics.
+
+The middleware-owned loaned-message ABI slice is complete for introspection C
+and C++. Docker verifies publisher borrow/publish, publisher borrow/return,
+subscription take/return, endpoint capability flags, and both type-support
+paths. Subscription take still deserializes into the loaned object, so the
+machine-readable zero-copy claim remains false.
+
+The bounded standalone serialization-size slice is complete:
+`rmw_get_serialized_message_size` recursively computes exact sizes for
+statically bounded introspection C/C++ messages with overflow checks. The
+Docker probe exercises both introspection C and C++, predicting and serializing
+nested `geometry_msgs/Pose` at exactly `80` bytes in both paths. Artificial
+bounds for unbounded fields remain explicitly
+unsupported and machine-readable.
+
+The optional ABI scope is now machine-readable in the installed
+`rmw_fleetqox_cpp/capabilities.json`. It records supported and partial surfaces,
+lists every controlled `RMW_RET_UNSUPPORTED` family, and explicitly sets
+`production_ready=false`; future implementation work must update this manifest
+and its CI assertion.
 
 ## P1: Move The Sidecar Hard-SLO Contract Fully Into FleetRMW
 
@@ -57,13 +130,11 @@ project. It is ordered by dependency and regression value.
 
 ## P2: Equalize Baselines For A Paper-Grade Claim
 
-- Make the comparison topology and metrics equivalent across
-  `rmw_fleetqox_cpp`, Fast DDS, Cyclone DDS, and Zenoh.
-- Either run DDS/Zenoh through comparable router/repair semantics, or expose
-  equivalent terminal-horizon, ACK/NACK, route-control, QoE, and robot-SLO
-  metrics on the direct-RMW side.
-- Keep the current baseline report as a gap register until
-  `direct_claim_allowed=true` is defensible.
+- Keep the completed split-scope report as the paper claim boundary: direct
+  DDS/Zenoh delivery/latency is one scope and FleetRMW router/repair value is
+  another; cross-scope superiority remains forbidden.
+- Optionally add a same-hop relay experiment later, but do not mix its claims
+  into the current split-scope evidence.
 - Preserve qdisc evidence, profile/seed parity, robot/topic count parity, and
   per-topic delivery metrics in every baseline row.
 
@@ -73,14 +144,26 @@ project. It is ordered by dependency and regression value.
   router/subscriber probes with real `tc netem` shaping.
 - Record duplicate/de-duplication, QoE feedback, robot-level SLO debt, path
   plan churn, and controller decision latency at larger N.
-- Add repeatable ns-3 and OMNeT++ matrices from the existing trace/export
-  pipeline.
+- Extend the completed dual-AP ns-3 handoff matrix with richer propagation,
+  interference, and access-category models, and add an OMNeT++/INET matrix
+  from the same trace/export pipeline.
 - Tie simulator, Docker/netem, and network-simulator outputs into one
   reproducible report path.
 
 ## P4: Extend The Data Plane
 
-- Add same-host shared-memory transport for local high-rate flows.
+- The first same-host POSIX shared-memory transport slice is complete. A
+  process-shared 64-slot ring uses sequence numbers, process-shared
+  mutex/condition synchronization, overwrite telemetry, configurable segment
+  names, owner cleanup, and explicit UDP fallback. The two-container Docker
+  gate transfers `100000` payload bytes (above the UDP limit), observes zero
+  overwrites and zero network-flow endpoints in SHM mode, then fault-injects
+  SHM initialization and passes through `udp_fallback`.
+- The first hybrid SHM-local plus UDP-remote gate is complete. One publication
+  reaches the subscriber directly through SHM and again through the UDP
+  router; the router forwards one valid frame, the subscriber takes one
+  payload, records `duplicate_data_frames_deduped=1`, and has zero SHM
+  overwrites. QUIC remains separate.
 - Add UDP/QUIC LAN and QUIC WAN transports with explicit path telemetry.
 - Add WebRTC/SVC or equivalent video/operator-observation path semantics.
 - Add low-priority bulk-data path and per-plane admission control.
@@ -378,9 +461,51 @@ delivers recovery sequences `3,4,5` on time to `4/4` robots. The harsh recovery
 matrix over `8/16` robots and `0.2/0.5/1.0%` loss passes `4/6` strict rows, but
 all `6/6` rows pass the recovery window; the two strict-failed rows are
 classified as `confidence_fallback_recovered_window`. This closes the first
-observability gap after fallback. It does not yet implement targeted replay of
-specific missing source sequences; it proves the controller can enter and audit
-a bounded recovery state.
+observability gap after fallback.
+
+The targeted-repair attribution slice now joins that audit to the RMW
+source-sequence ACK/NACK ledger. The probe reports per-robot missing/late
+sequences, idle repair requests, NACK retransmissions, unresolved robots, and
+repair path overhead. A forced four-robot smoke observes source sequence `5`
+repaired after one idle request and six retransmissions; it is correctly
+classified `repaired_late` because latency reaches `1603.340 ms`, while the
+subsequent three-frame recovery window passes `4/4`. A separate one-row matrix
+smoke has no loss event, remains strict-failed because confidence was
+intentionally prevented from separating, but reports `qoe_recovered_run_count=1`
+and zero repair overhead. Source-sequence replay is therefore present and
+measurable; this result motivated the controller-directed repair slice below.
+
+The first controller-directed repair slice is now complete. The Python
+controller writes a separate live repair-plan file, the C++ RMW applies it only
+to ACK/NACK retransmissions, and a per-publisher repair budget is exposed with
+separate path/frame/budget metrics. A deterministic two-robot sequence drop
+uses dual-path repair for every retransmission. At a `250 ms` SLO, repaired
+latency remains about `299 ms` and is classified late; at a `400 ms` SLO, both
+affected robots are `repaired_on_time` and the repair summary qualifies `4/4`
+robots. A zero-budget run leaves both sequence gaps unresolved and sets
+`qoe_recovery_ok=false`. The remaining gap is no longer repair-path actuation;
+it is fleet-wide, per-sequence urgency/admission.
+
+Repeated-NACK coalescing and per-sequence attempt limits are also complete.
+With a `50 ms` coalescing interval, retransmissions fall from `8` to `4`
+without changing the `4/4` repair-qualified result. A one-attempt cap reduces
+the deterministic run to `2` retransmissions and `4` repair path sends while
+remaining `repaired_on_time`; duplicate and over-limit requests are reported
+separately instead of consuming the global publisher budget.
+
+Adaptive fleet-wide repair admission is now complete for the deterministic
+four-robot boundary. `FleetRepairScheduler` ranks per-sequence gaps using
+remaining-deadline pressure, criticality, QoE debt, expected path success and
+latency, previous attempts, and byte cost. It evaluates unicast and
+failure-domain-diverse repair alternatives under one shared capacity using a
+multi-choice knapsack with Pareto pruning. The generated
+`topic=paths|sequences=N|attempts=M` policy is enforced by C++ publishers in
+strict mode. With `2800` available bytes, both affected robots recover on time
+using only `1400` bytes and two backup-path transmissions. With `700` bytes,
+only higher-debt `robot_0000` is admitted; `robot_0001` is explicitly deferred,
+repair-qualified coverage is `3/4`, and the rejected publisher reports `33`
+non-admitted repair requests. This proves shared admission and priority under
+scarcity without hiding the lost QoE behind the later recovery window.
 
 The next P0 service-error slice is complete at the RMW C layer:
 `fleetrmw_service_error_probe` verifies no-response takes do not fabricate a
@@ -403,12 +528,67 @@ service frames. Standard ROS 2 services have no cancellation operation;
 cancellation remains an action semantic and is already covered by the rclpy
 action cancel lifecycle.
 
-Next continue P0 in this order:
+Caller-visible malformed-service-response diagnostics are now complete. The
+router-mediated probe sends a validly addressed `fleetrmw.service_frame.v1`
+whose serialized response body is intentionally invalid. The router forwards
+both frames, the server records one request and exits normally, while
+`ros2 service call` exits with code `1`, prints no response, and reports
+`failed to deserialize service response` through the RMW/rcl error chain.
 
-1. Add caller-visible malformed-service-response diagnostics beyond timeout.
-2. Convert post-fallback recovery from extra confirmation frames into targeted
-   repair/replay of specific missing source sequences, then rerun the harsh
-   recovery matrix.
-3. Decide whether `32` robots should be run as one huge container batch or as a
-   batched fleet test to avoid Docker resource artifacts.
-4. Expand serialization regression coverage and add Nav2/RMF action smoke tests.
+The repeated `8/16/32` fleet repair-capacity frontier is now complete under
+actuated-repair v3 semantics. The runner gives repair candidates a separate
+topic prefix, drops sequence `2` once on both router paths, and classifies
+admitted, deferred, and unaffected robots separately. The repetition
+`7,13,29` artifact passes `27/27` rows and all `9/9` robot/capacity groups are
+monotonic. Audit finds zero counter anomalies: admitted count, NACK
+retransmissions, repair frames, and repair path overhead agree exactly, while
+every deferred robot reports an unresolved sequence-`2` gap and
+`repair_not_admitted`. Capacity fractions `0.25/0.5/1.0` produce repair
+coverage `0.25/0.5/1.0` and live QoE-qualified coverage `0.625/0.75/1.0` at all
+three fleet sizes. The maximum observed latency is `397.314 ms`, below the
+`400 ms` deadline. With only three repetitions, some Student-t intervals for
+the mean extend slightly above `400 ms`; this remains a statistical precision
+limit, not an observed deadline failure.
+
+The upstream Nav2/RMF action/service and lifecycle-manager expansion is complete. The
+`fleetrmw_interfaces` package now defines `NavigateFleet.action` and
+`DispatchFleetTask.action`, and
+`run_rmw_docker_router_nav2_rmf_action_workload.py` retains those local
+fallbacks while also running upstream `nav2_msgs/action/NavigateToPose` and RMF
+`SubmitTask`/`CancelTask`. Success, feedback, cancel, result, submit, and cancel
+all pass through the FleetRMW router. The v5 batch additionally completes four
+simultaneous upstream navigation goals and four RMF submissions. The official
+`nav2_lifecycle_manager` C++ node issues `STARTUP` and `RESET`; the companion
+reaches `active` and returns to `unconfigured`. The router forwards `82/82`
+service frames with zero invalid frames, proving introspection-C++ service
+dispatch, guard-condition/client wait readiness, concurrent action handling,
+nested RMF serialization, and lifecycle transition transport. This does not
+yet instantiate the full Nav2
+planner/controller plugin stack. The ROS CLI message matrix remains `13/13`.
+
+The repeated large-scale DDS/Zenoh comparison is complete as a gap register.
+`run_large_scale_rmw_comparison.py` runs the same multi-topic envelope across
+FleetRMW router, Fast DDS, Cyclone DDS, and Zenoh for `8/16/32` robots over
+repetition IDs `7,13,29`. Netem is applied after discovery, every publisher
+uses the same six-second reliability horizon, and Zenoh uses its required
+router/session configuration. FleetRMW, Cyclone, and Zenoh pass `9/9`; Fast
+DDS passes `7/9`, with one state-delivery failure at `8` and one at `16`
+robots. FleetRMW's earlier 16-robot miss is closed, and its retransmit worker
+now joins cleanly instead of racing static teardown. Because FleetRMW uses a
+router hop while DDS/Zenoh rows are direct, the report keeps the topology
+caveat explicit and does not claim superiority.
+The v2 artifact formalizes that boundary with allowed direct-RMW and
+Fleet-router scopes plus a disallowed cross-scope superiority claim;
+`direct_claim_allowed=false` is machine-readable.
+
+Next continue P0/P2 in this order:
+
+1. Apply the proven lifecycle transition path to real Nav2 planner/controller
+   components and larger repeated client counts while retaining local actions
+   as CI-light fallbacks.
+2. Preserve the completed split-scope benchmark boundary; add same-hop relay
+   rows only as a separate future experiment.
+3. Broaden native C++ type-support regression coverage and close or explicitly
+   scope the remaining optional RMW ABI surfaces before production-ready status.
+4. Increase frontier repetitions so the `32`-robot latency-mean confidence
+   interval can be estimated more tightly around the `400 ms` boundary.
