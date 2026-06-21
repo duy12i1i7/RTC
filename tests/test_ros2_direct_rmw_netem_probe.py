@@ -10,6 +10,7 @@ from scripts.run_ros2_direct_rmw_netem_probe import (
     ros_command,
     topic_specs_for_robot_count,
     write_probe_scripts,
+    write_zenoh_session_config,
 )
 from scripts.run_ros2_direct_rmw_netem_matrix import (
     parse_csv,
@@ -32,6 +33,23 @@ class Ros2DirectRmwNetemProbeTest(unittest.TestCase):
         self.assertIn("ROS_DOMAIN_ID=123", command)
         self.assertIn("python3 /work/probe.py", command)
 
+        zenoh_command = ros_command(
+            rmw="rmw_zenoh_cpp",
+            domain_id=43,
+            python_path="/work/probe.py",
+            zenoh_session_config_uri="/work/session.json5",
+        )
+        self.assertIn("ZENOH_SESSION_CONFIG_URI=/work/session.json5", zenoh_command)
+
+    def test_zenoh_session_config_targets_run_router(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "session.json5"
+            write_zenoh_session_config(path, router_host="zenoh-router-run-17")
+
+            config = path.read_text(encoding="utf-8")
+            self.assertIn("tcp/zenoh-router-run-17:7447", config)
+            self.assertIn('mode: "client"', config)
+
     def test_write_probe_scripts_injects_runtime_parameters(self) -> None:
         with TemporaryDirectory() as tmpdir:
             subscriber = Path(tmpdir) / "subscriber.py"
@@ -48,6 +66,23 @@ class Ros2DirectRmwNetemProbeTest(unittest.TestCase):
             self.assertIn("SAMPLES = 5", subscriber.read_text())
             self.assertIn("TIMEOUT_S = 7.5", subscriber.read_text())
             self.assertIn("PUBLISH_INTERVAL_S = 0.25", publisher.read_text())
+            self.assertIn("time.sleep(0.5)", publisher.read_text())
+
+    def test_write_probe_scripts_can_extend_publisher_reliability_horizon(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            subscriber = Path(tmpdir) / "subscriber.py"
+            publisher = Path(tmpdir) / "publisher.py"
+
+            write_probe_scripts(
+                subscriber_script=subscriber,
+                publisher_script=publisher,
+                samples=3,
+                publish_interval_ms=50,
+                timeout_s=5.0,
+                publisher_linger_s=2.75,
+            )
+
+            self.assertIn("time.sleep(2.75)", publisher.read_text())
 
     def test_topic_specs_keep_legacy_default_and_scale_by_robot(self) -> None:
         legacy = topic_specs_for_robot_count(1)

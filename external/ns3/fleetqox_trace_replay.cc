@@ -4,17 +4,19 @@
 //
 //   ./ns3 run "scratch/fleetqox_trace_replay --trace=/path/to/trace.csv"
 //
-// The topology is intentionally simple: all endpoints are attached to a shared
-// CSMA channel. The goal is to validate trace import, per-flow delay, deadline
-// miss, and utility accounting before introducing Wi-Fi/5G/mesh models.
+// Supports CSMA, single-AP Wi-Fi, and a two-AP bridged roaming topology.
 
 #include "ns3/applications-module.h"
+#include "ns3/bridge-module.h"
 #include "ns3/core-module.h"
 #include "ns3/csma-module.h"
 #include "ns3/internet-module.h"
+#include "ns3/mobility-module.h"
 #include "ns3/network-module.h"
+#include "ns3/wifi-module.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -82,6 +84,31 @@ static std::map<uint32_t, Ipv4Address> g_nodeToAddress;
 static std::map<std::string, Ptr<Socket>> g_sourceSockets;
 static std::map<std::string, PolicyStats> g_stats;
 static uint16_t g_port = 9100;
+static double g_startOffsetMs = 0.0;
+static uint64_t g_associationEvents = 0;
+static uint64_t g_disassociationEvents = 0;
+static uint64_t g_handoffEvents = 0;
+static std::map<uint32_t, Mac48Address> g_lastAccessPoint;
+
+static void
+RecordAssociation(uint32_t nodeIndex, Mac48Address accessPoint)
+{
+  g_associationEvents++;
+  auto previous = g_lastAccessPoint.find(nodeIndex);
+  if (previous != g_lastAccessPoint.end() && previous->second != accessPoint)
+  {
+    g_handoffEvents++;
+  }
+  g_lastAccessPoint[nodeIndex] = accessPoint;
+}
+
+static void
+RecordDisassociation(uint32_t nodeIndex, Mac48Address accessPoint)
+{
+  (void)nodeIndex;
+  (void)accessPoint;
+  g_disassociationEvents++;
+}
 
 static std::vector<std::string>
 SplitCsvLine(const std::string& line)
@@ -191,7 +218,8 @@ ReceivePacket(Ptr<Socket> socket)
     stats.rx++;
     stats.bytes += packet->GetSize();
 
-    const double latencyMs = Simulator::Now().GetMilliSeconds() - event.timestampMs;
+    const double latencyMs =
+      Simulator::Now().GetMilliSeconds() - (event.timestampMs + g_startOffsetMs);
     stats.latencyMs.push_back(latencyMs);
     if (latencyMs > event.deadlineMs)
     {
@@ -244,6 +272,9 @@ Percentile(std::vector<double> values, double pct)
 static void
 PrintSummary()
 {
+  std::cout << "roaming_metrics,associations,disassociations,handoffs\n";
+  std::cout << "roaming_metrics," << g_associationEvents << ","
+            << g_disassociationEvents << "," << g_handoffEvents << "\n";
   std::cout << "policy,tx,rx,bytes,deadline_miss_ratio,p50_ms,p99_ms,utility\n";
   for (auto& [policy, stats] : g_stats)
   {
@@ -260,17 +291,53 @@ main(int argc, char* argv[])
   std::string tracePath;
   std::string dataRate = "54Mbps";
   std::string delay = "2ms";
+  std::string topology = "csma";
+  std::string wifiMode = "ErpOfdmRate54Mbps";
+  double errorRate = 0.0;
+  double mobilitySpeed = 0.0;
+  double stationSpacing = 3.0;
+  double accessPointSpacing = 20.0;
+  double wifiRange = 12.0;
+  double warmupMs = 0.0;
+  uint32_t seed = 1;
+  uint64_t run = 1;
 
   CommandLine cmd(__FILE__);
   cmd.AddValue("trace", "FleetQoX simulator CSV trace", tracePath);
   cmd.AddValue("dataRate", "CSMA data rate", dataRate);
   cmd.AddValue("delay", "CSMA channel delay", delay);
+  cmd.AddValue("topology", "Network topology: csma, wifi, or wifi_roaming", topology);
+  cmd.AddValue("wifiMode", "802.11g station data/control mode", wifiMode);
+  cmd.AddValue("errorRate", "Independent receive packet error probability", errorRate);
+  cmd.AddValue("mobilitySpeed", "Station speed in meters/second for Wi-Fi", mobilitySpeed);
+  cmd.AddValue("stationSpacing", "Initial Wi-Fi station grid spacing in meters", stationSpacing);
+  cmd.AddValue("accessPointSpacing", "Distance between roaming access points", accessPointSpacing);
+  cmd.AddValue("wifiRange", "Maximum radio range for deterministic roaming", wifiRange);
+  cmd.AddValue("warmupMs", "Delay trace transmission start for association warmup", warmupMs);
+  cmd.AddValue("seed", "ns-3 RNG seed", seed);
+  cmd.AddValue("run", "ns-3 RNG run number", run);
   cmd.Parse(argc, argv);
 
   if (tracePath.empty())
   {
     NS_FATAL_ERROR("missing --trace=/path/to/trace.csv");
   }
+  if (errorRate < 0.0 || errorRate > 1.0)
+  {
+    NS_FATAL_ERROR("errorRate must be in [0,1]");
+  }
+  if (topology != "csma" && topology != "wifi" && topology != "wifi_roaming")
+  {
+    NS_FATAL_ERROR("topology must be csma, wifi, or wifi_roaming");
+  }
+  if (mobilitySpeed < 0.0 || stationSpacing <= 0.0 || accessPointSpacing <= 0.0 ||
+      wifiRange <= 0.0 || warmupMs < 0.0)
+  {
+    NS_FATAL_ERROR("mobilitySpeed must be nonnegative and stationSpacing positive");
+  }
+  RngSeedManager::SetSeed(seed);
+  RngSeedManager::SetRun(run);
+  g_startOffsetMs = warmupMs;
 
   g_events = LoadTrace(tracePath);
   for (const auto& event : g_events)
@@ -287,18 +354,135 @@ main(int argc, char* argv[])
 
   NodeContainer nodes;
   nodes.Create(g_endpointToNode.size());
+  Ipv4InterfaceContainer interfaces;
+  if (topology == "csma")
+  {
+    CsmaHelper csma;
+    csma.SetChannelAttribute("DataRate", StringValue(dataRate));
+    csma.SetChannelAttribute("Delay", StringValue(delay));
+    NetDeviceContainer devices = csma.Install(nodes);
+    for (uint32_t i = 0; i < devices.GetN(); ++i)
+    {
+      Ptr<RateErrorModel> error = CreateObject<RateErrorModel>();
+      error->SetAttribute("ErrorRate", DoubleValue(errorRate));
+      error->SetAttribute("ErrorUnit", EnumValue(RateErrorModel::ERROR_UNIT_PACKET));
+      devices.Get(i)->SetAttribute("ReceiveErrorModel", PointerValue(error));
+    }
+    InternetStackHelper internet;
+    internet.Install(nodes);
+    Ipv4AddressHelper ipv4;
+    ipv4.SetBase("10.10.0.0", "255.255.0.0");
+    interfaces = ipv4.Assign(devices);
+  }
+  else
+  {
+    const bool roaming = topology == "wifi_roaming";
+    NodeContainer accessPoints;
+    accessPoints.Create(roaming ? 2 : 1);
+    YansWifiChannelHelper channel;
+    if (roaming)
+    {
+      channel.SetPropagationDelay("ns3::ConstantSpeedPropagationDelayModel");
+      channel.AddPropagationLoss(
+          "ns3::RangePropagationLossModel", "MaxRange", DoubleValue(wifiRange));
+    }
+    else
+    {
+      channel = YansWifiChannelHelper::Default();
+    }
+    YansWifiPhyHelper phy;
+    phy.SetChannel(channel.Create());
+    WifiHelper wifi;
+    wifi.SetStandard(WIFI_STANDARD_80211g);
+    wifi.SetRemoteStationManager(
+        "ns3::ConstantRateWifiManager",
+        "DataMode", StringValue(wifiMode),
+        "ControlMode", StringValue(wifiMode));
+    WifiMacHelper mac;
+    Ssid ssid = Ssid("fleetqox-wifi");
+    mac.SetType(
+        "ns3::StaWifiMac",
+        "Ssid", SsidValue(ssid),
+        "ActiveProbing", BooleanValue(false));
+    NetDeviceContainer stationDevices = wifi.Install(phy, mac, nodes);
+    mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
+    NetDeviceContainer accessPointDevices = wifi.Install(phy, mac, accessPoints);
 
-  CsmaHelper csma;
-  csma.SetChannelAttribute("DataRate", StringValue(dataRate));
-  csma.SetChannelAttribute("Delay", StringValue(delay));
-  NetDeviceContainer devices = csma.Install(nodes);
+    for (uint32_t i = 0; i < stationDevices.GetN(); ++i)
+    {
+      Ptr<StaWifiMac> stationMac = DynamicCast<StaWifiMac>(
+          stationDevices.Get(i)->GetObject<WifiNetDevice>()->GetMac());
+      stationMac->TraceConnectWithoutContext(
+          "Assoc", MakeBoundCallback(&RecordAssociation, i));
+      stationMac->TraceConnectWithoutContext(
+          "DeAssoc", MakeBoundCallback(&RecordDisassociation, i));
+    }
 
-  InternetStackHelper internet;
-  internet.Install(nodes);
+    MobilityHelper stationMobility;
+    if (roaming)
+    {
+      Ptr<ListPositionAllocator> positions = CreateObject<ListPositionAllocator>();
+      for (uint32_t i = 0; i < nodes.GetN(); ++i)
+      {
+        positions->Add(Vector(5.0, static_cast<double>(i % 4), 0.0));
+      }
+      stationMobility.SetPositionAllocator(positions);
+    }
+    else
+    {
+      stationMobility.SetPositionAllocator(
+          "ns3::GridPositionAllocator",
+          "MinX", DoubleValue(0.0),
+          "MinY", DoubleValue(0.0),
+          "DeltaX", DoubleValue(stationSpacing),
+          "DeltaY", DoubleValue(stationSpacing),
+          "GridWidth", UintegerValue(
+            static_cast<uint32_t>(std::ceil(std::sqrt(nodes.GetN())))),
+          "LayoutType", StringValue("RowFirst"));
+    }
+    stationMobility.SetMobilityModel("ns3::ConstantVelocityMobilityModel");
+    stationMobility.Install(nodes);
+    for (uint32_t i = 0; i < nodes.GetN(); ++i)
+    {
+      Ptr<ConstantVelocityMobilityModel> model =
+        nodes.Get(i)->GetObject<ConstantVelocityMobilityModel>();
+      const double direction = roaming ? 1.0 : ((i % 2 == 0) ? 1.0 : -1.0);
+      model->SetVelocity(Vector(direction * mobilitySpeed, 0.0, 0.0));
+    }
+    MobilityHelper accessPointMobility;
+    accessPointMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    accessPointMobility.Install(accessPoints);
+    if (roaming)
+    {
+      accessPoints.Get(0)->GetObject<MobilityModel>()->SetPosition(Vector(0.0, 1.5, 0.0));
+      accessPoints.Get(1)->GetObject<MobilityModel>()->SetPosition(
+          Vector(accessPointSpacing, 1.5, 0.0));
+      CsmaHelper backbone;
+      backbone.SetChannelAttribute("DataRate", StringValue("1Gbps"));
+      backbone.SetChannelAttribute("Delay", StringValue("0.1ms"));
+      NetDeviceContainer backhaulDevices = backbone.Install(accessPoints);
+      BridgeHelper bridge;
+      for (uint32_t i = 0; i < accessPoints.GetN(); ++i)
+      {
+        NetDeviceContainer ports;
+        ports.Add(accessPointDevices.Get(i));
+        ports.Add(backhaulDevices.Get(i));
+        bridge.Install(accessPoints.Get(i), ports);
+      }
+    }
+    else
+    {
+      const double gridWidth = std::ceil(std::sqrt(nodes.GetN())) * stationSpacing;
+      accessPoints.Get(0)->GetObject<MobilityModel>()->SetPosition(
+          Vector(gridWidth / 2.0, gridWidth / 2.0, 0.0));
+    }
 
-  Ipv4AddressHelper ipv4;
-  ipv4.SetBase("10.10.0.0", "255.255.0.0");
-  Ipv4InterfaceContainer interfaces = ipv4.Assign(devices);
+    InternetStackHelper internet;
+    internet.Install(nodes);
+    Ipv4AddressHelper ipv4;
+    ipv4.SetBase("10.20.0.0", "255.255.0.0");
+    interfaces = ipv4.Assign(stationDevices);
+  }
 
   for (const auto& [endpoint, nodeIndex] : g_endpointToNode)
   {
@@ -310,10 +494,12 @@ main(int argc, char* argv[])
 
   for (uint32_t i = 0; i < g_events.size(); ++i)
   {
-    Simulator::Schedule(MilliSeconds(g_events[i].timestampMs), &SendEvent, i, nodes);
+    Simulator::Schedule(
+        MilliSeconds(g_events[i].timestampMs + g_startOffsetMs), &SendEvent, i, nodes);
   }
 
-  const double stopMs = g_events.empty() ? 0.0 : g_events.back().timestampMs + 10'000.0;
+  const double stopMs = g_events.empty() ? g_startOffsetMs :
+    g_events.back().timestampMs + g_startOffsetMs + 10'000.0;
   Simulator::Stop(MilliSeconds(stopMs));
   Simulator::Run();
   PrintSummary();

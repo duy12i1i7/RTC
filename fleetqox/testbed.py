@@ -38,7 +38,7 @@ def iter_scenarios(manifest: dict[str, Any]) -> list[ExperimentScenario]:
                     tier=str(tier["tier"]),
                     suite=suite,
                     experiment=str(tier["name"]),
-                    runner=str(tier["runner"]),
+                    runner=str(scenario.get("runner", tier["runner"])),
                     name=str(scenario["name"]),
                     config=dict(scenario),
                     baselines=list(tier.get("baselines", [])),

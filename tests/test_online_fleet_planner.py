@@ -34,6 +34,9 @@ from scripts.run_rmw_docker_router_multi_robot_budgeted_fleet_plan_probe import 
     fallback_repair_summary,
     recovery_window_summary,
 )
+from scripts.run_rmw_docker_router_qoe_protection_migration_sequential_repeated_matrix import (
+    classify_failure,
+)
 
 
 class OnlineFleetPathPlannerTest(unittest.TestCase):
@@ -207,6 +210,7 @@ class OnlineFleetPathPlannerTest(unittest.TestCase):
             controller = LivePathPlanController(
                 LivePathPlanControllerConfig(
                     plan_file=root / "plan.txt",
+                    repair_plan_file=root / "repair-plan.txt",
                     telemetry_files=(),
                     demands=demands,
                     seed_observations=(
@@ -261,6 +265,10 @@ class OnlineFleetPathPlannerTest(unittest.TestCase):
             )
             self.assertEqual(
                 root.joinpath("plan.txt").read_text(encoding="utf-8").strip(),
+                fallback.plan.path_plan_env,
+            )
+            self.assertEqual(
+                root.joinpath("repair-plan.txt").read_text(encoding="utf-8").strip(),
                 fallback.plan.path_plan_env,
             )
 
@@ -360,7 +368,7 @@ class OnlineFleetPathPlannerTest(unittest.TestCase):
         self.assertEqual(summary["status"], "unresolved")
         self.assertEqual(summary["deadline_ok_robot_count"], 1)
         self.assertEqual(summary["delivered_robot_count"], 1)
-        self.assertEqual(summary["unresolved_robot_count"], 1)
+        self.assertEqual(summary["unresolved_robot_count"], 2)
         self.assertEqual(summary["explicit_candidate_count"], 3)
         self.assertEqual(summary["missing_sequence_count"], 2)
         self.assertEqual(summary["late_sequence_count"], 1)
@@ -372,6 +380,31 @@ class OnlineFleetPathPlannerTest(unittest.TestCase):
         self.assertEqual(summary["robots"][1]["late_sequences"], [1])
         self.assertEqual(summary["robots"][1]["missing_sequences"], [2])
         self.assertEqual(summary["robots"][2]["status"], "unresolved")
+
+    def test_sequential_matrix_classifies_late_ack_nack_repair(self) -> None:
+        failure_mode = classify_failure(
+            {
+                "status": "failed",
+                "robot_count": 4,
+                "robots_ok": 3,
+                "publisher_barrier_ready": True,
+                "feedback_ready": True,
+                "second_feedback_ready": True,
+                "confidence_fallback_applied": True,
+                "feedback_safe_mode_count": 0,
+                "sequential_qoe_epochs": [
+                    {"confidence_separated": False},
+                    {"confidence_separated": False},
+                ],
+                "fallback_recovery": {"status": "ok"},
+                "fallback_repair": {"status": "repaired_late"},
+                "total_nack_retransmissions": 2,
+            },
+            migration_ok=False,
+            all_epochs_confident=False,
+        )
+
+        self.assertEqual(failure_mode, "confidence_fallback_repaired_late")
 
     def test_atomic_write_text_uses_unique_temp_files_under_concurrency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

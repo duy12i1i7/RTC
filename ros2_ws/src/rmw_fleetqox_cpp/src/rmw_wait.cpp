@@ -1,11 +1,14 @@
+#include <algorithm>
 #include <cstring>
 #include <chrono>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <new>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "rcutils/allocator.h"
 #include "rmw/allocators.h"
@@ -32,7 +35,7 @@ constexpr const char * kIdentifier = "rmw_fleetqox_cpp";
 struct FleetQoxGuardConditionData
 {
   rcutils_allocator_t allocator;
-  bool triggered;
+  std::atomic<bool> triggered;
 };
 
 struct FleetQoxWaitSetData
@@ -41,6 +44,10 @@ struct FleetQoxWaitSetData
   rmw_context_t * context;
   size_t max_conditions;
 };
+
+std::mutex g_guard_condition_mutex;
+std::vector<rmw_guard_condition_t *> g_guard_condition_handles;
+std::vector<FleetQoxGuardConditionData *> g_guard_condition_data;
 
 bool identifier_matches(const char * identifier)
 {
@@ -105,31 +112,43 @@ FleetQoxGuardConditionData * guard_data(const rmw_guard_condition_t * guard_cond
          static_cast<FleetQoxGuardConditionData *>(guard_condition->data);
 }
 
+FleetQoxGuardConditionData * guard_data_from_waitable(void * waitable)
+{
+  if (waitable == nullptr) {
+    return nullptr;
+  }
+  std::lock_guard<std::mutex> lock(g_guard_condition_mutex);
+  for (FleetQoxGuardConditionData * data : g_guard_condition_data) {
+    if (data == waitable) {
+      return data;
+    }
+  }
+  for (rmw_guard_condition_t * handle : g_guard_condition_handles) {
+    if (handle == waitable) {
+      return guard_data(handle);
+    }
+  }
+  return nullptr;
+}
+
 FleetQoxWaitSetData * wait_set_data(const rmw_wait_set_t * wait_set)
 {
   return wait_set == nullptr ? nullptr : static_cast<FleetQoxWaitSetData *>(wait_set->data);
 }
 
-bool guard_condition_is_ready(rmw_guard_condition_t * guard_condition)
+bool guard_condition_is_ready(void * guard_condition)
 {
-  if (guard_condition == nullptr || !identifier_matches(guard_condition->implementation_identifier)) {
+  FleetQoxGuardConditionData * data = guard_data_from_waitable(guard_condition);
+  if (data == nullptr || !data->triggered.exchange(false)) {
     return false;
   }
-  FleetQoxGuardConditionData * data = guard_data(guard_condition);
-  if (data == nullptr || !data->triggered) {
-    return false;
-  }
-  data->triggered = false;
   return true;
 }
 
-bool guard_condition_is_triggered(rmw_guard_condition_t * guard_condition)
+bool guard_condition_is_triggered(void * guard_condition)
 {
-  if (guard_condition == nullptr || !identifier_matches(guard_condition->implementation_identifier)) {
-    return false;
-  }
-  FleetQoxGuardConditionData * data = guard_data(guard_condition);
-  return data != nullptr && data->triggered;
+  FleetQoxGuardConditionData * data = guard_data_from_waitable(guard_condition);
+  return data != nullptr && data->triggered.load();
 }
 
 bool subscription_is_ready(rmw_subscription_t * subscription)
@@ -177,9 +196,7 @@ bool any_waitable_ready(
   }
   if (guard_conditions != nullptr) {
     for (size_t i = 0; i < guard_conditions->guard_condition_count; ++i) {
-      auto * guard_condition =
-        static_cast<rmw_guard_condition_t *>(guard_conditions->guard_conditions[i]);
-      if (guard_condition_is_triggered(guard_condition)) {
+      if (guard_condition_is_triggered(guard_conditions->guard_conditions[i])) {
         return true;
       }
     }
@@ -240,6 +257,11 @@ rmw_guard_condition_t * rmw_create_guard_condition(rmw_context_t * context)
   guard_condition->implementation_identifier = kIdentifier;
   guard_condition->data = data;
   guard_condition->context = context;
+  {
+    std::lock_guard<std::mutex> lock(g_guard_condition_mutex);
+    g_guard_condition_handles.push_back(guard_condition);
+    g_guard_condition_data.push_back(data);
+  }
   return guard_condition;
 }
 
@@ -253,7 +275,18 @@ rmw_ret_t rmw_destroy_guard_condition(rmw_guard_condition_t * guard_condition)
   if (ret != RMW_RET_OK) {
     return ret;
   }
-  deallocate_data(guard_data(guard_condition));
+  FleetQoxGuardConditionData * data = guard_data(guard_condition);
+  {
+    std::lock_guard<std::mutex> lock(g_guard_condition_mutex);
+    g_guard_condition_handles.erase(
+      std::remove(
+        g_guard_condition_handles.begin(), g_guard_condition_handles.end(), guard_condition),
+      g_guard_condition_handles.end());
+    g_guard_condition_data.erase(
+      std::remove(g_guard_condition_data.begin(), g_guard_condition_data.end(), data),
+      g_guard_condition_data.end());
+  }
+  deallocate_data(data);
   rmw_guard_condition_free(guard_condition);
   return RMW_RET_OK;
 }
@@ -273,7 +306,7 @@ rmw_ret_t rmw_trigger_guard_condition(const rmw_guard_condition_t * guard_condit
     RMW_SET_ERROR_MSG("guard condition data is null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  data->triggered = true;
+  data->triggered.store(true);
   return RMW_RET_OK;
 }
 
@@ -370,9 +403,7 @@ rmw_ret_t rmw_wait(
   }
   if (guard_conditions != nullptr) {
     for (size_t i = 0; i < guard_conditions->guard_condition_count; ++i) {
-      auto * guard_condition =
-        static_cast<rmw_guard_condition_t *>(guard_conditions->guard_conditions[i]);
-      if (!guard_condition_is_ready(guard_condition)) {
+      if (!guard_condition_is_ready(guard_conditions->guard_conditions[i])) {
         guard_conditions->guard_conditions[i] = nullptr;
       } else {
         any_ready = true;

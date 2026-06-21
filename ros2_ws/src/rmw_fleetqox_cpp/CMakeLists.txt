@@ -8,16 +8,20 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rcl REQUIRED)
+find_package(rclcpp REQUIRED)
 find_package(rcutils REQUIRED)
 find_package(rmw REQUIRED)
 find_package(rosidl_runtime_c REQUIRED)
 find_package(rosidl_typesupport_c REQUIRED)
+find_package(rosidl_typesupport_cpp REQUIRED)
 find_package(rosidl_typesupport_introspection_c REQUIRED)
+find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 
 add_library(${PROJECT_NAME}_transport
   src/data_frame.cpp
+  src/shared_memory_transport.cpp
 )
 set_target_properties(${PROJECT_NAME}_transport PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(${PROJECT_NAME}_transport PUBLIC cxx_std_17)
@@ -43,7 +47,9 @@ ament_target_dependencies(${PROJECT_NAME}
   rmw
   rosidl_runtime_c
   rosidl_typesupport_c
+  rosidl_typesupport_cpp
   rosidl_typesupport_introspection_c
+  rosidl_typesupport_introspection_cpp
 )
 
 add_executable(fleetrmw_transport_loop_smoke
@@ -195,6 +201,47 @@ ament_target_dependencies(fleetrmw_std_msgs_string_probe
 add_executable(fleetrmw_geometry_twist_probe
   src/geometry_twist_probe.cpp
 )
+
+add_executable(fleetrmw_cpp_typesupport_probe
+  src/cpp_typesupport_probe.cpp
+)
+
+add_executable(fleetrmw_loaned_message_probe
+  src/loaned_message_probe.cpp
+)
+target_compile_features(fleetrmw_loaned_message_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_loaned_message_probe
+  ${PROJECT_NAME}
+)
+ament_target_dependencies(fleetrmw_loaned_message_probe
+  rcutils
+  rmw
+  rosidl_typesupport_c
+  rosidl_typesupport_cpp
+  std_msgs
+)
+
+add_executable(fleetrmw_rclcpp_interprocess_probe
+  src/rclcpp_interprocess_probe.cpp
+)
+target_compile_features(fleetrmw_rclcpp_interprocess_probe PRIVATE cxx_std_17)
+ament_target_dependencies(fleetrmw_rclcpp_interprocess_probe
+  geometry_msgs
+  rclcpp
+  std_srvs
+)
+target_compile_features(fleetrmw_cpp_typesupport_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_cpp_typesupport_probe
+  ${PROJECT_NAME}
+)
+ament_target_dependencies(fleetrmw_cpp_typesupport_probe
+  geometry_msgs
+  rcutils
+  rmw
+  rosidl_typesupport_c
+  rosidl_typesupport_cpp
+  std_msgs
+)
 target_compile_features(fleetrmw_geometry_twist_probe PRIVATE cxx_std_17)
 target_link_libraries(fleetrmw_geometry_twist_probe
   ${PROJECT_NAME}
@@ -237,6 +284,7 @@ add_executable(fleetrmw_rcl_service_node
 )
 target_compile_features(fleetrmw_rcl_service_node PRIVATE cxx_std_17)
 target_link_libraries(fleetrmw_rcl_service_node
+  ${PROJECT_NAME}
   std_srvs::std_srvs__rosidl_typesupport_introspection_c
 )
 ament_target_dependencies(fleetrmw_rcl_service_node
@@ -318,6 +366,10 @@ install(
   DESTINATION include
 )
 install(
+  FILES capabilities.json
+  DESTINATION share/${PROJECT_NAME}
+)
+install(
   TARGETS
     ${PROJECT_NAME}
     ${PROJECT_NAME}_transport
@@ -335,6 +387,9 @@ install(
     fleetrmw_typed_pubsub_probe
     fleetrmw_std_msgs_string_probe
     fleetrmw_geometry_twist_probe
+    fleetrmw_cpp_typesupport_probe
+    fleetrmw_loaned_message_probe
+    fleetrmw_rclcpp_interprocess_probe
     fleetrmw_rcl_string_probe
     fleetrmw_rcl_graph_talker
     fleetrmw_rcl_service_node
@@ -353,5 +408,8 @@ install(
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME} ${PROJECT_NAME}_transport)
 ament_export_targets(export_${PROJECT_NAME})
-register_rmw_implementation("c:rosidl_typesupport_introspection_c")
+register_rmw_implementation(
+  "c:rosidl_typesupport_introspection_c"
+  "cpp:rosidl_typesupport_introspection_cpp"
+)
 ament_package()

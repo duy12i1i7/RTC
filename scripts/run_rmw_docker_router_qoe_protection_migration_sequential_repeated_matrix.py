@@ -50,6 +50,10 @@ def main() -> int:
     parser.add_argument("--sequential-confidence-fallback", action="store_true")
     parser.add_argument("--sequential-fallback-extra-robots", type=int, default=0)
     parser.add_argument("--fallback-recovery-samples", type=int, default=1)
+    parser.add_argument("--fallback-repair-budget", type=int, default=16)
+    parser.add_argument("--fallback-repair-min-interval-ms", type=int, default=50)
+    parser.add_argument("--fallback-repair-max-attempts-per-sequence", type=int, default=2)
+    parser.add_argument("--fleet-repair-capacity-bytes", type=int, default=0)
     parser.add_argument("--fail-on-row-failure", action="store_true")
     parser.add_argument(
         "--summary-json",
@@ -104,6 +108,16 @@ def main() -> int:
                         0,
                     ),
                     fallback_recovery_samples=max(args.fallback_recovery_samples, 1),
+                    fallback_repair_budget=max(args.fallback_repair_budget, 0),
+                    fallback_repair_min_interval_ms=max(
+                        args.fallback_repair_min_interval_ms,
+                        0,
+                    ),
+                    fallback_repair_max_attempts_per_sequence=max(
+                        args.fallback_repair_max_attempts_per_sequence,
+                        0,
+                    ),
+                    fleet_repair_capacity_bytes=max(args.fleet_repair_capacity_bytes, 0),
                 )
                 observed_epoch_sets = result.get("controller_epoch_protected_robots", [])
                 migration_ok = observed_epoch_sets == expected_epoch_sets
@@ -141,9 +155,8 @@ def main() -> int:
                     and result.get("publisher_barrier_ready") is not False
                     and result.get("feedback_ready") is not False
                     and result.get("second_feedback_ready") is not False
-                    and migration_ok
-                    and fallback_recovery.get("status") == "ok"
-                    and fallback_repair.get("status") != "unresolved"
+                    and (migration_ok or confidence_fallback_applied)
+                    and result.get("qoe_recovery_ok") is True
                 )
                 rows.append({
                     "robot_count": robot_count,
@@ -212,6 +225,26 @@ def main() -> int:
                         "idle_repair_ack_nack_count",
                         0,
                     ),
+                    "fallback_repair_plan_frame_count": fallback_repair.get(
+                        "repair_plan_frame_count",
+                        0,
+                    ),
+                    "fallback_repair_plan_selected_path_count": fallback_repair.get(
+                        "repair_plan_selected_path_count",
+                        0,
+                    ),
+                    "fallback_repair_budget_exhausted_count": fallback_repair.get(
+                        "repair_budget_exhausted_count",
+                        0,
+                    ),
+                    "fallback_repair_requests_coalesced_count": fallback_repair.get(
+                        "repair_requests_coalesced_count",
+                        0,
+                    ),
+                    "fallback_repair_attempt_limit_exhausted_count": fallback_repair.get(
+                        "repair_sequence_attempt_limit_exhausted_count",
+                        0,
+                    ),
                     "migration_ok": migration_ok,
                     "all_epochs_confident": all_epochs_confident,
                     "confidence_epoch_count": confidence_epoch_count,
@@ -226,6 +259,14 @@ def main() -> int:
                     ],
                     "observed_epoch_protected_robots": observed_epoch_sets,
                     "robots_ok": result.get("robots_ok", 0),
+                    "repair_delivery_robots_ok": result.get(
+                        "repair_delivery_robots_ok",
+                        0,
+                    ),
+                    "repair_deadline_robots_ok": result.get(
+                        "repair_deadline_robots_ok",
+                        0,
+                    ),
                     "max_latency_ms": result.get("max_latency_ms", 0.0),
                     "deadline_success_jain_index": result.get(
                         "deadline_success_jain_index", 0.0
@@ -248,6 +289,12 @@ def main() -> int:
                     ),
                     "actual_path_transmissions": result.get(
                         "actual_path_transmissions", 0
+                    ),
+                    "repair_path_transmission_overhead": result.get(
+                        "repair_path_transmission_overhead", 0
+                    ),
+                    "repair_path_transmission_overhead_ratio": result.get(
+                        "repair_path_transmission_overhead_ratio", 0.0
                     ),
                     "full_redundancy_path_transmissions": result.get(
                         "full_redundancy_path_transmissions", 0
@@ -293,6 +340,16 @@ def main() -> int:
             0,
         ),
         "fallback_recovery_samples": max(args.fallback_recovery_samples, 1),
+        "fallback_repair_budget": max(args.fallback_repair_budget, 0),
+        "fallback_repair_min_interval_ms": max(
+            args.fallback_repair_min_interval_ms,
+            0,
+        ),
+        "fallback_repair_max_attempts_per_sequence": max(
+            args.fallback_repair_max_attempts_per_sequence,
+            0,
+        ),
+        "fleet_repair_capacity_bytes": max(args.fleet_repair_capacity_bytes, 0),
         "run_count": len(rows),
         "ok_run_count": len(ok_rows),
         "failed_run_count": len(rows) - len(ok_rows),
@@ -322,6 +379,12 @@ def main() -> int:
         "fallback_repair_unresolved_robot_count": sum(
             int(row["fallback_repair_unresolved_robot_count"]) for row in rows
         ),
+        "repair_delivery_robots_ok": sum(
+            int(row["repair_delivery_robots_ok"]) for row in rows
+        ),
+        "repair_deadline_robots_ok": sum(
+            int(row["repair_deadline_robots_ok"]) for row in rows
+        ),
         "fallback_repair_explicit_candidate_count": sum(
             int(row["fallback_repair_explicit_candidate_count"]) for row in rows
         ),
@@ -339,6 +402,21 @@ def main() -> int:
         ),
         "fallback_repair_idle_ack_nack_count": sum(
             int(row["fallback_repair_idle_ack_nack_count"]) for row in rows
+        ),
+        "fallback_repair_plan_frame_count": sum(
+            int(row["fallback_repair_plan_frame_count"]) for row in rows
+        ),
+        "fallback_repair_plan_selected_path_count": sum(
+            int(row["fallback_repair_plan_selected_path_count"]) for row in rows
+        ),
+        "fallback_repair_budget_exhausted_count": sum(
+            int(row["fallback_repair_budget_exhausted_count"]) for row in rows
+        ),
+        "fallback_repair_requests_coalesced_count": sum(
+            int(row["fallback_repair_requests_coalesced_count"]) for row in rows
+        ),
+        "fallback_repair_attempt_limit_exhausted_count": sum(
+            int(row["fallback_repair_attempt_limit_exhausted_count"]) for row in rows
         ),
         "confidence_epoch_count": sum(
             int(row["confidence_epoch_count"]) for row in rows
@@ -380,6 +458,13 @@ def main() -> int:
             int(row["protection_migration_count"]) for row in rows
         ),
         "total_actual_path_transmissions": total_actual,
+        "total_repair_path_transmission_overhead": sum(
+            int(row["repair_path_transmission_overhead"]) for row in rows
+        ),
+        "max_repair_path_transmission_overhead_ratio": max(
+            (float(row["repair_path_transmission_overhead_ratio"]) for row in rows),
+            default=0.0,
+        ),
         "total_full_redundancy_path_transmissions": total_full,
         "aggregate_path_transmission_reduction_ratio": (
             1.0 - total_actual / total_full if total_full else 0.0

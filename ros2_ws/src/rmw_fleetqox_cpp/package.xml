@@ -12,9 +12,12 @@
   <depend>rmw</depend>
   <depend>geometry_msgs</depend>
   <depend>rcl</depend>
+  <depend>rclcpp</depend>
   <depend>rosidl_runtime_c</depend>
   <depend>rosidl_typesupport_c</depend>
+  <depend>rosidl_typesupport_cpp</depend>
   <depend>rosidl_typesupport_introspection_c</depend>
+  <depend>rosidl_typesupport_introspection_cpp</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
 

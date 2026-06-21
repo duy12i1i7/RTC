@@ -72,10 +72,12 @@ def print_plan(scenarios: list[ExperimentScenario]) -> None:
         print(f"  runner: {scenario.runner}")
         print(f"  baselines: {', '.join(scenario.baselines)}")
         print(f"  metrics: {', '.join(scenario.metrics)}")
-        if scenario.runner != "local_python":
-            print("  status: planned external-tool experiment")
-        else:
+        if scenario.runner == "local_python":
             print("  status: runnable now with --run")
+        elif external_runner_exists(scenario):
+            print("  status: runnable external script (not executed by run_suite)")
+        else:
+            print("  status: planned external-tool experiment")
 
 
 def run_scenario(scenario: ExperimentScenario) -> list[dict[str, object]]:
@@ -86,7 +88,11 @@ def run_scenario(scenario: ExperimentScenario) -> list[dict[str, object]]:
                 "experiment": scenario.experiment,
                 "scenario": scenario.name,
                 "runner": scenario.runner,
-                "status": "planned_not_run",
+                "status": (
+                    "external_runnable_not_run"
+                    if external_runner_exists(scenario)
+                    else "planned_not_run"
+                ),
             }
         ]
 
@@ -121,6 +127,10 @@ def run_scenario(scenario: ExperimentScenario) -> list[dict[str, object]]:
             }
         )
     return records
+
+
+def external_runner_exists(scenario: ExperimentScenario) -> bool:
+    return scenario.runner.startswith("scripts/") and Path(scenario.runner).is_file()
 
 
 def export_trace_for_scenario(

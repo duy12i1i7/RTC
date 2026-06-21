@@ -364,9 +364,14 @@ Implemented sub-milestones:
   to `std_msgs/msg/String`, `builtin_interfaces/msg/Time`,
   `builtin_interfaces/msg/Duration`, `geometry_msgs/msg/Twist`,
   `geometry_msgs/msg/PoseStamped`, `sensor_msgs/msg/LaserScan`,
-  `nav_msgs/msg/Odometry`, and `nav_msgs/msg/Path`, covering signed/unsigned
-  time fields, nested messages, fixed arrays, dynamic primitive sequences, and
-  dynamic sequences of nested pose messages. The RMW now
+  `sensor_msgs/msg/PointCloud2`, `nav_msgs/msg/Odometry`,
+  `nav_msgs/msg/Path`, `trajectory_msgs/msg/JointTrajectory`,
+  `diagnostic_msgs/msg/DiagnosticArray`,
+  `fleetrmw_interfaces/msg/SampleIdentity`, and
+  `fleetrmw_interfaces/msg/ProjectionQuality`, covering signed/unsigned
+  time fields, nested messages, fixed arrays, dynamic primitive sequences,
+  dynamic sequences of nested pose messages, binary blobs, trajectories,
+  diagnostics, and FleetRMW quality metadata. The RMW now
   dispatches
   generic `rosidl_typesupport_c` maps into introspection-C handles and exposes
   service/client handle lifecycle and service graph support for node startup
@@ -395,7 +400,12 @@ Implemented sub-milestones:
   `results_rmw_socket/docker_ros2_service_timeout_probe_summary.json` proves a
   real `ros2 service call` sends a request through FleetRMW, the server sees it,
   the response is intentionally delayed, and the CLI exits with timeout code
-  `124` without printing a success response. The action-frame contract
+  `124` without printing a success response. The router-mediated malformed
+  response artifact
+  `results_rmw_socket/docker_router_ros2_malformed_service_response_probe_summary.json`
+  proves that a correctly routed but invalid serialized response makes the CLI
+  exit with code `1`, prints no response, and surfaces the RMW/rcl deserialize
+  diagnostic instead of timing out. The action-frame contract
   artifact `results_rmw_socket/docker_rmw_action_frame_probe_summary.json`
   proves `fleetrmw.action_frame.v1` round-trips goal, feedback, status, result,
   and cancel roles with lifespan checks and rejects service-frame schema input.
@@ -750,32 +760,97 @@ Implemented first:
   can release explicit recovery frames and audit those frames separately from
   strict confidence success. A forced four-robot smoke recovers `4/4` robots
   over three recovery frames, and the harsh `8/16` robot matrix passes `4/6`
-  strict rows while all `6/6` rows pass the recovery window. The remaining gap
-  is targeted replay/repair of missing source sequences, not just confirmation
-  traffic after fallback;
+  strict rows while all `6/6` rows pass the recovery window;
+- targeted source-sequence repair attribution: the probe now joins subscriber
+  telemetry with publisher NACK retransmissions and idle repair requests,
+  classifies each robot as `ok`, `repaired_on_time`, `repaired_late`, `late`,
+  or `unresolved`, and reports repair path overhead separately from planned
+  traffic. A forced smoke observes one late repaired sequence followed by a
+  `4/4` healthy recovery window; a second matrix smoke reports strict
+  confidence `0/1` but QoE recovery `1/1`;
+- controller-directed repair routing and admission: the live controller writes
+  a separate repair plan, C++ publishers reload it only for NACK
+  retransmissions, and a per-publisher budget bounds replay. Deterministic
+  sequence drops prove dual-path repair, distinguish a `250 ms`
+  `repaired_late` boundary from a `400 ms` `repaired_on_time` result, and
+  produce unresolved gaps when the budget is zero;
+- per-sequence repair storm control: a configurable coalescing interval and
+  attempt cap reduce deterministic repair from `8` retransmissions/`16` path
+  sends to `2` retransmissions/`4` path sends while preserving `4/4`
+  repair-deadline success;
+- adaptive fleet-wide per-sequence repair admission: a multi-choice knapsack
+  with Pareto pruning ranks repair alternatives by deadline pressure,
+  criticality, QoE debt, path success/latency, attempt debt, and byte cost. A
+  strict sequence-specific policy is enforced across publishers under one
+  shared capacity. The sufficient-capacity smoke repairs both forced gaps on
+  time with `2` unicast backup transmissions; the `700`-byte smoke admits only
+  higher-debt `robot_0000`, reports the other repair as explicitly deferred,
+  and produces the expected `3/4` repair-qualified result;
+- repeated `8/16/32` actuated-repair capacity frontier: the v3 artifact passes
+  `27/27` rows and all `9/9` groups. It drops sequence `2` once on both paths,
+  requires admitted NACK repair plus explicit deferred rejection, produces
+  live QoE coverage `0.625/0.75/1.0` as capacity rises, and keeps every observed
+  latency below the `400 ms` deadline with a maximum of `397.314 ms`;
+- upstream Nav2/RMF workload: local `NavigateFleet`/`DispatchFleetTask`
+  fallbacks and upstream `NavigateToPose` all exercise success/cancel paths;
+  RMF `SubmitTask`/`CancelTask` services additionally prove nested upstream
+  task serialization. A four-way concurrent batch passes for both upstream
+  APIs. The upstream Nav2 C++ lifecycle manager drives all four primary
+  transitions on a companion node, with `82/82` service frames forwarded by
+  the router and zero invalid frames;
+- repeated large-scale baseline gap register: `run_large_scale_rmw_comparison.py`
+  compares FleetRMW router, Fast DDS, Cyclone DDS, and Zenoh at `8/16/32`
+  robots over repetition IDs `7,13,29`, with data-plane-only netem, an equal
+  publisher reliability horizon, Zenoh router bootstrap, resumable
+  infrastructure-only retries, and 95% confidence intervals. FleetRMW,
+  Cyclone, and Zenoh pass `9/9`; Fast DDS passes `7/9`. The explicit topology
+  caveat remains. The v2 report separates direct-RMW delivery/latency from
+  FleetRMW router value and forbids mixed-hop superiority claims;
 - router-mediated ROS CLI service timeout: separate client/server containers
   exchange request/response through FleetRMW, the caller times out cleanly
   without a fabricated response, and the router accounts for both frames;
+- router-mediated caller-visible malformed service response: a validly routed
+  response with an invalid serialized body reaches `rmw_take_response`, causes
+  `ros2 service call` to exit with code `1`, and preserves the concrete
+  deserialize diagnostic through rcl without fabricating a response;
 - waitable subscription registry so `rmw_wait` supports both full
   `rmw_subscription_t *` handles and implementation-data pointers used by
   `rclpy`;
 - optional RMW ABI stubs for loader-clean unsupported surfaces including
   loaned messages, events, dynamic messages,
   network-flow endpoints, callbacks, and dynamic serialization support.
+- standalone `rmw_serialize`/`rmw_deserialize` backed by the native
+  introspection-C codec, with an explicit `fleetrmw.introspection_c.v1`
+  format identifier and a passing String round-trip probe.
+- installed machine-readable capability manifest with
+  `production_ready=false`, explicit supported/partial surfaces, and a complete
+  list of controlled unsupported optional ABI families.
+- standalone generic C++ type-support regression for `std_msgs/String` and
+  nested `geometry_msgs/PoseStamped`, both round-tripped through
+  `rmw_serialize`/`rmw_deserialize` in Docker. Bounded standalone size
+  calculation is also implemented for introspection C/C++; nested
+  `geometry_msgs/Pose` predicts and serializes to the same `80` bytes through
+  both runtime paths while
+  artificial bounds for unbounded fields remain explicitly unsupported.
+- two-container `rclcpp` data-plane regression for nested PoseStamped
+  pub/sub and SetBool service request/response through the router, with zero
+  invalid frames, real UDP network-flow metadata, and observed request/response
+  callbacks.
 
 Next implement:
 
-- C++ type-support-backed serialization/deserialization beyond the current
-  introspection-C CLI matrix;
-- caller-visible malformed-service-response diagnostics beyond timeout;
-- targeted post-fallback repair/replay for missing source sequences, using the
-  recovery-window audit as the acceptance gate;
-- a `32`-robot strategy that separates middleware scale from Docker Desktop
-  resource limits;
-- running the current N-topic controller-scale workload through live
-  Docker router/subscriber probes with real `tc netem` shaping, larger-N
-  duplicate/de-duplication, QoE, robot-level SLO feedback, and repeatable
-  ns-3/OMNeT++ benchmark matrices.
+- increase repetitions around the completed actuated-repair v3 frontier so
+  the `32`-robot latency-mean interval is tighter at the `400 ms` boundary;
+- sequence-heavy C++ service and cross-language type-support matrices beyond
+  the proven Nav2 manager, standalone, and interprocess C++ paths;
+- preserve the completed split-scope DDS/Zenoh/FleetRMW benchmark contract and
+  add a same-hop relay study only as a separate experiment;
+- repeatable ns-3/OMNeT++ benchmark matrices tied to the Docker/netem artifact
+  schema. The first native ns-3 CSMA/error matrix is complete at `27/27`; the
+  single-AP 802.11g Wi-Fi/mobility matrix is also complete at `27/27`. The
+  dual-AP handoff matrix is complete at `27/27` with `585/585` measured
+  endpoint transitions. Remaining simulator work is richer channel/MAC
+  fidelity and OMNeT++/INET parity.
 
 Target: C++ type-support coverage, caller-visible service cancellation/error
 semantics, multi-container real `rcl_action` transport, live optimizer actuation, and measured
@@ -783,20 +858,25 @@ network-aware QoS/QoE at fleet scale.
 
 ## Milestone 3: Services And Actions
 
-Implement services/clients. ROS 2 actions should become possible once pub/sub
-and services are reliable enough.
+Services and initial ROS 2 actions are now possible over the prototype RMW:
+SetBool services, service timeout/error cases, same-process `rclpy.action`,
+router-mediated success/cancel, action QoS observation, and the local
+Nav2/RMF-compatible action workload all have Docker artifacts. The remaining
+work is breadth and concurrency rather than first viability.
 
 Target:
 
 - lifecycle demos;
-- Nav2 action smoke tests;
+- real Nav2 planner/controller lifecycle components and larger repeated
+  upstream client counts;
 - robot state/control workloads.
 
 ## Milestone 4: Fleet Data Plane
 
 Add:
 
-- SHM same-host;
+- SHM same-host: first local-only POSIX ring and UDP-fallback gate complete;
+- hybrid SHM-local plus UDP-remote peers: first router/de-dup gate complete;
 - UDP/QUIC LAN;
 - QUIC WAN;
 - WebRTC/SVC video path;

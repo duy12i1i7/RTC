@@ -1,0 +1,12 @@
+string robot_id
+geometry_msgs/PoseStamped pose
+string behavior_tree
+---
+bool success
+string message
+builtin_interfaces/Duration navigation_time
+---
+geometry_msgs/PoseStamped current_pose
+float32 distance_remaining
+builtin_interfaces/Duration estimated_time_remaining
+uint16 number_of_recoveries
