@@ -167,6 +167,8 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker ROS router-mediated C++ interprocess pub/sub + service | `results_rmw_socket/docker_router_rclcpp_interprocess_probe_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
+| Docker ROS no-op publisher/subscription allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
+| Docker ROS no-op QoS event ABI | `results_rmw_socket/docker_qos_event_probe_summary.json` |
 | Docker ROS introspection C/C++ loaned-message lifecycle | `results_rmw_socket/docker_loaned_message_probe_summary.json` |
 | Native ns-3 Docker 8/16/32 fleet matrix | `results_ns3/ns3_docker_fleet_matrix_8_16_32_3seed_v1_summary.json` |
 | Docker ROS RMW matched multi-topic router workload | `results_rmw_socket/docker_router_matched_multi_topic_probe_summary.json` |
@@ -246,6 +248,64 @@ Endpoints advertise `can_loan_messages=true`, and outstanding allocations are
 owned and finalized by FleetRMW. The artifact explicitly sets
 `zero_copy_claim_allowed=false`: subscription data is currently deserialized
 into middleware-owned memory rather than delivered by a zero-copy transport.
+
+The allocation artifact verifies the ROS 2 publisher/subscription allocation
+ABI at the no-op lifecycle level. `rmw_init_publisher_allocation`,
+`rmw_init_subscription_allocation`, and matching fini calls return OK, carry the
+FleetRMW implementation identifier while active, and serialized publish/take
+accept the allocation pointers. The artifact keeps `deep_preallocation=false`;
+it is an ABI compatibility claim, not a real preallocation or zero-copy claim.
+
+The QoS event artifact verifies event-object ABI compatibility without
+pretending event production exists. Publisher/subscription deadline event
+objects initialize/finalize successfully, support checks report known event
+types, callback setters return OK, and `rmw_take_event` returns OK with
+`taken=false`. The artifact keeps `event_production=false`.
+
+The first QUIC/TLS artifact is a dependency and handshake gate, not an RMW
+backend claim. `results_rmw_socket/docker_quic_tls_probe_summary.json` uses
+ngtcp2/GnuTLS `gtlsserver` and `gtlsclient` in Docker, verifies QUIC v1,
+TLS handshake completion, ALPN `h3`, qlog emission, and a byte-for-byte
+payload download. It sets `rmw_integrated_backend=false` so the project cannot
+mistake a real QUIC/TLS smoke for an integrated FleetRMW publish/take path.
+The follow-on artifact
+`results_rmw_socket/docker_quic_fleet_frame_probe_summary.json` serves a real
+`fleetrmw.data_frame.v1` over that same QUIC/TLS/H3 path and requires the
+downloaded bytes to decode with the C++ `fleetrmw_frame_probe`.
+`results_rmw_socket/docker_quic_netem_frame_probe_summary.json` repeats the
+FleetRMW-frame transfer across two Docker containers after applying verified
+`tc netem` to the client interface. The artifact also carries qdisc
+before/after counters plus parsed ngtcp2 path telemetry, and the gate requires
+QUIC v1 negotiation, sent/received packet logs, and at least one RTT sample.
+`results_rmw_socket/docker_quic_gateway_publish_probe_summary.json` verifies
+the first RMW publish-side QUIC gateway slice: `rmw_publish` emits one encoded
+FleetRMW frame through ngtcp2/GnuTLS `gtlsclient --data`, `gtlsserver` receives
+matching `content-length` and body bytes, ALPN is `h3`, and qlog files are
+emitted. The artifact sets `production_quic_backend=false` and
+`full_bidirectional_quic_backend=false`.
+`results_rmw_socket/docker_quic_gateway_async_publish_probe_summary.json`
+exercises the same real QUIC/TLS/H3 upload with
+`FLEETQOX_RMW_QUIC_GATEWAY_ASYNC=1`; the probe requires enqueue telemetry,
+zero async drops/failures, worker drain to depth zero, and the same server-side
+body-byte match. This reduces publish-path blocking but remains
+subprocess-backed rather than a production in-process QUIC backend.
+`results_rmw_socket/docker_quic_gateway_async_burst_probe_summary.json`
+extends that proof from one publish to a bounded burst: multiple `rmw_publish`
+calls enqueue, the async worker drains all frames, the server sees matching
+aggregate body bytes/content-lengths, and queue depth returns to zero with no
+drops or worker failures.
+`results_rmw_socket/docker_quic_gateway_netem_publish_probe_summary.json`
+extends that publish-side gateway proof across two Docker containers with
+`tc netem` applied on the publishing client. It records qdisc before/after
+counters, parsed ngtcp2 path telemetry, QUIC v1 negotiation, ALPN `h3`, qlog
+files, and matching server body bytes.
+`results_rmw_socket/docker_quic_gateway_netem_async_burst_probe_summary.json`
+combines the async-burst worker with the two-container netem path: the artifact
+requires multiple successful queued `rmw_publish` calls, zero async drops or
+worker failures, aggregate server body/content-length bytes matching RMW frame
+bytes, qdisc before/after counters, qlog emission, and parsed ngtcp2 packet/RTT
+telemetry. It is still a subprocess-backed publish-side gate, not evidence for
+a full-duplex production QUIC backend.
 
 The native ns-3 3.41 campaign passes all `27/27` rows for `8/16/32` robots,
 three network parameter envelopes, and seeds `7,13,29`. FIFO,

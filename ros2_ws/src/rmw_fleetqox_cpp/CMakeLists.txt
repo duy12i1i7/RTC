@@ -18,9 +18,13 @@ find_package(rosidl_typesupport_introspection_c REQUIRED)
 find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(PkgConfig QUIET)
+
+set(FLEETRMW_OPTIONAL_TARGETS)
 
 add_library(${PROJECT_NAME}_transport
   src/data_frame.cpp
+  src/quic_gateway_transport.cpp
   src/shared_memory_transport.cpp
 )
 set_target_properties(${PROJECT_NAME}_transport PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -120,6 +124,18 @@ ament_target_dependencies(fleetrmw_qos_probe
   rmw
 )
 
+add_executable(fleetrmw_qos_event_probe
+  src/qos_event_probe.cpp
+)
+target_compile_features(fleetrmw_qos_event_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_qos_event_probe
+  ${PROJECT_NAME}
+)
+ament_target_dependencies(fleetrmw_qos_event_probe
+  rcutils
+  rmw
+)
+
 add_executable(fleetrmw_service_qos_probe
   src/service_qos_probe.cpp
 )
@@ -198,6 +214,34 @@ ament_target_dependencies(fleetrmw_std_msgs_string_probe
   std_msgs
 )
 
+add_executable(fleetrmw_quic_gateway_publish_probe
+  src/quic_gateway_publish_probe.cpp
+)
+target_compile_features(fleetrmw_quic_gateway_publish_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_quic_gateway_publish_probe
+  ${PROJECT_NAME}
+  std_msgs::std_msgs__rosidl_typesupport_introspection_c
+)
+ament_target_dependencies(fleetrmw_quic_gateway_publish_probe
+  rcutils
+  rmw
+  std_msgs
+)
+
+add_executable(fleetrmw_quic_gateway_burst_publish_probe
+  src/quic_gateway_burst_publish_probe.cpp
+)
+target_compile_features(fleetrmw_quic_gateway_burst_publish_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_quic_gateway_burst_publish_probe
+  ${PROJECT_NAME}
+  std_msgs::std_msgs__rosidl_typesupport_introspection_c
+)
+ament_target_dependencies(fleetrmw_quic_gateway_burst_publish_probe
+  rcutils
+  rmw
+  std_msgs
+)
+
 add_executable(fleetrmw_geometry_twist_probe
   src/geometry_twist_probe.cpp
 )
@@ -221,6 +265,18 @@ ament_target_dependencies(fleetrmw_loaned_message_probe
   std_msgs
 )
 
+add_executable(fleetrmw_allocation_probe
+  src/allocation_probe.cpp
+)
+target_compile_features(fleetrmw_allocation_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_allocation_probe
+  ${PROJECT_NAME}
+)
+ament_target_dependencies(fleetrmw_allocation_probe
+  rcutils
+  rmw
+)
+
 add_executable(fleetrmw_rclcpp_interprocess_probe
   src/rclcpp_interprocess_probe.cpp
 )
@@ -242,6 +298,27 @@ ament_target_dependencies(fleetrmw_cpp_typesupport_probe
   rosidl_typesupport_cpp
   std_msgs
 )
+
+if(PkgConfig_FOUND)
+  pkg_check_modules(NGTCP2_GNUTLS QUIET IMPORTED_TARGET
+    libngtcp2
+    libngtcp2_crypto_gnutls
+  )
+  pkg_check_modules(GNUTLS QUIET IMPORTED_TARGET gnutls)
+endif()
+if(NGTCP2_GNUTLS_FOUND AND GNUTLS_FOUND)
+  add_executable(fleetrmw_quic_dependency_probe
+    src/quic_dependency_probe.cpp
+  )
+  target_compile_features(fleetrmw_quic_dependency_probe PRIVATE cxx_std_17)
+  target_link_libraries(fleetrmw_quic_dependency_probe
+    PkgConfig::NGTCP2_GNUTLS
+    PkgConfig::GNUTLS
+  )
+  list(APPEND FLEETRMW_OPTIONAL_TARGETS fleetrmw_quic_dependency_probe)
+else()
+  message(STATUS "ngtcp2/GnuTLS development package not found; skipping FleetRMW QUIC dependency probe")
+endif()
 target_compile_features(fleetrmw_geometry_twist_probe PRIVATE cxx_std_17)
 target_link_libraries(fleetrmw_geometry_twist_probe
   ${PROJECT_NAME}
@@ -380,15 +457,19 @@ install(
     fleetrmw_lifecycle_probe
     fleetrmw_serialized_pubsub_probe
     fleetrmw_qos_probe
+    fleetrmw_qos_event_probe
     fleetrmw_service_qos_probe
     fleetrmw_service_error_probe
     fleetrmw_reliability_probe
     fleetrmw_reliable_interprocess_probe
     fleetrmw_typed_pubsub_probe
     fleetrmw_std_msgs_string_probe
+    fleetrmw_quic_gateway_publish_probe
+    fleetrmw_quic_gateway_burst_publish_probe
     fleetrmw_geometry_twist_probe
     fleetrmw_cpp_typesupport_probe
     fleetrmw_loaned_message_probe
+    fleetrmw_allocation_probe
     fleetrmw_rclcpp_interprocess_probe
     fleetrmw_rcl_string_probe
     fleetrmw_rcl_graph_talker
@@ -399,6 +480,7 @@ install(
     fleetrmw_udp_router_probe
     fleetrmw_remote_graph_probe
     fleetrmw_remote_graph_lease_probe
+    ${FLEETRMW_OPTIONAL_TARGETS}
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

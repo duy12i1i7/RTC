@@ -50,9 +50,34 @@ This repository starts with the part that should be proven first:
   explicit UDP fallback path under injected SHM initialization failure; a
   hybrid gate then sends the same flow over local SHM and a remote UDP router,
   requires router forwarding, and proves application-level duplicate removal;
+- a no-op publisher/subscription allocation ABI lifecycle where init/fini
+  succeeds, allocation handles carry the FleetRMW identifier, and serialized
+  publish/take accepts allocation pointers in Docker; this is not a deep
+  preallocation or zero-copy claim;
+- a no-op QoS event ABI surface where publisher/subscription event init/fini,
+  event callback setters, support checks, and take-with-no-event pass in Docker;
+  this is explicitly not an event-production semantics claim;
 - a middleware-owned loaned-message lifecycle for introspection C/C++ where
   publisher borrow/publish-or-return and subscription take/return pass in
   Docker; this is explicitly a lifecycle/allocation claim, not zero-copy;
+- a real QUIC/TLS dependency gate using ngtcp2/GnuTLS `gtlsserver` and
+  `gtlsclient` that completes a QUIC v1 handshake, negotiates ALPN `h3`,
+  emits qlog, and transfers a payload in Docker; this is explicitly not yet
+  an integrated RMW QUIC backend claim;
+- a follow-on QUIC/FleetRMW wire-format gate that transfers a real
+  `fleetrmw.data_frame.v1` through ngtcp2/GnuTLS QUIC/TLS/H3 and decodes it
+  with the C++ `fleetrmw_frame_probe`, still scoped below integrated RMW
+  publish/take transport;
+- a Docker/netem QUIC/FleetRMW gate that repeats the frame transfer across two
+  containers after applying `tc netem` to the client interface, with qdisc
+  before/after counters and parsed ngtcp2 path telemetry;
+- a publish-side QUIC gateway slice in `rmw_fleetqox_cpp` where `rmw_publish`
+  posts the encoded FleetRMW frame through ngtcp2/GnuTLS QUIC/TLS/H3 and the
+  Docker gates verify the server received the same frame byte count, including
+  async enqueue/drain and burst-worker probes plus two-container `tc netem`
+  single-publish and async-burst runs with qdisc counters and ngtcp2 path
+  telemetry; this is subprocess-backed and not a full bidirectional production
+  QUIC backend;
 - an installed `rmw_fleetqox_cpp/capabilities.json` contract that marks the
   implementation `production_ready=false` and machine-scopes supported,
   partial, and unsupported ABI surfaces;

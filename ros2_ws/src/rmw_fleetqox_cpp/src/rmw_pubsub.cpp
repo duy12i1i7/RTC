@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include "rmw_fleetqox_cpp/data_frame.hpp"
+#include "rmw_fleetqox_cpp/quic_gateway_transport.hpp"
 #include "rmw_fleetqox_cpp/shared_memory_transport.hpp"
 
 #include "rcutils/allocator.h"
@@ -693,7 +694,9 @@ public:
       RMW_SET_ERROR_MSG("encoded FleetRMW frame is empty");
       return RMW_RET_INVALID_ARGUMENT;
     }
-    if (!shared_memory_only() && encoded_frame.size() > kMaxUdpPayloadBytes) {
+    const bool quic_gateway_enabled = quic_gateway_transport_.enabled();
+    const bool encoded_frame_exceeds_udp = encoded_frame.size() > kMaxUdpPayloadBytes;
+    if (!shared_memory_only() && encoded_frame_exceeds_udp && !quic_gateway_enabled) {
       RMW_SET_ERROR_MSG("encoded FleetRMW frame exceeds UDP loopback payload limit");
       return RMW_RET_UNSUPPORTED;
     }
@@ -709,7 +712,7 @@ public:
     const std::vector<sockaddr_in> targets =
       is_data_frame ? data_frame_targets(include_udp_local, qos, data_frame) :
       frame_targets(include_udp_local);
-    if (targets.empty() && !shared_memory_only()) {
+    if (targets.empty() && !shared_memory_only() && !quic_gateway_enabled) {
       RMW_SET_ERROR_MSG("socket transport has no local or peer target for frame");
       return RMW_RET_ERROR;
     }
@@ -718,7 +721,10 @@ public:
       if (shared_memory_active()) {
         send_ret = send_shared_memory_payload(encoded_frame);
       }
-      if (send_ret == RMW_RET_OK && !shared_memory_only()) {
+      if (send_ret == RMW_RET_OK && quic_gateway_enabled) {
+        send_ret = send_quic_gateway_payload(encoded_frame);
+      }
+      if (send_ret == RMW_RET_OK && !shared_memory_only() && !encoded_frame_exceeds_udp) {
         send_ret = send_payload_to_targets(encoded_frame, targets, "FleetRMW frame");
       }
       if (send_ret == RMW_RET_OK) {
@@ -1119,6 +1125,56 @@ public:
   const std::string & transport_mode() const
   {
     return transport_mode_;
+  }
+
+  std::uint64_t quic_gateway_frames_sent() const
+  {
+    return quic_gateway_transport_.frames_sent();
+  }
+
+  std::uint64_t quic_gateway_bytes_sent() const
+  {
+    return quic_gateway_transport_.bytes_sent();
+  }
+
+  std::uint64_t quic_gateway_frames_enqueued() const
+  {
+    return quic_gateway_transport_.frames_enqueued();
+  }
+
+  std::uint64_t quic_gateway_frames_failed() const
+  {
+    return quic_gateway_transport_.frames_failed();
+  }
+
+  std::uint64_t quic_gateway_frames_dropped() const
+  {
+    return quic_gateway_transport_.frames_dropped();
+  }
+
+  std::size_t quic_gateway_queue_depth() const
+  {
+    return quic_gateway_transport_.queue_depth();
+  }
+
+  std::size_t quic_gateway_max_queue_frames() const
+  {
+    return quic_gateway_transport_.max_queue_frames();
+  }
+
+  bool quic_gateway_async_enabled() const
+  {
+    return quic_gateway_transport_.async_enabled();
+  }
+
+  int quic_gateway_last_exit_code() const
+  {
+    return quic_gateway_transport_.last_exit_code();
+  }
+
+  std::string quic_gateway_uri() const
+  {
+    return quic_gateway_transport_.endpoint_uri();
   }
 
   std::uint64_t shared_memory_frames_sent() const
@@ -1590,6 +1646,15 @@ private:
       }
     }
     adaptive_peer_scores_.assign(peer_addresses_.size(), 0);
+    if (!quic_gateway_transport_.configure_from_environment()) {
+      init_error_ = quic_gateway_transport_.error();
+      ::close(fd_);
+      fd_ = -1;
+      return;
+    }
+    if (quic_gateway_transport_.enabled()) {
+      transport_mode_ = peer_addresses_.empty() ? "quic_gateway" : "udp_quic_gateway_hybrid";
+    }
 
     if (const char * local_transport = std::getenv("FLEETQOX_RMW_LOCAL_TRANSPORT");
       local_transport != nullptr && trim_copy(local_transport) == "shm")
@@ -1610,9 +1675,15 @@ private:
           [this](const std::string & payload) {handle_received_payload(payload);},
           unlink_owner))
       {
-        transport_mode_ = peer_addresses_.empty() ? "shm" : "shm_udp_hybrid";
+        if (quic_gateway_transport_.enabled()) {
+          transport_mode_ = peer_addresses_.empty() ?
+            "shm_quic_gateway_hybrid" : "shm_udp_quic_gateway_hybrid";
+        } else {
+          transport_mode_ = peer_addresses_.empty() ? "shm" : "shm_udp_hybrid";
+        }
       } else if (fallback_udp) {
-        transport_mode_ = "udp_fallback";
+        transport_mode_ = quic_gateway_transport_.enabled() ?
+          "udp_fallback_quic_gateway_hybrid" : "udp_fallback";
       } else {
         init_error_ = shared_memory_transport_.error();
         ::close(fd_);
@@ -1636,6 +1707,7 @@ private:
 
   void stop()
   {
+    quic_gateway_transport_.stop();
     shared_memory_transport_.stop();
     running_.store(false, std::memory_order_release);
     if (fd_ >= 0) {
@@ -1707,6 +1779,18 @@ private:
     return RMW_RET_OK;
   }
 
+  rmw_ret_t send_quic_gateway_payload(const std::string & payload)
+  {
+    if (!quic_gateway_transport_.send(payload)) {
+      const std::string error = quic_gateway_transport_.error();
+      RMW_SET_ERROR_MSG(error.empty() ?
+        "failed to send FleetRMW payload through QUIC gateway transport" :
+        error.c_str());
+      return RMW_RET_ERROR;
+    }
+    return RMW_RET_OK;
+  }
+
   void handle_received_payload(const std::string & encoded_frame)
   {
     frames_received_.fetch_add(1, std::memory_order_relaxed);
@@ -1753,6 +1837,7 @@ private:
   std::string init_error_;
   std::string bound_endpoint_;
   std::string transport_mode_{"udp"};
+  rmw_fleetqox_cpp::QuicGatewayTransport quic_gateway_transport_;
   rmw_fleetqox_cpp::SharedMemoryTransport shared_memory_transport_;
   std::string peer_policy_{"all"};
   std::vector<sockaddr_in> peer_addresses_;
@@ -3511,6 +3596,58 @@ const char * rmw_fleetqox_cpp_socket_bound_endpoint()
 const char * rmw_fleetqox_cpp_transport_mode()
 {
   return socket_transport().transport_mode().c_str();
+}
+
+std::uint64_t rmw_fleetqox_cpp_quic_gateway_frames_sent()
+{
+  return socket_transport().quic_gateway_frames_sent();
+}
+
+std::uint64_t rmw_fleetqox_cpp_quic_gateway_bytes_sent()
+{
+  return socket_transport().quic_gateway_bytes_sent();
+}
+
+std::uint64_t rmw_fleetqox_cpp_quic_gateway_frames_enqueued()
+{
+  return socket_transport().quic_gateway_frames_enqueued();
+}
+
+std::uint64_t rmw_fleetqox_cpp_quic_gateway_frames_failed()
+{
+  return socket_transport().quic_gateway_frames_failed();
+}
+
+std::uint64_t rmw_fleetqox_cpp_quic_gateway_frames_dropped()
+{
+  return socket_transport().quic_gateway_frames_dropped();
+}
+
+size_t rmw_fleetqox_cpp_quic_gateway_queue_depth()
+{
+  return socket_transport().quic_gateway_queue_depth();
+}
+
+size_t rmw_fleetqox_cpp_quic_gateway_max_queue_frames()
+{
+  return socket_transport().quic_gateway_max_queue_frames();
+}
+
+bool rmw_fleetqox_cpp_quic_gateway_async_enabled()
+{
+  return socket_transport().quic_gateway_async_enabled();
+}
+
+int rmw_fleetqox_cpp_quic_gateway_last_exit_code()
+{
+  return socket_transport().quic_gateway_last_exit_code();
+}
+
+const char * rmw_fleetqox_cpp_quic_gateway_uri()
+{
+  static thread_local std::string uri;
+  uri = socket_transport().quic_gateway_uri();
+  return uri.c_str();
 }
 
 std::uint64_t rmw_fleetqox_cpp_shared_memory_frames_sent()

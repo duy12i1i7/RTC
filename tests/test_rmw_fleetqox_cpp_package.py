@@ -33,6 +33,7 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertIn("fleetrmw_lifecycle_probe", cmake)
         self.assertIn("fleetrmw_serialized_pubsub_probe", cmake)
         self.assertIn("fleetrmw_qos_probe", cmake)
+        self.assertIn("fleetrmw_qos_event_probe", cmake)
         self.assertIn("fleetrmw_service_qos_probe", cmake)
         self.assertIn("fleetrmw_service_error_probe", cmake)
         self.assertIn("fleetrmw_reliability_probe", cmake)
@@ -41,6 +42,13 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertIn("fleetrmw_std_msgs_string_probe", cmake)
         self.assertIn("fleetrmw_geometry_twist_probe", cmake)
         self.assertIn("fleetrmw_cpp_typesupport_probe", cmake)
+        self.assertIn("src/quic_gateway_transport.cpp", cmake)
+        self.assertIn("fleetrmw_quic_gateway_publish_probe", cmake)
+        self.assertIn("fleetrmw_quic_gateway_burst_publish_probe", cmake)
+        self.assertIn("fleetrmw_allocation_probe", cmake)
+        self.assertIn("fleetrmw_quic_dependency_probe", cmake)
+        self.assertIn("PkgConfig::NGTCP2_GNUTLS", cmake)
+        self.assertIn("PkgConfig::GNUTLS", cmake)
         self.assertIn("fleetrmw_rclcpp_interprocess_probe", cmake)
         self.assertIn("fleetrmw_rcl_string_probe", cmake)
         self.assertIn("fleetrmw_rcl_graph_talker", cmake)
@@ -768,6 +776,9 @@ int main()
         self.assertIn("rmw_fleetqox_cpp_graph_subscription_count", pubsub_source)
         stub_source = (PKG / "src" / "rmw_stubs.cpp").read_text()
         self.assertIn("rmw_init_publisher_allocation", stub_source)
+        self.assertIn("publisher allocation is not from rmw_fleetqox_cpp", stub_source)
+        self.assertIn("g_publisher_allocations_initialized", stub_source)
+        self.assertIn("rmw_fleetqox_cpp_subscription_allocations_finalized", stub_source)
         self.assertIn("rmw_create_client", stub_source)
         self.assertIn("rmw_create_service", stub_source)
         self.assertIn("service_type_name_from_type_support", stub_source)
@@ -790,6 +801,9 @@ int main()
         self.assertIn("rmw_fleetqox_cpp_graph_register_client_endpoint", stub_source)
         self.assertIn("rmw_fleetqox_cpp_graph_service_count", stub_source)
         self.assertIn("rmw_qos_profile_check_compatible", stub_source)
+        self.assertIn("rmw_event_fini", stub_source)
+        self.assertIn("qos_event_type_supported", stub_source)
+        self.assertIn("g_qos_event_callbacks_set", stub_source)
         self.assertIn("rmw_take_dynamic_message", stub_source)
         self.assertIn("rmw_serialization_support_init", stub_source)
         self.assertIn("RMW_RET_UNSUPPORTED", stub_source)
@@ -1925,12 +1939,147 @@ int main()
         loan_probe = PKG / "src" / "loaned_message_probe.cpp"
         self.assertTrue(loan_probe.exists())
         self.assertIn("fleetrmw.loaned_message_probe.v1", loan_probe.read_text())
+        allocation_probe = PKG / "src" / "allocation_probe.cpp"
+        self.assertTrue(allocation_probe.exists())
+        allocation_probe_source = allocation_probe.read_text()
+        self.assertIn("fleetrmw.allocation_probe.v1", allocation_probe_source)
+        self.assertIn("rmw_init_publisher_allocation", allocation_probe_source)
+        self.assertIn("publish_take_with_allocation_ok", allocation_probe_source)
+        allocation_runner = ROOT / "scripts" / "run_rmw_docker_allocation_probe.py"
+        self.assertTrue(allocation_runner.exists())
+        allocation_runner_source = allocation_runner.read_text()
+        self.assertIn("fleetrmw.docker_allocation_probe.v1", allocation_runner_source)
+        self.assertIn("deep_preallocation", allocation_runner_source)
+        qos_event_probe = PKG / "src" / "qos_event_probe.cpp"
+        self.assertTrue(qos_event_probe.exists())
+        qos_event_probe_source = qos_event_probe.read_text()
+        self.assertIn("fleetrmw.qos_event_probe.v1", qos_event_probe_source)
+        self.assertIn("rmw_publisher_event_init", qos_event_probe_source)
+        self.assertIn("event_object_abi_ok", qos_event_probe_source)
+        qos_event_runner = ROOT / "scripts" / "run_rmw_docker_qos_event_probe.py"
+        self.assertTrue(qos_event_runner.exists())
+        qos_event_runner_source = qos_event_runner.read_text()
+        self.assertIn("fleetrmw.docker_qos_event_probe.v1", qos_event_runner_source)
+        self.assertIn("event_production", qos_event_runner_source)
         loan_runner = ROOT / "scripts" / "run_rmw_docker_loaned_message_probe.py"
         self.assertTrue(loan_runner.exists())
         self.assertIn("zero_copy_claim_allowed", loan_runner.read_text())
+        quic_dependency_probe = PKG / "src" / "quic_dependency_probe.cpp"
+        self.assertTrue(quic_dependency_probe.exists())
+        quic_dependency_source = quic_dependency_probe.read_text()
+        self.assertIn("fleetrmw.quic_dependency_probe.v1", quic_dependency_source)
+        self.assertIn("ngtcp2_is_supported_version", quic_dependency_source)
+        self.assertIn("ngtcp2_crypto_gnutls_from_ngtcp2_level", quic_dependency_source)
+        quic_runner = ROOT / "scripts" / "run_rmw_docker_quic_tls_probe.py"
+        self.assertTrue(quic_runner.exists())
+        quic_runner_source = quic_runner.read_text()
+        self.assertIn("fleetrmw.docker_quic_tls_probe.v1", quic_runner_source)
+        self.assertIn("gtlsclient", quic_runner_source)
+        self.assertIn("gtlsserver", quic_runner_source)
+        self.assertIn("rmw_integrated_backend", quic_runner_source)
+        quic_frame_runner = ROOT / "scripts" / "run_rmw_docker_quic_fleet_frame_probe.py"
+        self.assertTrue(quic_frame_runner.exists())
+        quic_frame_runner_source = quic_frame_runner.read_text()
+        self.assertIn("fleetrmw.docker_quic_fleet_frame_probe.v1", quic_frame_runner_source)
+        self.assertIn("fleetrmw.data_frame.v1", quic_frame_runner_source)
+        self.assertIn("fleetrmw_frame_probe", quic_frame_runner_source)
+        self.assertIn("rmw_integrated_backend", quic_frame_runner_source)
+        quic_gateway_header = PKG / "include" / "rmw_fleetqox_cpp" / "quic_gateway_transport.hpp"
+        quic_gateway_source = PKG / "src" / "quic_gateway_transport.cpp"
+        quic_gateway_probe = PKG / "src" / "quic_gateway_publish_probe.cpp"
+        quic_gateway_burst_probe = PKG / "src" / "quic_gateway_burst_publish_probe.cpp"
+        self.assertTrue(quic_gateway_header.exists())
+        self.assertTrue(quic_gateway_source.exists())
+        self.assertTrue(quic_gateway_probe.exists())
+        self.assertTrue(quic_gateway_burst_probe.exists())
+        self.assertIn("FLEETQOX_RMW_QUIC_GATEWAY", quic_gateway_source.read_text())
+        self.assertIn("FLEETQOX_RMW_QUIC_GATEWAY_ASYNC", quic_gateway_source.read_text())
+        self.assertIn("frames_enqueued", quic_gateway_source.read_text())
+        self.assertIn("std::condition_variable", quic_gateway_header.read_text())
+        self.assertIn("execvp", quic_gateway_source.read_text())
+        self.assertIn("fleetrmw.quic_gateway_publish_probe.v1", quic_gateway_probe.read_text())
+        self.assertIn("publish_returned_after_enqueue", quic_gateway_probe.read_text())
+        self.assertIn(
+            "fleetrmw.quic_gateway_burst_publish_probe.v1",
+            quic_gateway_burst_probe.read_text(),
+        )
+        self.assertIn("FLEETQOX_RMW_QUIC_GATEWAY_BURST_COUNT", quic_gateway_burst_probe.read_text())
+        quic_gateway_runner = ROOT / "scripts" / "run_rmw_docker_quic_gateway_publish_probe.py"
+        self.assertTrue(quic_gateway_runner.exists())
+        quic_gateway_runner_source = quic_gateway_runner.read_text()
+        self.assertIn("fleetrmw.docker_quic_gateway_publish_probe.v1", quic_gateway_runner_source)
+        self.assertIn("server_payload_matches_rmw_frame_bytes", quic_gateway_runner_source)
+        self.assertIn("async_worker_queue_observed", quic_gateway_runner_source)
+        self.assertIn("full_bidirectional_quic_backend", quic_gateway_runner_source)
+        quic_gateway_async_runner = (
+            ROOT / "scripts" / "run_rmw_docker_quic_gateway_async_publish_probe.py"
+        )
+        self.assertTrue(quic_gateway_async_runner.exists())
+        quic_gateway_async_source = quic_gateway_async_runner.read_text()
+        self.assertIn(
+            "fleetrmw.docker_quic_gateway_async_publish_probe.v1",
+            quic_gateway_async_source,
+        )
+        self.assertIn("async_gateway=True", quic_gateway_async_source)
+        quic_gateway_async_burst_runner = (
+            ROOT / "scripts" / "run_rmw_docker_quic_gateway_async_burst_probe.py"
+        )
+        self.assertTrue(quic_gateway_async_burst_runner.exists())
+        quic_gateway_async_burst_source = quic_gateway_async_burst_runner.read_text()
+        self.assertIn(
+            "fleetrmw.docker_quic_gateway_async_burst_probe.v1",
+            quic_gateway_async_burst_source,
+        )
+        self.assertIn(
+            "fleetrmw_quic_gateway_burst_publish_probe",
+            quic_gateway_async_burst_source,
+        )
+        quic_gateway_netem_runner = (
+            ROOT / "scripts" / "run_rmw_docker_quic_gateway_netem_publish_probe.py"
+        )
+        self.assertTrue(quic_gateway_netem_runner.exists())
+        quic_gateway_netem_source = quic_gateway_netem_runner.read_text()
+        self.assertIn(
+            "fleetrmw.docker_quic_gateway_netem_publish_probe.v1",
+            quic_gateway_netem_source,
+        )
+        self.assertIn("FLEETQOX_RMW_QUIC_GATEWAY", quic_gateway_netem_source)
+        self.assertIn("tc qdisc replace dev eth0 root netem", quic_gateway_netem_source)
+        self.assertIn("path_telemetry", quic_gateway_netem_source)
+        self.assertIn("async_worker_queue_observed", quic_gateway_netem_source)
+        self.assertIn("server_payload_matches_rmw_frame_bytes", quic_gateway_netem_source)
+        quic_gateway_netem_async_burst_runner = (
+            ROOT / "scripts" / "run_rmw_docker_quic_gateway_netem_async_burst_probe.py"
+        )
+        self.assertTrue(quic_gateway_netem_async_burst_runner.exists())
+        quic_gateway_netem_async_burst_source = (
+            quic_gateway_netem_async_burst_runner.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.docker_quic_gateway_netem_async_burst_probe.v1",
+            quic_gateway_netem_async_burst_source,
+        )
+        self.assertIn(
+            "fleetrmw_quic_gateway_burst_publish_probe",
+            quic_gateway_netem_async_burst_source,
+        )
+        self.assertIn("async_gateway=True", quic_gateway_netem_async_burst_source)
+        quic_netem_runner = ROOT / "scripts" / "run_rmw_docker_quic_netem_frame_probe.py"
+        self.assertTrue(quic_netem_runner.exists())
+        quic_netem_source = quic_netem_runner.read_text()
+        self.assertIn("fleetrmw.docker_quic_netem_frame_probe.v1", quic_netem_source)
+        self.assertIn("tc qdisc replace dev eth0 root netem", quic_netem_source)
+        self.assertIn("fleetrmw_frame_probe", quic_netem_source)
+        self.assertIn("rmw_integrated_backend", quic_netem_source)
+        self.assertIn("parse_ngtcp2_path_telemetry", quic_netem_source)
+        self.assertIn("path_telemetry", quic_netem_source)
+        self.assertIn("client_netem_status_after", quic_netem_source)
         dockerfile = (ROOT / "external" / "rmw-netem" / "Dockerfile").read_text()
         self.assertIn("libns3-dev", dockerfile)
         self.assertIn("libgsl-dev", dockerfile)
+        self.assertIn("libgnutls28-dev", dockerfile)
+        self.assertIn("ngtcp2-client", dockerfile)
+        self.assertIn("ngtcp2-server", dockerfile)
 
         matched_script = ROOT / "scripts" / "run_rmw_docker_router_matched_multi_topic_probe.py"
         self.assertTrue(matched_script.exists())
@@ -1986,16 +2135,13 @@ int main()
             "fleetrmw.introspection_c.v1",
         )
         self.assertTrue(manifest["supported"]["source_sequence_ack_nack_repair"])
-        for capability in (
-            "publisher_events",
-            "content_filtered_topics",
-            "dynamic_messages",
-        ):
+        for capability in ("content_filtered_topics", "dynamic_messages"):
             self.assertIn(capability, manifest["unsupported"])
         self.assertTrue(manifest["supported"]["udp_network_flow_endpoints"])
         self.assertTrue(
             manifest["supported"]["new_message_request_response_callbacks"]
         )
+        self.assertTrue(manifest["supported"]["qos_event_object_callback_noop_abi"])
         self.assertTrue(manifest["supported"]["same_host_posix_shared_memory_pubsub"])
         self.assertTrue(manifest["supported"]["shared_memory_to_udp_fallback"])
         self.assertTrue(manifest["supported"]["shared_memory_udp_remote_hybrid"])
@@ -2008,17 +2154,71 @@ int main()
                 "bounded_standalone_serialization_size_introspection_c_cpp"
             ]
         )
+        self.assertTrue(manifest["supported"]["publisher_subscription_noop_allocations"])
+        self.assertTrue(
+            manifest["supported"]["docker_netem_quic_path_telemetry_ngtcp2_logs"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "quic_gateway_publish_path_subprocess_ngtcp2_gnutls"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_netem_quic_gateway_publish_path_ngtcp2_gnutls"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_netem_quic_gateway_async_burst_path_ngtcp2_gnutls"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "quic_gateway_async_publish_worker_subprocess_ngtcp2_gnutls"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "quic_gateway_async_burst_worker_subprocess_ngtcp2_gnutls"
+            ]
+        )
         self.assertNotIn("network_flow_endpoints", manifest["unsupported"])
+        self.assertNotIn("publisher_allocations", manifest["unsupported"])
+        self.assertNotIn("subscription_allocations", manifest["unsupported"])
+        self.assertNotIn("publisher_events", manifest["unsupported"])
+        self.assertNotIn("subscription_events", manifest["unsupported"])
         self.assertNotIn("event_callbacks", manifest["unsupported"])
-        self.assertIn("qos_event_callbacks", manifest["unsupported"])
+        self.assertNotIn("qos_event_callbacks", manifest["unsupported"])
+        self.assertIn("qos_event_production", manifest["unsupported"])
         self.assertNotIn("standalone_serialization_size", manifest["unsupported"])
         self.assertIn(
             "unbounded_standalone_serialization_size", manifest["unsupported"]
         )
+        self.assertIn(
+            "full_bidirectional_integrated_quic_transport_backend",
+            manifest["unsupported"],
+        )
+        self.assertIn("production_quic_transport_backend", manifest["unsupported"])
+        self.assertIn("integrated_quic_path_telemetry", manifest["unsupported"])
+        self.assertNotIn("integrated_quic_transport_backend", manifest["unsupported"])
+        self.assertNotIn("quic_path_telemetry", manifest["unsupported"])
         claims = manifest["claim_boundaries"]
         self.assertTrue(claims["docker_two_container_shared_memory_100kb"])
         self.assertTrue(claims["docker_shared_memory_udp_hybrid_dedup"])
+        self.assertTrue(claims["docker_publisher_subscription_noop_allocation_lifecycle"])
+        self.assertFalse(claims["deep_preallocation_claim"])
+        self.assertTrue(claims["docker_qos_event_noop_abi"])
+        self.assertFalse(claims["qos_event_production_claim"])
         self.assertTrue(claims["docker_loaned_message_lifecycle_c_cpp"])
+        self.assertTrue(claims["docker_netem_ngtcp2_quic_path_telemetry"])
+        self.assertTrue(claims["docker_ngtcp2_quic_gateway_publish_path_probe"])
+        self.assertTrue(claims["docker_ngtcp2_quic_gateway_async_publish_path_probe"])
+        self.assertTrue(claims["docker_ngtcp2_quic_gateway_async_burst_path_probe"])
+        self.assertTrue(claims["docker_netem_ngtcp2_quic_gateway_publish_path_probe"])
+        self.assertTrue(claims["docker_netem_ngtcp2_quic_gateway_async_burst_path_probe"])
+        self.assertFalse(claims["production_quic_backend_claim"])
+        self.assertFalse(claims["full_bidirectional_quic_backend_claim"])
         self.assertFalse(claims["zero_copy_loaned_message_claim"])
         self.assertTrue(claims["native_ns3_wifi_mobility_matrix_8_16_32_3seed"])
         self.assertTrue(claims["native_ns3_wifi_roaming_matrix_8_16_32_3seed"])

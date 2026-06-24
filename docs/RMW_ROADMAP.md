@@ -817,8 +817,9 @@ Implemented first:
   `rmw_subscription_t *` handles and implementation-data pointers used by
   `rclpy`;
 - optional RMW ABI stubs for loader-clean unsupported surfaces including
-  loaned messages, events, dynamic messages,
-  network-flow endpoints, callbacks, and dynamic serialization support.
+  loaned messages, no-op publisher/subscription allocations, no-op QoS event
+  objects/callback setters, dynamic messages, network-flow endpoints, callbacks,
+  and dynamic serialization support.
 - standalone `rmw_serialize`/`rmw_deserialize` backed by the native
   introspection-C codec, with an explicit `fleetrmw.introspection_c.v1`
   format identifier and a passing String round-trip probe.
@@ -877,8 +878,23 @@ Add:
 
 - SHM same-host: first local-only POSIX ring and UDP-fallback gate complete;
 - hybrid SHM-local plus UDP-remote peers: first router/de-dup gate complete;
-- UDP/QUIC LAN;
-- QUIC WAN;
+- QUIC/TLS dependency gate: first ngtcp2/GnuTLS QUIC v1 + ALPN `h3` payload
+  probe complete; this proves the backend dependency and handshake path, not
+  the integrated RMW transport;
+- QUIC/FleetRMW frame gate: first `fleetrmw.data_frame.v1` transfer through
+  ngtcp2/GnuTLS QUIC/TLS/H3 and C++ decode complete; this is still pre-RMW
+  publish/take integration;
+- Docker/netem QUIC frame gate: first two-container ngtcp2/GnuTLS
+  QUIC/TLS/H3 transfer of `fleetrmw.data_frame.v1` under verified `tc netem`
+  complete, with qdisc before/after counters and parsed ngtcp2 path telemetry;
+- publish-side QUIC gateway: first `rmw_publish` path through
+  ngtcp2/GnuTLS `gtlsclient --data` complete, with server-side body byte-count
+  verification, async enqueue/drain and burst telemetry, plus two-container
+  Docker/netem single-publish and async-burst variants with qdisc counters and
+  parsed ngtcp2 telemetry; this is subprocess-backed and not full-duplex
+  production QUIC;
+- integrated UDP/QUIC LAN;
+- integrated QUIC WAN;
 - WebRTC/SVC video path;
 - low-priority bulk path;
 - per-plane admission control.

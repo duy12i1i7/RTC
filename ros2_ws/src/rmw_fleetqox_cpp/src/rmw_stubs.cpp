@@ -141,6 +141,13 @@ struct FleetQoxServiceData
   std::map<std::string, std::string> pending_response_clients;
 };
 
+struct FleetQoxEventData
+{
+  rmw_event_type_t event_type;
+  rmw_event_callback_t callback;
+  const void * user_data;
+};
+
 std::mutex g_service_graph_mutex;
 std::vector<FleetQoxServiceData *> g_service_graph_endpoints;
 std::mutex g_service_bus_mutex;
@@ -151,6 +158,13 @@ std::atomic<bool> g_service_graph_renewal_started{false};
 std::atomic<std::uint64_t> g_next_service_endpoint_id{1};
 std::atomic<std::uint64_t> g_next_client_endpoint_id{1};
 std::atomic<std::uint64_t> g_service_expired_frames_dropped{0};
+std::atomic<std::uint64_t> g_publisher_allocations_initialized{0};
+std::atomic<std::uint64_t> g_publisher_allocations_finalized{0};
+std::atomic<std::uint64_t> g_subscription_allocations_initialized{0};
+std::atomic<std::uint64_t> g_subscription_allocations_finalized{0};
+std::atomic<std::uint64_t> g_qos_events_initialized{0};
+std::atomic<std::uint64_t> g_qos_events_finalized{0};
+std::atomic<std::uint64_t> g_qos_event_callbacks_set{0};
 
 bool identifier_matches(const char * identifier)
 {
@@ -206,6 +220,59 @@ rmw_ret_t unsupported(const char * message)
 {
   RMW_SET_ERROR_MSG(message);
   return RMW_RET_UNSUPPORTED;
+}
+
+bool publisher_event_type_supported(rmw_event_type_t event_type)
+{
+  return event_type == RMW_EVENT_LIVELINESS_LOST ||
+         event_type == RMW_EVENT_OFFERED_DEADLINE_MISSED ||
+         event_type == RMW_EVENT_OFFERED_QOS_INCOMPATIBLE ||
+         event_type == RMW_EVENT_PUBLISHER_INCOMPATIBLE_TYPE ||
+         event_type == RMW_EVENT_PUBLICATION_MATCHED;
+}
+
+bool subscription_event_type_supported(rmw_event_type_t event_type)
+{
+  return event_type == RMW_EVENT_LIVELINESS_CHANGED ||
+         event_type == RMW_EVENT_REQUESTED_DEADLINE_MISSED ||
+         event_type == RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE ||
+         event_type == RMW_EVENT_MESSAGE_LOST ||
+         event_type == RMW_EVENT_SUBSCRIPTION_INCOMPATIBLE_TYPE ||
+         event_type == RMW_EVENT_SUBSCRIPTION_MATCHED;
+}
+
+bool qos_event_type_supported(rmw_event_type_t event_type)
+{
+  return publisher_event_type_supported(event_type) ||
+         subscription_event_type_supported(event_type);
+}
+
+FleetQoxEventData * event_data(const rmw_event_t * event)
+{
+  return event == nullptr ? nullptr : static_cast<FleetQoxEventData *>(event->data);
+}
+
+rmw_ret_t init_event(rmw_event_t * rmw_event, rmw_event_type_t event_type)
+{
+  if (!qos_event_type_supported(event_type)) {
+    return unsupported("QoS event type is not supported by rmw_fleetqox_cpp");
+  }
+  rcutils_allocator_t allocator = rcutils_get_default_allocator();
+  if (!rcutils_allocator_is_valid(&allocator)) {
+    RMW_SET_ERROR_MSG("default allocator is invalid");
+    return RMW_RET_ERROR;
+  }
+  void * memory = allocator.allocate(sizeof(FleetQoxEventData), allocator.state);
+  if (memory == nullptr) {
+    RMW_SET_ERROR_MSG("failed to allocate FleetRMW event data");
+    return RMW_RET_BAD_ALLOC;
+  }
+  auto * data = new (memory) FleetQoxEventData{event_type, nullptr, nullptr};
+  rmw_event->implementation_identifier = kIdentifier;
+  rmw_event->data = data;
+  rmw_event->event_type = event_type;
+  g_qos_events_initialized.fetch_add(1, std::memory_order_relaxed);
+  return RMW_RET_OK;
 }
 
 rmw_ret_t validate_node(const rmw_node_t * node)
@@ -956,7 +1023,10 @@ rmw_ret_t rmw_init_publisher_allocation(
     RMW_SET_ERROR_MSG("publisher allocation arguments must be non-null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  return unsupported("publisher allocations are not supported by rmw_fleetqox_cpp yet");
+  allocation->implementation_identifier = kIdentifier;
+  allocation->data = nullptr;
+  g_publisher_allocations_initialized.fetch_add(1, std::memory_order_relaxed);
+  return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_fini_publisher_allocation(rmw_publisher_allocation_t * allocation)
@@ -965,6 +1035,13 @@ rmw_ret_t rmw_fini_publisher_allocation(rmw_publisher_allocation_t * allocation)
     RMW_SET_ERROR_MSG("publisher allocation is null");
     return RMW_RET_INVALID_ARGUMENT;
   }
+  if (!identifier_matches(allocation->implementation_identifier)) {
+    RMW_SET_ERROR_MSG("publisher allocation is not from rmw_fleetqox_cpp");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
+  allocation->implementation_identifier = nullptr;
+  allocation->data = nullptr;
+  g_publisher_allocations_finalized.fetch_add(1, std::memory_order_relaxed);
   return RMW_RET_OK;
 }
 
@@ -1025,7 +1102,6 @@ rmw_ret_t rmw_publisher_event_init(
   const rmw_publisher_t * publisher,
   rmw_event_type_t event_type)
 {
-  (void)event_type;
   if (rmw_event == nullptr) {
     RMW_SET_ERROR_MSG("publisher event is null");
     return RMW_RET_INVALID_ARGUMENT;
@@ -1034,7 +1110,10 @@ rmw_ret_t rmw_publisher_event_init(
   if (ret != RMW_RET_OK) {
     return ret;
   }
-  return unsupported("publisher events are not supported by rmw_fleetqox_cpp yet");
+  if (!publisher_event_type_supported(event_type)) {
+    return unsupported("publisher QoS event type is not supported by rmw_fleetqox_cpp");
+  }
+  return init_event(rmw_event, event_type);
 }
 
 rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t * publisher)
@@ -1171,7 +1250,10 @@ rmw_ret_t rmw_init_subscription_allocation(
     RMW_SET_ERROR_MSG("subscription allocation arguments must be non-null");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  return unsupported("subscription allocations are not supported by rmw_fleetqox_cpp yet");
+  allocation->implementation_identifier = kIdentifier;
+  allocation->data = nullptr;
+  g_subscription_allocations_initialized.fetch_add(1, std::memory_order_relaxed);
+  return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_fini_subscription_allocation(rmw_subscription_allocation_t * allocation)
@@ -1180,6 +1262,13 @@ rmw_ret_t rmw_fini_subscription_allocation(rmw_subscription_allocation_t * alloc
     RMW_SET_ERROR_MSG("subscription allocation is null");
     return RMW_RET_INVALID_ARGUMENT;
   }
+  if (!identifier_matches(allocation->implementation_identifier)) {
+    RMW_SET_ERROR_MSG("subscription allocation is not from rmw_fleetqox_cpp");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
+  allocation->implementation_identifier = nullptr;
+  allocation->data = nullptr;
+  g_subscription_allocations_finalized.fetch_add(1, std::memory_order_relaxed);
   return RMW_RET_OK;
 }
 
@@ -1188,7 +1277,6 @@ rmw_ret_t rmw_subscription_event_init(
   const rmw_subscription_t * subscription,
   rmw_event_type_t event_type)
 {
-  (void)event_type;
   if (rmw_event == nullptr) {
     RMW_SET_ERROR_MSG("subscription event is null");
     return RMW_RET_INVALID_ARGUMENT;
@@ -1197,7 +1285,10 @@ rmw_ret_t rmw_subscription_event_init(
   if (ret != RMW_RET_OK) {
     return ret;
   }
-  return unsupported("subscription events are not supported by rmw_fleetqox_cpp yet");
+  if (!subscription_event_type_supported(event_type)) {
+    return unsupported("subscription QoS event type is not supported by rmw_fleetqox_cpp");
+  }
+  return init_event(rmw_event, event_type);
 }
 
 rmw_ret_t rmw_subscription_set_content_filter(
@@ -1783,14 +1874,40 @@ rmw_ret_t rmw_take_event(const rmw_event_t * event_handle, void * event_info, bo
     RMW_SET_ERROR_MSG("event is not from rmw_fleetqox_cpp");
     return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
   }
+  if (event_data(event_handle) == nullptr || !qos_event_type_supported(event_handle->event_type)) {
+    RMW_SET_ERROR_MSG("event data is invalid");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
   *taken = false;
-  return unsupported("events are not supported by rmw_fleetqox_cpp yet");
+  return RMW_RET_OK;
 }
 
 bool rmw_event_type_is_supported(rmw_event_type_t rmw_event_type)
 {
-  (void)rmw_event_type;
-  return false;
+  return qos_event_type_supported(rmw_event_type);
+}
+
+rmw_ret_t rmw_event_fini(rmw_event_t * event)
+{
+  if (event == nullptr) {
+    RMW_SET_ERROR_MSG("event is null");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  if (!identifier_matches(event->implementation_identifier)) {
+    RMW_SET_ERROR_MSG("event is not from rmw_fleetqox_cpp");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
+  FleetQoxEventData * data = event_data(event);
+  if (data != nullptr) {
+    rcutils_allocator_t allocator = rcutils_get_default_allocator();
+    data->~FleetQoxEventData();
+    allocator.deallocate(data, allocator.state);
+  }
+  event->implementation_identifier = nullptr;
+  event->data = nullptr;
+  event->event_type = RMW_EVENT_INVALID;
+  g_qos_events_finalized.fetch_add(1, std::memory_order_relaxed);
+  return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_get_gid_for_client(const rmw_client_t * client, rmw_gid_t * gid)
@@ -2054,8 +2171,6 @@ rmw_ret_t rmw_event_set_callback(
   rmw_event_callback_t callback,
   const void * user_data)
 {
-  (void)callback;
-  (void)user_data;
   if (event == nullptr) {
     RMW_SET_ERROR_MSG("event is null");
     return RMW_RET_INVALID_ARGUMENT;
@@ -2064,7 +2179,15 @@ rmw_ret_t rmw_event_set_callback(
     RMW_SET_ERROR_MSG("event is not from rmw_fleetqox_cpp");
     return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
   }
-  return unsupported("event callbacks are not supported by rmw_fleetqox_cpp yet");
+  FleetQoxEventData * data = event_data(event);
+  if (data == nullptr) {
+    RMW_SET_ERROR_MSG("event data is null");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  data->callback = callback;
+  data->user_data = user_data;
+  g_qos_event_callbacks_set.fetch_add(1, std::memory_order_relaxed);
+  return RMW_RET_OK;
 }
 
 bool rmw_feature_supported(rmw_feature_t feature)
@@ -2114,6 +2237,41 @@ rmw_ret_t rmw_serialization_support_init(
     return RMW_RET_INVALID_ARGUMENT;
   }
   return unsupported("dynamic serialization support is not supported by rmw_fleetqox_cpp yet");
+}
+
+std::uint64_t rmw_fleetqox_cpp_publisher_allocations_initialized()
+{
+  return g_publisher_allocations_initialized.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_publisher_allocations_finalized()
+{
+  return g_publisher_allocations_finalized.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_subscription_allocations_initialized()
+{
+  return g_subscription_allocations_initialized.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_subscription_allocations_finalized()
+{
+  return g_subscription_allocations_finalized.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_qos_events_initialized()
+{
+  return g_qos_events_initialized.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_qos_events_finalized()
+{
+  return g_qos_events_finalized.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_qos_event_callbacks_set()
+{
+  return g_qos_event_callbacks_set.load(std::memory_order_relaxed);
 }
 
 }  // extern "C"

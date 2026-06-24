@@ -17,6 +17,16 @@ from scripts.run_rmw_docker_fleet_repair_capacity_frontier import (
 from scripts.run_rmw_docker_router_matched_multi_topic_probe import (
     reliable_timing_for_netem,
 )
+from scripts.run_rmw_docker_quic_netem_frame_probe import (
+    parse_netem_qdisc_counters,
+    parse_ngtcp2_path_telemetry,
+)
+from scripts.run_rmw_docker_quic_gateway_publish_probe import (
+    parse_server_body_bytes,
+    parse_server_body_sizes,
+    parse_server_content_length,
+    parse_server_content_lengths,
+)
 from scripts.run_ns3_docker_fleet_matrix import parse_csv_summary
 
 
@@ -50,6 +60,72 @@ class FleetScaleReportRunnersTest(unittest.TestCase):
         )
         self.assertEqual(disabled_timeout, 0)
         self.assertEqual(disabled_linger, 0.5)
+
+    def test_quic_netem_telemetry_parser_tracks_ngtcp2_path_state(self) -> None:
+        telemetry = parse_ngtcp2_path_telemetry(
+            "Sent packet: local=[172.18.0.3]:35048 remote=[172.18.0.2]:4445 "
+            "ecn=0x2 1200 bytes\n"
+            "Received packet: local=[172.18.0.3]:35048 remote=[172.18.0.2]:4445 "
+            "ecn=0x2 1200 bytes\n"
+            "I00000049 conn pkt tx pkn=1 type=1RTT len=64\n"
+            "I00000049 conn pkt rx pkn=0 type=Initial len=119\n"
+            "I00000049 conn rcv latest_rtt=49 min_rtt=49 smoothed_rtt=49 "
+            "rttvar=24 ack_delay=0\n"
+            "I00000049 conn rcv pkn=0 acked, slow start cwnd=15720\n"
+            "I00000049 conn con path is ECN capable\n"
+            "I00000049 conn con the negotiated version is 0x00000001\n",
+            "I00000072 conn rcv latest_rtt=53 min_rtt=20 smoothed_rtt=50 "
+            "rttvar=12 target_cwnd=226120 max_delivery_rate_sec=1048576\n",
+        )
+
+        self.assertTrue(telemetry["quic_v1_negotiated_observed"])
+        self.assertTrue(telemetry["ecn_capable_observed"])
+        self.assertEqual(telemetry["sent_packet_log_count"], 1)
+        self.assertEqual(telemetry["received_packet_log_count"], 1)
+        self.assertEqual(telemetry["sent_packet_bytes_logged"], 1200)
+        self.assertEqual(telemetry["packet_tx_log_count"], 1)
+        self.assertEqual(telemetry["packet_rx_log_count"], 1)
+        self.assertEqual(telemetry["rtt_raw"]["latest"]["sample_count"], 2)
+        self.assertEqual(telemetry["rtt_raw"]["latest"]["max"], 53)
+        self.assertEqual(telemetry["rtt_raw"]["min"]["min"], 20)
+        self.assertEqual(telemetry["congestion_raw"]["cwnd_bytes"]["last"], 15720)
+        self.assertEqual(
+            telemetry["congestion_raw"]["target_cwnd_bytes"]["last"],
+            226120,
+        )
+        self.assertEqual(
+            telemetry["congestion_raw"]["max_delivery_rate_per_s"]["last"],
+            1048576,
+        )
+
+    def test_netem_qdisc_counter_parser_reads_before_after_snapshots(self) -> None:
+        counters = parse_netem_qdisc_counters(
+            "qdisc netem 8002: root refcnt 13 limit 1000 delay 20ms  5ms\n"
+            " Sent 8400 bytes 7 pkt (dropped 1, overlimits 2 requeues 3)\n"
+            " backlog 120b 1p requeues 4\n"
+        )
+
+        self.assertEqual(counters["sent_bytes"], 8400)
+        self.assertEqual(counters["sent_packets"], 7)
+        self.assertEqual(counters["dropped_packets"], 1)
+        self.assertEqual(counters["overlimits"], 2)
+        self.assertEqual(counters["requeues"], 3)
+        self.assertEqual(counters["backlog_bytes"], 120)
+        self.assertEqual(counters["backlog_packets"], 1)
+        self.assertEqual(counters["backlog_requeues"], 4)
+
+    def test_quic_gateway_server_log_parser_tracks_uploaded_body(self) -> None:
+        server_log = (
+            "http: stream 0x0 [content-length: 536]\n"
+            "http: stream 0x0 body 536 bytes\n"
+            "http: stream 0x4 [content-length: 17]\n"
+            "http: stream 0x4 body 17 bytes\n"
+        )
+
+        self.assertEqual(parse_server_content_length(server_log), 536)
+        self.assertEqual(parse_server_body_bytes(server_log), 536)
+        self.assertEqual(parse_server_content_lengths(server_log), [536, 17])
+        self.assertEqual(parse_server_body_sizes(server_log), [536, 17])
 
     def test_frontier_aggregate_tracks_admission_monotonicity(self) -> None:
         rows = [

@@ -102,6 +102,18 @@ subscription take/return, endpoint capability flags, and both type-support
 paths. Subscription take still deserializes into the loaned object, so the
 machine-readable zero-copy claim remains false.
 
+The publisher/subscription allocation ABI slice is complete as a no-op
+middleware allocation lifecycle. `rmw_init_*_allocation` and
+`rmw_fini_*_allocation` now set/check the FleetRMW identifier, keep `data=null`,
+and Docker verifies that serialized publish/take accepts allocation pointers.
+The machine-readable deep-preallocation claim remains false.
+
+The QoS event ABI slice is complete as a no-op event-object surface.
+Publisher/subscription event init/fini, `rmw_event_type_is_supported`,
+callback setters, and `rmw_take_event` returning OK with `taken=false` are
+covered by Docker. Event production and event readiness remain unsupported and
+machine-readable.
+
 The bounded standalone serialization-size slice is complete:
 `rmw_get_serialized_message_size` recursively computes exact sizes for
 statically bounded introspection C/C++ messages with overflow checks. The
@@ -164,7 +176,39 @@ and its CI assertion.
   router; the router forwards one valid frame, the subscriber takes one
   payload, records `duplicate_data_frames_deduped=1`, and has zero SHM
   overwrites. QUIC remains separate.
-- Add UDP/QUIC LAN and QUIC WAN transports with explicit path telemetry.
+- The first real QUIC/TLS dependency gate is complete at the transport
+  boundary: Docker now carries ngtcp2/GnuTLS tooling, and
+  `run_rmw_docker_quic_tls_probe.py` verifies a QUIC v1 TLS handshake, ALPN
+  `h3`, qlog emission, and payload download through `gtlsserver`/`gtlsclient`.
+  This is not an integrated RMW QUIC backend claim.
+- The follow-on QUIC/FleetRMW frame gate sends a real
+  `fleetrmw.data_frame.v1` through the same QUIC/TLS/H3 path and requires the
+  downloaded bytes to decode with `fleetrmw_frame_probe`. This proves the
+  FleetRMW wire format can survive the real QUIC path, still not RMW
+  publish/take integration.
+- The Docker/netem QUIC frame gate extends that proof across two containers on
+  a Docker network. The client container applies `tc netem` to `eth0`, fetches
+  the FleetRMW frame over ngtcp2/GnuTLS QUIC/TLS/H3, and the received bytes are
+  decoded by the C++ frame probe. The same gate now records qdisc snapshots
+  before and after the transfer and requires ngtcp2 path telemetry from client
+  and server logs, including packet-log counts, RTT samples, congestion-window
+  samples where emitted, QUIC v1 negotiation, and ECN-capable evidence.
+- The first publish-side QUIC gateway slice is complete. `rmw_publish` can be
+  configured with `FLEETQOX_RMW_REMOTE_TRANSPORT=quic_gateway` and
+  `FLEETQOX_RMW_QUIC_GATEWAY=host:port`; it writes the encoded FleetRMW frame
+  to ngtcp2/GnuTLS `gtlsclient --data` and POSTs it over QUIC/TLS/H3. The
+  Docker gate verifies QUIC v1, ALPN `h3`, qlog emission, `rmw_publish` success,
+  and that `gtlsserver` received a body/content-length matching the RMW frame
+  bytes. The async worker variants add bounded enqueue/drain and burst telemetry
+  so `rmw_publish` can return after queueing while the worker completes real
+  QUIC/TLS/H3 uploads. The two-container Docker/netem variant repeats the same
+  `rmw_publish` upload through a Docker network after applying `tc netem` on the
+  client, records qdisc before/after counters, and requires parsed ngtcp2 path
+  telemetry; the async-burst netem variant extends that proof to multiple
+  queued uploads and aggregate server body-byte validation under the same netem
+  path. This remains subprocess-backed and publish-side only.
+- Add the integrated UDP/QUIC LAN and QUIC WAN RMW transports with explicit
+  path telemetry.
 - Add WebRTC/SVC or equivalent video/operator-observation path semantics.
 - Add low-priority bulk-data path and per-plane admission control.
 - Make transport selection choose between these planes using measured QoS/QoE,

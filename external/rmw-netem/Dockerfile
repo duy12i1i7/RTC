@@ -8,6 +8,13 @@ RUN apt-get update \
         iproute2 \
         build-essential \
         cmake \
+        libgnutls28-dev \
+        libngtcp2-dev \
+        libngtcp2-crypto-gnutls-dev \
+        ngtcp2-client \
+        ngtcp2-server \
+        openssl \
+        pkg-config \
         libgsl-dev \
         libns3-dev \
         ns3 \
