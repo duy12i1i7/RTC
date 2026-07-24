@@ -245,6 +245,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker public-API ngtcp2 bounded async backend 5-run netem | `results_rmw_socket/docker_ngtcp2_public_async_backend_summary.json` |
 | Docker public-API ngtcp2 certificate-identity queue fairness 5-run netem | `results_rmw_socket/docker_ngtcp2_public_identity_fairness_summary.json` |
 | Docker public-API ngtcp2 per-identity active-worker isolation 5-run netem | `results_rmw_socket/docker_ngtcp2_public_active_worker_isolation_summary.json` |
+| Docker public-API ngtcp2 online client-CRL refresh 5-run netem | `results_rmw_socket/docker_ngtcp2_public_online_crl_refresh_summary.json` |
 | Docker stateful FleetQoX QUIC fleet-admission policy 5-run netem | `results_rmw_socket/docker_quic_admission_probe_summary.json` |
 | Docker stateful FleetQoX QUIC QoS/QoE admission-repair coupling 5-run netem | `results_rmw_socket/docker_quic_qox_repair_probe_summary.json` |
 | Docker stateful FleetQoX QUIC observation-fed competing batch 5-run netem | `results_rmw_socket/docker_quic_feedback_batch_probe_summary.json` |
@@ -1035,9 +1036,21 @@ workers and makes B wait roughly `1.3 s`. All three requests in both phases
 reach the real state engine, all qlogs are non-empty, and teardown is clean.
 The default active limit equals the configured worker count, preserving the
 existing work-conserving default unless operators opt into isolation. Weighted
-QoS-aware scheduling, cluster-wide coordination, online certificate
-rotation/revocation refresh, and production operations remain outside the
-claim; `production_quic_backend_claim=false` remains explicit.
+QoS-aware scheduling, cluster-wide coordination, and production operations
+remain outside the claim; `production_quic_backend_claim=false` remains
+explicit.
+`results_rmw_socket/docker_ngtcp2_public_online_crl_refresh_summary.json`
+closes online client-CRL refresh for new connections. The opt-in GnuTLS verify
+path clears and reloads the configured CRL through public APIs before each peer
+verification. Across `5/5` Docker/netem rounds, the same server PID/start time
+first accepts the stateful client with HTTP 204, rejects a new connection with
+QUIC/TLS `CRYPTO_ERROR` after an atomic CRL replacement revokes that client's
+serial, and accepts a new connection again after the original CRL is restored.
+A malformed CRL replacement is separately rejected fail-closed. The real state
+backend and test-only proxy see exactly the two valid GETs, four client qlogs
+are non-empty, and teardown is clean. The artifact does not evict or reverify
+established sessions and does not rotate the client CA or server certificate;
+those boundaries and `production_quic_backend_claim=false` remain explicit.
 `results_rmw_socket/docker_quic_admission_probe_summary.json` adds scoped
 fleet-level admission to the same stateful service. A fail-closed JSON policy
 maps three domain/topic streams to control, bulk, and state classes, applies

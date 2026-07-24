@@ -155,6 +155,7 @@ def start_server(
     queue_capacity: int = 4,
     per_identity_queue_capacity: int = 2,
     per_identity_active_limit: int | None = None,
+    extra_environment: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     command, backend_summary, proxy_summary = server_command(
         root=root,
@@ -173,6 +174,11 @@ def start_server(
             ),
         ]
     )
+    extra_environment_args = [
+        argument
+        for key, value in (extra_environment or {}).items()
+        for argument in ("-e", f"{key}={value}")
+    ]
     result = run(
         [
             "docker",
@@ -206,6 +212,7 @@ def start_server(
                 f"{per_identity_queue_capacity}"
             ),
             *active_limit_args,
+            *extra_environment_args,
             "-v",
             f"{root}:/work",
             "-w",

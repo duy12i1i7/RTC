@@ -286,9 +286,15 @@ This repository starts with the part that should be proven first:
   configurable per-identity active-worker limit: limit one preserves a worker
   for another publisher, while the limit-two control lets the noisy publisher
   occupy both workers and delays the victim. The default remains the worker
-  count for work-conserving compatibility. Weighted QoS scheduling, online
-  identity rotation/revocation refresh, clustered public-edge state, and
-  production hardening remain the production QUIC boundary;
+  count for work-conserving compatibility. A seventh `5/5` Docker/netem gate
+  enables per-handshake client-CRL reload through public GnuTLS APIs. Without
+  restarting the server, a previously accepted client is rejected with
+  `CRYPTO_ERROR` after its serial is added to the CRL, is accepted again after
+  the original CRL is restored, and is rejected fail-closed when the replacement
+  CRL is malformed. This applies to new TLS connections only. Weighted QoS
+  scheduling, online client-CA/server-certificate rotation, active-session
+  revocation, clustered public-edge state, and production hardening remain the
+  production QUIC boundary;
 - a scoped fleet-admission gate inside the stateful QUIC service. A validated
   JSON policy assigns domain/topic streams to traffic classes, allowlists
   publishers, caps each stream, and caps total accepted frames across the

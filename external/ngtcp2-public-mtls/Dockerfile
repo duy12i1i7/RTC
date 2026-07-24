@@ -18,12 +18,14 @@ COPY external/ngtcp2-public-mtls/stateful-backend.patch /tmp/stateful-backend.pa
 COPY external/ngtcp2-public-mtls/async-backend.patch /tmp/async-backend.patch
 COPY external/ngtcp2-public-mtls/identity-fairness.patch /tmp/identity-fairness.patch
 COPY external/ngtcp2-public-mtls/active-worker-isolation.patch /tmp/active-worker-isolation.patch
+COPY external/ngtcp2-public-mtls/online-crl-refresh.patch /tmp/online-crl-refresh.patch
 
 RUN git -C /opt/ngtcp2-source apply /tmp/public-mtls.patch \
     && git -C /opt/ngtcp2-source apply /tmp/stateful-backend.patch \
     && git -C /opt/ngtcp2-source apply /tmp/async-backend.patch \
     && git -C /opt/ngtcp2-source apply /tmp/identity-fairness.patch \
     && git -C /opt/ngtcp2-source apply /tmp/active-worker-isolation.patch \
+    && git -C /opt/ngtcp2-source apply /tmp/online-crl-refresh.patch \
     && c++ -std=c++20 -O2 -Wall -Wextra \
         -DENABLE_EXAMPLE_GNUTLS \
         -DWITH_EXAMPLE_GNUTLS \

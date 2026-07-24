@@ -553,8 +553,17 @@ and its CI assertion.
   limit-two control lets A occupy both workers and makes B wait about ten
   times longer. The default limit remains equal to worker count so existing
   work-conserving behavior is unchanged unless isolation is configured.
-  Weighted QoS-aware classes, online identity rotation/revocation refresh,
-  cluster-wide fairness/state, and production operations remain work. The
+  A sixth `5/5` public-edge Docker/netem gate now reloads the configured client
+  CRL through public GnuTLS APIs before each new TLS peer verification. The
+  same server process first accepts the stateful client, rejects it with
+  `CRYPTO_ERROR` after an atomic CRL replacement revokes its serial, accepts it
+  again after the original CRL is restored, and rejects a malformed CRL
+  fail-closed. Backend accounting remains exactly two valid requests in every
+  round. This closes online CRL refresh for new connections only; it does not
+  evict established sessions or rotate the client CA or server certificate.
+  Weighted QoS-aware classes, active-session revocation, online CA/server
+  certificate rotation, cluster-wide fairness/state, and production operations
+  remain work. The
   gateway's first scoped fleet-admission slice is now complete as a separate
   `5/5` two-container netem artifact. A startup-validated JSON policy assigns
   control/bulk/state traffic classes, publisher allowlists, per-stream frame

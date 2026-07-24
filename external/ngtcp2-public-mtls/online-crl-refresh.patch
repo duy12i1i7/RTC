@@ -1,0 +1,64 @@
+--- a/examples/tls_server_context_gnutls.cc
++++ b/examples/tls_server_context_gnutls.cc
+@@ -27,5 +27,7 @@
+ #include <array>
+ #include <cstdlib>
+ #include <iostream>
+ #include <string>
++#include <string_view>
++#include <unistd.h>
+ 
+@@ -45,7 +47,53 @@
+   return 0;
+ }
+ 
++bool fleetqox_reload_client_crl_enabled() {
++  const auto *value =
++      std::getenv("FLEETQOX_GNUTLS_RELOAD_CLIENT_CRL_EACH_HANDSHAKE");
++  return value != nullptr && std::string_view{value} == "1";
++}
++
++int fleetqox_reload_client_crl(gnutls_session_t session) {
++  if (!fleetqox_reload_client_crl_enabled()) {
++    return 0;
++  }
++  const auto *client_crl = std::getenv("FLEETQOX_GNUTLS_CLIENT_CRL");
++  if (client_crl == nullptr || client_crl[0] == '\0') {
++    dprintf(STDERR_FILENO,
++            "FLEETQOX_PUBLIC_MTLS_CRL_RELOAD_FAILED reason=missing_path\n");
++    return GNUTLS_E_CERTIFICATE_ERROR;
++  }
++  void *raw_credentials = nullptr;
++  auto rv = gnutls_credentials_get(
++      session, GNUTLS_CRD_CERTIFICATE, &raw_credentials);
++  if (rv < 0 || raw_credentials == nullptr) {
++    dprintf(STDERR_FILENO,
++            "FLEETQOX_PUBLIC_MTLS_CRL_RELOAD_FAILED "
++            "reason=credentials_unavailable result=%d\n",
++            rv);
++    return GNUTLS_E_CERTIFICATE_ERROR;
++  }
++  auto credentials =
++      static_cast<gnutls_certificate_credentials_t>(raw_credentials);
++  gnutls_certificate_free_crls(credentials);
++  rv = gnutls_certificate_set_x509_crl_file(
++      credentials, client_crl, GNUTLS_X509_FMT_PEM);
++  if (rv <= 0) {
++    dprintf(STDERR_FILENO,
++            "FLEETQOX_PUBLIC_MTLS_CRL_RELOAD_FAILED "
++            "reason=invalid_crl result=%d\n",
++            rv);
++    return GNUTLS_E_CERTIFICATE_ERROR;
++  }
++  dprintf(STDERR_FILENO,
++          "FLEETQOX_PUBLIC_MTLS_CRL_RELOADED certificates=%d\n", rv);
++  return 0;
++}
++
+ int verify_client_certificate(gnutls_session_t session) {
++  if (fleetqox_reload_client_crl(session) != 0) {
++    return GNUTLS_E_CERTIFICATE_ERROR;
++  }
+   unsigned int status = 0;
+   auto rv = gnutls_certificate_verify_peers3(session, nullptr, &status);
+   if (rv < 0 || status != 0) {

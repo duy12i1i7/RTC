@@ -1157,8 +1157,14 @@ Add:
   backend call and lets publisher B finish while both A clients remain open;
   the limit-two control lets A occupy both workers and delays B. The default
   limit is the worker count, preserving work-conserving behavior unless
-  operators opt into isolation. Weighted QoS-aware scheduling remains outside
-  the claim.
+  operators opt into isolation. The next `5/5` Docker/netem gate enables an
+  opt-in public-GnuTLS client-CRL reload before each new TLS connection is
+  verified. It atomically revokes and restores the same client while retaining
+  the same server PID/start time, observes `CRYPTO_ERROR` only during
+  revocation, and rejects a malformed replacement CRL fail-closed. This is
+  online revocation refresh for new connections, not eviction/reverification
+  of established sessions or online client-CA/server-certificate rotation.
+  Weighted QoS-aware scheduling remains outside the claim.
   Active/active replicated durability, standardized task-result
   instrumentation, a stable public QUIC path-metrics API, accepted
   0-RTT/resumption,
