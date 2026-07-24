@@ -709,8 +709,15 @@ This repository starts with the part that should be proven first:
   executes a real `Wait` recovery action, publishes a clear map during that same
   goal, and succeeds (`error_code=0`) with about `0.610 m` of fake-base motion
   and `1989` forwarded service frames. This closes the scoped same-goal
-  external static-map repair claim; dynamic obstacle avoidance and production
-  costmap-clearing policy remain unclaimed. The Nav2/RMF router workload also
+  external static-map repair claim. A separate real `nav2_costmap_2d` probe
+  activates `nav2_costmap_2d::ObstacleLayer`, publishes dynamic `LaserScan`
+  and `/tf` traffic through FleetRMW, observes three lethal cells at cost
+  `254`, calls `/local_costmap/clear_entirely_costmap`, and observes zero
+  occupied cells afterward. The router forwards the six lifecycle/clear
+  request-response frames with zero invalid frames under Docker loopback
+  `netem delay 2ms 1ms`. This closes only the scoped dynamic costmap
+  mark/clear claim; full `NavigateToPose` dynamic-obstacle avoidance and a
+  production costmap-recovery policy remain unclaimed. The Nav2/RMF router workload also
   passes concurrency-8/16/32/64/128/256/512/1024/2048 upstream action/service
   batches, with the concurrency-2048 run forwarding `12346` service frames.
   The larger runs exercise FleetRMW UDP large-frame fragmentation/reassembly

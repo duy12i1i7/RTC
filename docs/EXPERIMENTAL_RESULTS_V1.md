@@ -189,6 +189,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker ROS Nav2 planner static-obstacle repair/replan | `results_rmw_socket/docker_nav2_planner_obstacle_repair_probe_summary.json` |
 | Docker ROS Nav2 NavigateToPose obstacle retry after clear map | `results_rmw_socket/docker_nav2_navigate_to_pose_obstacle_retry_probe_summary.json` |
 | Docker ROS Nav2 same-goal NavigateToPose obstacle recovery after clear map | `results_rmw_socket/docker_nav2_navigate_to_pose_autonomous_obstacle_recovery_probe_summary.json` |
+| Docker ROS Nav2 dynamic LaserScan obstacle mark and costmap clear | `results_rmw_socket/docker_nav2_dynamic_costmap_clear_summary.json` |
 | Docker ROS Nav2 behavior_server Spin recovery action | `results_rmw_socket/docker_nav2_behavior_spin_probe_summary.json` |
 | Docker ROS Nav2 NavigateToPose recovery-tree fallback | `results_rmw_socket/docker_nav2_navigate_to_pose_recovery_tree_probe_summary.json` |
 | Docker ROS Nav2 NavigateToPose recovered success after Spin | `results_rmw_socket/docker_nav2_navigate_to_pose_recovered_success_probe_summary.json` |
@@ -456,8 +457,19 @@ succeeds with `navigate_to_pose_status=SUCCEEDED`,
 of fake-base motion, and `fleetqox_router_service_frames=1989`. This permits
 `autonomous_same_goal_nav2_obstacle_recovery_claim=true` only for
 `same_goal_bt_compute_path_wait_retry_after_external_static_map_repair`;
-dynamic obstacle avoidance and production costmap-clearing policy remain out of
-scope. The direct
+the independent `docker_nav2_dynamic_costmap_clear_summary.json` artifact now
+starts the real `nav2_costmap_2d` lifecycle node, activates
+`nav2_costmap_2d::ObstacleLayer`, and sends dynamic `LaserScan` plus `/tf`
+through FleetRMW under Docker loopback `netem delay 2ms 1ms`. It records three
+lethal cells at cost `254`, calls the real
+`/local_costmap/clear_entirely_costmap` service, and then records maximum cost
+`0` with zero occupied cells. FleetRMW forwards six lifecycle/clear service
+frames with zero invalid frames. This permits
+`nav2_dynamic_costmap_mark_clear_claim=true`; it deliberately keeps
+`full_dynamic_obstacle_navigation_claim=false` and
+`production_costmap_recovery_policy_claim=false` because no moving
+`NavigateToPose` goal has yet encountered, avoided, or recovered from that
+dynamic obstacle. The direct
 recovery-behavior artifact
 `docker_nav2_behavior_spin_probe_summary.json` starts upstream
 `behavior_server`, activates `nav2_behaviors::Spin` through FleetRMW lifecycle

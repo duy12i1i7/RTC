@@ -1058,9 +1058,11 @@ work is breadth and concurrency rather than first viability.
 Target:
 
 - lifecycle demos;
-- dynamic obstacle / production costmap-clearing Nav2 NavigateToPose scenarios
-  beyond the static-map retry-after-clear and same-goal external-repair probes,
-  plus larger repeated upstream client counts;
+- moving `NavigateToPose` dynamic-obstacle avoidance and a bounded automatic
+  recovery policy, building on the completed real LaserScan
+  `ObstacleLayer` mark plus `ClearEntireCostmap` service probe; add a
+  persistent-obstacle negative control and larger repeated upstream client
+  counts;
 - robot state/control workloads.
 
 ## Milestone 4: Fleet Data Plane

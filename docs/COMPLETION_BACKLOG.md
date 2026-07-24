@@ -1242,9 +1242,14 @@ obstacle recovery probe then keeps one goal active, observes a planner failure,
 executes a real `Wait` recovery action, publishes a clear map during that same
 goal, and succeeds with `error_code=0`, `1989/72` service frames, and about
 `0.610 m` of fake-base motion; this closes the scoped same-goal external
-static-map repair claim. Dynamic obstacle avoidance, production costmap-clearing
-policy, upstream request counts beyond 4096, and sustained 4096-robot physical
-navigation remain open. The ROS CLI message
+static-map repair claim. A real `nav2_costmap_2d::ObstacleLayer` probe now
+marks three lethal cells from dynamic `LaserScan` traffic, calls
+`/local_costmap/clear_entirely_costmap`, and observes an empty costmap through
+FleetRMW plus loopback netem; six service frames pass with zero invalid frames.
+The scoped dynamic mark/clear gap is closed. Moving `NavigateToPose`
+dynamic-obstacle avoidance, production recovery policy, upstream request
+counts beyond 4096, and sustained 4096-robot physical navigation remain open.
+The ROS CLI message
 matrix remains `13/13`.
 
 The repeated large-scale DDS/Zenoh comparison is complete as a gap register.
@@ -1273,14 +1278,11 @@ equivalence, and broad cross-RMW superiority remain false.
 
 Next continue P0/P2 in this order:
 
-1. Extend the proven moving-base Nav2 NavigateToPose, direct Spin recovery
-   action, extended moving-base navigation, intentional-failure recovery-tree
-   coverage, repeated recovered-success Spin-then-NavigateToPose scenario,
-   planner-level static-obstacle repair, full-stack retry-after-clear obstacle
-   probe, and same-goal external static-map repair probe into dynamic obstacle
-   avoidance / production costmap-clearing policy, then push beyond the
-   proven unwindowed total-4096 upstream workload while retaining local
-   actions and the long-moving wrapper as CI-light fallbacks.
+1. Integrate the proven dynamic LaserScan obstacle-layer mark/clear path with a
+   moving `NavigateToPose` controller/BT scenario, define a bounded automatic
+   clear/replan policy, and add a negative control where the obstacle persists.
+   Then push beyond the proven unwindowed total-4096 upstream request workload
+   without presenting request completion as simultaneous physical navigation.
 2. Preserve both completed comparison contracts, increase same-hop samples and
    independent repetitions, and replace the rclpy relay with semantically
    equivalent raw/serialized forwarding before any latency-superiority claim.
