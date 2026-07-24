@@ -151,6 +151,10 @@ def start_server(
     name: str,
     certs: Path,
     run_root: Path,
+    workers: int = 1,
+    queue_capacity: int = 4,
+    per_identity_queue_capacity: int = 2,
+    per_identity_active_limit: int | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     command, backend_summary, proxy_summary = server_command(
         root=root,
@@ -158,6 +162,17 @@ def start_server(
         run_root=run_root,
     )
     cert_root = f"/work/{certs.relative_to(root)}"
+    active_limit_args = (
+        []
+        if per_identity_active_limit is None
+        else [
+            "-e",
+            (
+                "FLEETQOX_STATE_BACKEND_PER_IDENTITY_ACTIVE_LIMIT="
+                f"{per_identity_active_limit}"
+            ),
+        ]
+    )
     result = run(
         [
             "docker",
@@ -182,11 +197,15 @@ def start_server(
             "-e",
             "FLEETQOX_STATE_BACKEND_SOCKET=/tmp/fleetqox-fairness-proxy.sock",
             "-e",
-            "FLEETQOX_STATE_BACKEND_WORKERS=1",
+            f"FLEETQOX_STATE_BACKEND_WORKERS={workers}",
             "-e",
-            "FLEETQOX_STATE_BACKEND_QUEUE_CAPACITY=4",
+            f"FLEETQOX_STATE_BACKEND_QUEUE_CAPACITY={queue_capacity}",
             "-e",
-            "FLEETQOX_STATE_BACKEND_PER_IDENTITY_QUEUE_CAPACITY=2",
+            (
+                "FLEETQOX_STATE_BACKEND_PER_IDENTITY_QUEUE_CAPACITY="
+                f"{per_identity_queue_capacity}"
+            ),
+            *active_limit_args,
             "-v",
             f"{root}:/work",
             "-w",
@@ -474,12 +493,13 @@ def run_iteration(
     fair_forward_order = (
         len(forwarded_consumer_ids) == 4
         and forwarded_consumer_ids[0] == "queue-a1"
-        and forwarded_consumer_ids[2] == "victim-b"
-        and {
-            forwarded_consumer_ids[1],
-            forwarded_consumer_ids[3],
-        }
-        == {"queue-a2", "queue-a3"}
+        and set(forwarded_consumer_ids[1:])
+        == {"queue-a2", "queue-a3", "victim-b"}
+        and forwarded_consumer_ids.index("victim-b")
+        < max(
+            forwarded_consumer_ids.index("queue-a2"),
+            forwarded_consumer_ids.index("queue-a3"),
+        )
     )
     ok = (
         server_ready

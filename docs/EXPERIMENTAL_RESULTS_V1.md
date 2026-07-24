@@ -244,6 +244,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker public-API ngtcp2 path-metric admission contrast 5-run netem | `results_rmw_socket/docker_ngtcp2_public_path_admission_summary.json` |
 | Docker public-API ngtcp2 bounded async backend 5-run netem | `results_rmw_socket/docker_ngtcp2_public_async_backend_summary.json` |
 | Docker public-API ngtcp2 certificate-identity queue fairness 5-run netem | `results_rmw_socket/docker_ngtcp2_public_identity_fairness_summary.json` |
+| Docker public-API ngtcp2 per-identity active-worker isolation 5-run netem | `results_rmw_socket/docker_ngtcp2_public_active_worker_isolation_summary.json` |
 | Docker stateful FleetQoX QUIC fleet-admission policy 5-run netem | `results_rmw_socket/docker_quic_admission_probe_summary.json` |
 | Docker stateful FleetQoX QUIC QoS/QoE admission-repair coupling 5-run netem | `results_rmw_socket/docker_quic_qox_repair_probe_summary.json` |
 | Docker stateful FleetQoX QUIC observation-fed competing batch 5-run netem | `results_rmw_socket/docker_quic_feedback_batch_probe_summary.json` |
@@ -1021,6 +1022,22 @@ pending-queue fairness. It does not prove active-worker reservation, weighted
 QoS-aware traffic classes, cluster-wide fairness, online certificate
 rotation/revocation refresh, or production operations, so
 `production_quic_backend_claim=false` remains explicit.
+`results_rmw_socket/docker_ngtcp2_public_active_worker_isolation_summary.json`
+closes the active-worker portion of that boundary. The edge now tracks active
+backend calls separately from pending requests and exposes a bounded
+`FLEETQOX_STATE_BACKEND_PER_IDENTITY_ACTIVE_LIMIT`. Identities at their active
+limit leave queued work non-runnable until a worker releases the identity,
+while other ready identities can use free workers. Across `5/5` matched
+Docker/netem rounds with two workers, limit `1` lets publisher B complete in
+roughly `120-135 ms` while both delayed publisher-A clients remain open and A
+never exceeds one active worker. The limit-`2` control records A at two active
+workers and makes B wait roughly `1.3 s`. All three requests in both phases
+reach the real state engine, all qlogs are non-empty, and teardown is clean.
+The default active limit equals the configured worker count, preserving the
+existing work-conserving default unless operators opt into isolation. Weighted
+QoS-aware scheduling, cluster-wide coordination, online certificate
+rotation/revocation refresh, and production operations remain outside the
+claim; `production_quic_backend_claim=false` remains explicit.
 `results_rmw_socket/docker_quic_admission_probe_summary.json` adds scoped
 fleet-level admission to the same stateful service. A fail-closed JSON policy
 maps three domain/topic streams to control, bulk, and state classes, applies

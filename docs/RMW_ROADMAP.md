@@ -1152,8 +1152,13 @@ Add:
   round-robins ready identities. An overloaded publisher receives HTTP 429
   while an independent publisher is admitted and overtakes the first
   publisher's remaining queued request. This closes scoped multi-publisher
-  pending-queue fairness; active-worker reservation and weighted QoS-aware
-  scheduling are still outside the claim.
+  pending-queue fairness. A matched `5/5` two-worker follow-on adds an optional
+  per-identity active limit. Limit one keeps noisy publisher A at one active
+  backend call and lets publisher B finish while both A clients remain open;
+  the limit-two control lets A occupy both workers and delays B. The default
+  limit is the worker count, preserving work-conserving behavior unless
+  operators opt into isolation. Weighted QoS-aware scheduling remains outside
+  the claim.
   Active/active replicated durability, standardized task-result
   instrumentation, a stable public QUIC path-metrics API, accepted
   0-RTT/resumption,

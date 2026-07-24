@@ -546,10 +546,15 @@ and its CI assertion.
   pending queue with round-robin identity scheduling. Publisher A receives
   HTTP 429 after filling its two pending slots while publisher B is admitted
   and overtakes A's remaining queued request in every round. This closes
-  scoped pending-queue cross-publisher fairness, but not active-worker
-  reservation or weighted QoS-aware classes. Online identity
-  rotation/revocation refresh, cluster-wide fairness/state, and production
-  operations remain work. The
+  scoped pending-queue cross-publisher fairness. A fifth matched `5/5` gate
+  closes configurable active-worker isolation: with two workers and a
+  per-identity active limit of one, publisher B completes while both delayed
+  publisher-A clients remain open and A never reaches active count two. The
+  limit-two control lets A occupy both workers and makes B wait about ten
+  times longer. The default limit remains equal to worker count so existing
+  work-conserving behavior is unchanged unless isolation is configured.
+  Weighted QoS-aware classes, online identity rotation/revocation refresh,
+  cluster-wide fairness/state, and production operations remain work. The
   gateway's first scoped fleet-admission slice is now complete as a separate
   `5/5` two-container netem artifact. A startup-validated JSON policy assigns
   control/bulk/state traffic classes, publisher allowlists, per-stream frame

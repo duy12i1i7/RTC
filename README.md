@@ -282,10 +282,13 @@ This repository starts with the part that should be proven first:
   per-connection publisher identities from verified URI SANs, rejects a
   CA-trusted out-of-prefix identity, returns HTTP 429 on a publisher's pending
   limit, and round-robins identity queues so another publisher overtakes the
-  overloaded publisher's remaining request. Active-worker reservation,
-  weighted QoS scheduling, online identity rotation/revocation refresh,
-  clustered public-edge state, and production hardening remain the production
-  QUIC boundary;
+  overloaded publisher's remaining request. A sixth matched `5/5` gate adds a
+  configurable per-identity active-worker limit: limit one preserves a worker
+  for another publisher, while the limit-two control lets the noisy publisher
+  occupy both workers and delays the victim. The default remains the worker
+  count for work-conserving compatibility. Weighted QoS scheduling, online
+  identity rotation/revocation refresh, clustered public-edge state, and
+  production hardening remain the production QUIC boundary;
 - a scoped fleet-admission gate inside the stateful QUIC service. A validated
   JSON policy assigns domain/topic streams to traffic classes, allowlists
   publishers, caps each stream, and caps total accepted frames across the

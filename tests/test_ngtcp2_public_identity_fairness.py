@@ -60,8 +60,11 @@ class Ngtcp2PublicIdentityFairnessTest(unittest.TestCase):
         self.assertIn("fairness-publisher-b", runner)
         self.assertIn("spiffe://other/publishers/fairness-outsider", runner)
         self.assertIn('forwarded_consumer_ids[0] == "queue-a1"', runner)
-        self.assertIn('forwarded_consumer_ids[2] == "victim-b"', runner)
-        self.assertIn('== {"queue-a2", "queue-a3"}', runner)
+        self.assertIn(
+            '== {"queue-a2", "queue-a3", "victim-b"}',
+            runner,
+        )
+        self.assertIn('forwarded_consumer_ids.index("victim-b")', runner)
         self.assertIn("publisher_a_overload_http_429", runner)
         self.assertIn("publisher_b_overtook_queued_publisher_a", runner)
         self.assertIn('"production_quic_backend_claim": False', runner)

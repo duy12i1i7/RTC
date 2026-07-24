@@ -17,11 +17,13 @@ COPY external/ngtcp2-public-mtls/public-mtls.patch /tmp/public-mtls.patch
 COPY external/ngtcp2-public-mtls/stateful-backend.patch /tmp/stateful-backend.patch
 COPY external/ngtcp2-public-mtls/async-backend.patch /tmp/async-backend.patch
 COPY external/ngtcp2-public-mtls/identity-fairness.patch /tmp/identity-fairness.patch
+COPY external/ngtcp2-public-mtls/active-worker-isolation.patch /tmp/active-worker-isolation.patch
 
 RUN git -C /opt/ngtcp2-source apply /tmp/public-mtls.patch \
     && git -C /opt/ngtcp2-source apply /tmp/stateful-backend.patch \
     && git -C /opt/ngtcp2-source apply /tmp/async-backend.patch \
     && git -C /opt/ngtcp2-source apply /tmp/identity-fairness.patch \
+    && git -C /opt/ngtcp2-source apply /tmp/active-worker-isolation.patch \
     && c++ -std=c++20 -O2 -Wall -Wextra \
         -DENABLE_EXAMPLE_GNUTLS \
         -DWITH_EXAMPLE_GNUTLS \
