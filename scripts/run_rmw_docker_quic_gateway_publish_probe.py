@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -54,6 +55,133 @@ def parse_server_content_lengths(server_log: str) -> list[int]:
     ]
 
 
+def count_log_patterns(log: str, patterns: tuple[str, ...]) -> int:
+    return sum(len(re.findall(pattern, log, flags=re.IGNORECASE)) for pattern in patterns)
+
+
+def parse_quic_session_reuse_telemetry(*logs: str) -> dict[str, Any]:
+    """Extract conservative QUIC session-reuse and 0-RTT evidence from ngtcp2 logs.
+
+    File reads/writes prove plumbing.  A 0RTT packet proves an attempt.  The
+    production 0-RTT/session-resumption claim stays false unless the log carries
+    explicit accepted/resumed evidence.
+    """
+
+    combined = "\n".join(str(log or "") for log in logs)
+    token_file_read_count = count_log_patterns(
+        combined,
+        (r"\bReading token file\b",),
+    )
+    token_file_missing_count = count_log_patterns(
+        combined,
+        (r"\bCould not read token (?:file|in)\b",),
+    )
+    token_file_write_count = count_log_patterns(
+        combined,
+        (r"\b(?:Writing|Wrote|Saving|Saved) token file\b",),
+    )
+    session_file_read_count = count_log_patterns(
+        combined,
+        (
+            r"\bReading (?:TLS )?session file\b",
+            r"\bReading TLS session\b",
+        ),
+    )
+    session_file_missing_count = count_log_patterns(
+        combined,
+        (
+            r"\bCould not read (?:TLS )?session (?:file|in)\b",
+            r"\bCould not read TLS session\b",
+        ),
+    )
+    session_file_write_count = count_log_patterns(
+        combined,
+        (
+            r"\b(?:Writing|Wrote|Saving|Saved) (?:TLS )?session file\b",
+            r"\b(?:Writing|Wrote|Saving|Saved) TLS session\b",
+        ),
+    )
+    transport_parameters_file_read_count = count_log_patterns(
+        combined,
+        (
+            r"\bReading transport[- ]parameters? file\b",
+            r"\bReading tp file\b",
+        ),
+    )
+    transport_parameters_file_missing_count = count_log_patterns(
+        combined,
+        (
+            r"\bCould not read transport[- ]parameters? (?:file|in)\b",
+            r"\bCould not read tp (?:file|in)\b",
+        ),
+    )
+    transport_parameters_file_write_count = count_log_patterns(
+        combined,
+        (
+            r"\b(?:Writing|Wrote|Saving|Saved) transport[- ]parameters? file\b",
+            r"\b(?:Writing|Wrote|Saving|Saved) tp file\b",
+        ),
+    )
+    zero_rtt_tx_packet_count = count_log_patterns(
+        combined,
+        (r"\btype=0RTT\b", r"\btype=0-RTT\b"),
+    )
+    zero_rtt_tx_frame_count = count_log_patterns(
+        combined,
+        (r"\b0RTT\s+[A-Z_]+\(", r"\b0-RTT\s+[A-Z_]+\("),
+    )
+    zero_rtt_accepted_observed = count_log_patterns(
+        combined,
+        (
+            r"\bearly data accepted\b",
+            r"\b0[- ]?RTT accepted\b",
+            r"\bzero[- ]rtt accepted\b",
+        ),
+    ) > 0
+    zero_rtt_rejected_observed = count_log_patterns(
+        combined,
+        (
+            r"\bearly data rejected\b",
+            r"\b0[- ]?RTT rejected\b",
+            r"\bzero[- ]rtt rejected\b",
+        ),
+    ) > 0
+    explicit_resumption_observed = count_log_patterns(
+        combined,
+        (
+            r"\bsession resumption\b",
+            r"\bsession resumed\b",
+            r"\bresumed session\b",
+            r"\bTLS session resumed\b",
+        ),
+    ) > 0
+    zero_rtt_packet_observed = zero_rtt_tx_packet_count > 0 or zero_rtt_tx_frame_count > 0
+    return {
+        "session_file_read_count": session_file_read_count,
+        "session_file_missing_count": session_file_missing_count,
+        "session_file_write_count": session_file_write_count,
+        "transport_parameters_file_read_count": transport_parameters_file_read_count,
+        "transport_parameters_file_missing_count": transport_parameters_file_missing_count,
+        "transport_parameters_file_write_count": transport_parameters_file_write_count,
+        "token_file_read_count": token_file_read_count,
+        "token_file_missing_count": token_file_missing_count,
+        "token_file_write_count": token_file_write_count,
+        "session_resumption_attempted_observed": (
+            session_file_read_count > session_file_missing_count
+            or token_file_read_count > token_file_missing_count
+            or zero_rtt_packet_observed
+        ),
+        "session_resumption_observed": (
+            explicit_resumption_observed or zero_rtt_accepted_observed
+        ),
+        "zero_rtt_packet_observed": zero_rtt_packet_observed,
+        "zero_rtt_tx_packet_count": zero_rtt_tx_packet_count,
+        "zero_rtt_tx_frame_count": zero_rtt_tx_frame_count,
+        "zero_rtt_accepted_observed": zero_rtt_accepted_observed,
+        "zero_rtt_rejected_observed": zero_rtt_rejected_observed,
+    }
+
+
 def run_probe(
     *,
     root: Path,
@@ -62,6 +190,7 @@ def run_probe(
     async_gateway: bool = False,
     schema_version: str = SCHEMA_VERSION,
     probe_executable: str = "fleetrmw_quic_gateway_publish_probe",
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     suffix = str(os.getpid())
     mode = "async" if async_gateway else "sync"
@@ -120,6 +249,10 @@ def run_probe(
             if async_gateway
             else ""
         )
+        extra_env_text = "".join(
+            f"{key}={shlex.quote(value)} "
+            for key, value in sorted((extra_env or {}).items())
+        )
         command = (
             "set -e; "
             f"openssl req -x509 -newkey rsa:2048 -nodes "
@@ -144,6 +277,7 @@ def run_probe(
             f"FLEETQOX_RMW_QUIC_QLOG_DIR=/work/{qlogs.relative_to(root)} "
             f"FLEETQOX_RMW_QUIC_LOG=/work/{tmp.relative_to(root)}/client.log "
             f"{async_env}"
+            f"{extra_env_text}"
             f"{probe} > /work/{tmp.relative_to(root)}/probe.log "
             f"2> /work/{tmp.relative_to(root)}/probe.err; "
             "probe_rc=$?; "
@@ -183,6 +317,10 @@ def run_probe(
         client_handshake = "QUIC handshake has completed" in client_log
         server_handshake = "QUIC handshake has completed" in server_log
         alpn_h3 = "Negotiated ALPN is h3" in client_log and "Negotiated ALPN is h3" in server_log
+        session_reuse_telemetry = parse_quic_session_reuse_telemetry(
+            client_log,
+            server_log,
+        )
         quic_frames_sent = int(probe_json.get("quic_gateway_frames_sent", 0))
         quic_bytes_sent = int(probe_json.get("quic_gateway_bytes_sent", 0))
         server_payload_ok = (
@@ -241,6 +379,7 @@ def run_probe(
             "tls_handshake_complete": client_handshake and server_handshake,
             "qlog_file_count": len(qlog_files),
             "qlog_total_bytes": sum(path.stat().st_size for path in qlog_files),
+            **session_reuse_telemetry,
             "docker_returncode": docker.returncode,
             "docker_stdout": docker.stdout,
             "docker_stderr": docker.stderr,

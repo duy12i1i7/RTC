@@ -40,6 +40,11 @@ def main() -> int:
             "  expired_frames_dropped_delta: "
             f"{summary.get('probe', {}).get('expired_frames_dropped_delta')}"
         )
+        print(
+            "  service_request_type_qos_filter: "
+            f"{summary.get('probe', {}).get('service_request_type_filter_ok')}/"
+            f"{summary.get('probe', {}).get('service_request_qos_filter_ok')}"
+        )
     return 0 if summary["status"] == "ok" else 1
 
 
@@ -97,6 +102,19 @@ summary["status"] = "ok" if (
     probe.get("stale_response_taken") is False and
     probe.get("unknown_response_error") is True and
     probe.get("unknown_response_sent_delta") == 0 and
+    probe.get("client_gid_stable") is True and
+    probe.get("client_gids_distinct") is True and
+    probe.get("client_gid_nonzero") is True and
+    probe.get("request_writer_gid_matches_client") is True and
+    probe.get("request_sequence_matches") is True and
+    probe.get("service_availability_matching_ok") is True and
+    probe.get("service_availability_type_filter_ok") is True and
+    probe.get("service_availability_qos_filter_ok") is True and
+    probe.get("service_request_type_filter_ok") is True and
+    probe.get("service_request_qos_filter_ok") is True and
+    probe.get("service_availability_owner_node_enforced") is True and
+    probe.get("client_destroy_owner_node_enforced") is True and
+    probe.get("service_destroy_owner_node_enforced") is True and
     int(probe.get("expired_frames_dropped_delta", 0)) >= 2 and
     stderr == ""
 ) else "failed"

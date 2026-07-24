@@ -1,24 +1,23 @@
 package fleetqox.omnetpp;
 
-//
-// Placeholder simple module for a trace-driven UDP application.
-//
-// Implement this module in C++ against the installed INET version. It should:
-// - read FleetQoX CSV trace rows;
-// - emit packets whose source endpoint belongs to this host;
-// - attach flow metadata for deadline/utility accounting;
-// - record delay, deadline miss, and semantic utility delivered.
-//
+import inet.applications.contract.IApp;
+import inet.common.SimpleModule;
 
-simple TraceDrivenUdpApp
+// Replays rows whose src column matches endpointName and receives UDP packets
+// addressed to the endpoint. The C++ module records the same policy summary
+// columns emitted by external/ns3/fleetqox_trace_replay.cc.
+simple TraceDrivenUdpApp extends SimpleModule like IApp
 {
     parameters:
+        @class(fleetqox_omnetpp::TraceDrivenUdpApp);
         string traceFile;
         string endpointName;
         int localPort = default(9100);
         int destPort = default(9100);
+        double startOffset @unit(s) = default(100ms);
+        bool summaryWriter = default(false);
         @display("i=block/app");
     gates:
-        input socketIn;
-        output socketOut;
+        input socketIn @labels(UdpCommand/up);
+        output socketOut @labels(UdpCommand/down);
 }

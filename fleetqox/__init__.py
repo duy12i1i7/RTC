@@ -45,6 +45,12 @@ from .semantic_contract import (
     supervisory_intent_deadline_ms,
 )
 from .sidecar_runtime import SidecarRuntime
+from .task_outcome import (
+    TaskOutcomeCorrelation,
+    build_task_application_outcome,
+    nav2_application_outcome,
+    rmf_application_outcome,
+)
 from .transport_selector import (
     AdaptiveBindingDecision,
     AdaptiveTransportBindingEstimator,
@@ -75,6 +81,10 @@ __all__ = [
     "RiskConstrainedPredictiveAdmissionController",
     "SemanticContractAdmissionController",
     "SidecarRuntime",
+    "TaskOutcomeCorrelation",
+    "build_task_application_outcome",
+    "nav2_application_outcome",
+    "rmf_application_outcome",
     "AdaptiveBindingDecision",
     "AdaptiveTransportBindingEstimator",
     "BUILTIN_TRANSPORT_OBJECTIVES",

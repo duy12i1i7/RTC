@@ -166,13 +166,13 @@ Start with trace-driven ns-3/OMNeT++ because it does not require a full RMW.
 
 1. Export FleetQoX workload traces from T0/T1. Done for T0.
 2. Define common trace schema. Done.
-3. Write ns-3 importer for UDP-like per-flow traffic. Starter added under
-   `external/ns3`.
-4. Write OMNeT++/INET importer for application traffic classes. Template added
-   under `external/omnetpp`; the C++ app must be validated against the selected
-   INET version.
+3. Write ns-3 importer for UDP-like per-flow traffic. Done, including the
+   matched routed-P2P path.
+4. Write OMNeT++/INET importer for application traffic classes. Done with
+   `TraceDrivenUdpApp`, pinned OMNeT++ 6.4.0/INET 4.7.0, and Docker execution.
 5. Compare FIFO/static-priority/FleetQoX policies under identical network
-   scenarios.
+   scenarios. Done for the bounded routed-P2P matrix at `27/27`; TSN/mesh and
+   wireless parity remain separate scopes.
 
 The legacy ns-3 runner expects an external ns-3 workspace:
 
@@ -186,6 +186,13 @@ runs the native replay source directly:
 
 ```bash
 python3 scripts/run_ns3_docker_fleet_matrix.py \
+  --robot-counts 8,16,32 --seeds 7,13,29 --seconds 3
+```
+
+The matched cross-simulator runtime is:
+
+```bash
+python3 scripts/run_omnetpp_docker_parity.py \
   --robot-counts 8,16,32 --seeds 7,13,29 --seconds 3
 ```
 

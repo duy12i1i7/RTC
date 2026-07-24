@@ -172,6 +172,8 @@ def run_probe(
         router_result = json.loads(router_log)
         subscriber_result = json.loads(subscriber_log)
         observer_result = json.loads(observer_log)
+        # Renewal timing may produce multiple valid route/graph advertisements;
+        # learned_routes and observer endpoint counts are the uniqueness checks.
         status = (
             publisher.returncode == 0 and
             router_returncode == 0 and
@@ -181,12 +183,12 @@ def run_probe(
             router_result.get("status") == "ok" and
             subscriber_result.get("status") == "ok" and
             observer_result.get("status") == "ok" and
-            router_result.get("route_advertisements") == 1 and
+            router_result.get("route_advertisements", 0) >= 1 and
             router_result.get("learned_routes") == 1 and
             router_result.get("graph_advertisements", 0) >= 2 and
             router_result.get("graph_forwarded", 0) >= 2 and
-            router_result.get("graph_publishers") == 1 and
-            router_result.get("graph_subscriptions") == 1 and
+            router_result.get("graph_publishers", 0) >= 1 and
+            router_result.get("graph_subscriptions", 0) >= 1 and
             observer_result.get("topic_found") is True and
             observer_result.get("publisher_count") == 1 and
             observer_result.get("subscriber_count") == 1

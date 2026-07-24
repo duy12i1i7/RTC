@@ -9,7 +9,7 @@ import subprocess
 from typing import Any
 
 
-SCHEMA_VERSION = "fleetrmw.rmw_docker_qos_probe.v1"
+SCHEMA_VERSION = "fleetrmw.rmw_docker_qos_probe.v2"
 DEFAULT_IMAGE = "ros:jazzy-ros-base"
 
 
@@ -75,7 +75,7 @@ for line in reversed(stdout.splitlines()):
 if not probe:
     probe = {"status": "missing", "raw_stdout": stdout}
 summary = {
-    "schema_version": "fleetrmw.rmw_docker_qos_probe.v1",
+    "schema_version": "fleetrmw.rmw_docker_qos_probe.v2",
     "status": "pending",
     "probe": probe,
     "probe_stdout": stdout,
@@ -88,6 +88,9 @@ summary["status"] = "ok" if (
     probe.get("depth_received") == "second" and
     probe.get("depth_second_take") is False and
     probe.get("lifespan_taken") is False and
+    probe.get("qos_compatibility_full_matrix") is True and
+    probe.get("qos_compatibility_error_reason_aggregation") is True and
+    probe.get("qos_compatibility_warning_semantics") is True and
     stderr == ""
 ) else "failed"
 print(json.dumps(summary, sort_keys=True))
@@ -127,6 +130,13 @@ PY
     summary: dict[str, Any] = json.loads(lines[-1])
     summary["docker_returncode"] = result.returncode
     summary["docker_stderr"] = result.stderr
+    probe = summary.get("probe", {})
+    for key in (
+        "qos_compatibility_full_matrix",
+        "qos_compatibility_error_reason_aggregation",
+        "qos_compatibility_warning_semantics",
+    ):
+        summary[key] = probe.get(key)
     return summary
 
 

@@ -12,6 +12,8 @@ namespace rmw_fleetqox_cpp
 
 constexpr const char * kDataFrameSchemaVersion = "fleetrmw.data_frame.v1";
 constexpr const char * kAckNackSchemaVersion = "fleetrmw.ack_nack.v1";
+constexpr const char * kUnrecoverableLossNoticeSchemaVersion =
+  "fleetrmw.unrecoverable_loss_notice.v1";
 constexpr const char * kRouteAdvertisementSchemaVersion = "fleetrmw.route_advertisement.v1";
 constexpr const char * kGraphAdvertisementSchemaVersion = "fleetrmw.graph_advertisement.v1";
 constexpr const char * kServiceFrameSchemaVersion = "fleetrmw.service_frame.v1";
@@ -20,21 +22,75 @@ constexpr const char * kDataFrameMagic = "FRMW1\n";
 
 struct DataFrame
 {
+  DataFrame() = default;
+
+  DataFrame(
+    std::string robot_id_value,
+    std::string topic_value,
+    std::string publisher_id_value,
+    std::uint64_t source_sequence_number_value,
+    std::int64_t source_timestamp_ns_value,
+    std::vector<std::uint8_t> serialized_payload_value,
+    std::uint64_t domain_id_value = 0,
+    std::string type_name_value = {},
+    std::string flow_class_value = {},
+    double deadline_ms_value = 0.0,
+    double age_ms_value = 0.0,
+    double qoe_debt_value = 0.0,
+    double task_criticality_value = 0.0,
+    bool repair_requested_value = false,
+    std::uint64_t prior_repair_attempts_value = 0)
+  : robot_id(std::move(robot_id_value)),
+    topic(std::move(topic_value)),
+    publisher_id(std::move(publisher_id_value)),
+    source_sequence_number(source_sequence_number_value),
+    source_timestamp_ns(source_timestamp_ns_value),
+    serialized_payload(std::move(serialized_payload_value)),
+    domain_id(domain_id_value),
+    type_name(std::move(type_name_value)),
+    flow_class(std::move(flow_class_value)),
+    deadline_ms(deadline_ms_value),
+    age_ms(age_ms_value),
+    qoe_debt(qoe_debt_value),
+    task_criticality(task_criticality_value),
+    repair_requested(repair_requested_value),
+    prior_repair_attempts(prior_repair_attempts_value)
+  {}
+
   std::string robot_id;
   std::string topic;
   std::string publisher_id;
   std::uint64_t source_sequence_number = 0;
   std::int64_t source_timestamp_ns = 0;
   std::vector<std::uint8_t> serialized_payload;
+  std::uint64_t domain_id = 0;
+  std::string type_name;
+  std::string flow_class;
+  double deadline_ms = 0.0;
+  double age_ms = 0.0;
+  double qoe_debt = 0.0;
+  double task_criticality = 0.0;
+  bool repair_requested = false;
+  std::uint64_t prior_repair_attempts = 0;
+};
+
+struct TimedMissingSequenceRange
+{
+  std::uint64_t first = 0;
+  std::uint64_t last = 0;
+  std::int64_t first_observed_ns = 0;
 };
 
 struct SequenceState
 {
   bool initialized = false;
+  bool reception_sequence_baseline_initialized = false;
   std::uint64_t highest_contiguous_sequence = 0;
   std::uint64_t highest_observed_sequence = 0;
   std::int64_t last_repair_request_ns = 0;
   std::set<std::uint64_t> observed_sequences;
+  std::vector<TimedMissingSequenceRange> pending_missing_ranges;
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> confirmed_lost_ranges;
 };
 
 struct AckNackFeedback
@@ -51,6 +107,7 @@ struct AckNackFrame
   std::string robot_id;
   std::string topic;
   std::string publisher_id;
+  std::string subscriber_id;
   std::uint64_t ack_sequence_number = 0;
   std::int64_t source_timestamp_ns = 0;
   std::vector<std::pair<std::uint64_t, std::uint64_t>> missing_sequence_ranges;
@@ -58,6 +115,18 @@ struct AckNackFrame
   std::uint64_t highest_observed_sequence = 0;
   bool duplicate = false;
   bool out_of_order = false;
+  std::uint64_t domain_id = 0;
+};
+
+struct UnrecoverableLossNotice
+{
+  std::string robot_id;
+  std::string topic;
+  std::string publisher_id;
+  std::string subscriber_id;
+  std::int64_t source_timestamp_ns = 0;
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> lost_sequence_ranges;
+  std::uint64_t domain_id = 0;
 };
 
 struct RouteAdvertisement
@@ -67,6 +136,7 @@ struct RouteAdvertisement
   std::string topic;
   std::string type_name;
   std::uint64_t lease_ms = 0;
+  std::uint64_t domain_id = 0;
 };
 
 struct GraphQosProfile
@@ -97,6 +167,7 @@ struct GraphAdvertisement
   std::string endpoint_gid;
   GraphQosProfile qos;
   std::uint64_t lease_ms = 0;
+  std::uint64_t domain_id = 0;
 };
 
 struct ServiceFrame
@@ -110,6 +181,7 @@ struct ServiceFrame
   std::int64_t source_timestamp_ns = 0;
   std::int64_t lifespan_ns = 0;
   std::vector<std::uint8_t> serialized_payload;
+  std::uint64_t domain_id = 0;
 };
 
 struct ActionFrame
@@ -123,6 +195,7 @@ struct ActionFrame
   std::int64_t source_timestamp_ns = 0;
   std::int64_t lifespan_ns = 0;
   std::vector<std::uint8_t> serialized_payload;
+  std::uint64_t domain_id = 0;
 };
 
 std::string stream_key(const DataFrame & frame);
@@ -155,9 +228,17 @@ AckNackFeedback observe_frame(SequenceState & state, const DataFrame & frame);
 
 AckNackFeedback feedback_from_sequence_state(const SequenceState & state);
 
-std::string encode_ack_nack(const DataFrame & frame, const AckNackFeedback & feedback);
+std::string encode_ack_nack(
+  const DataFrame & frame,
+  const AckNackFeedback & feedback,
+  const std::string & subscriber_id = "");
 
 std::optional<AckNackFrame> decode_ack_nack(const std::string & payload);
+
+std::string encode_unrecoverable_loss_notice(const UnrecoverableLossNotice & notice);
+
+std::optional<UnrecoverableLossNotice> decode_unrecoverable_loss_notice(
+  const std::string & payload);
 
 std::vector<std::uint64_t> missing_sequences_from_ack_nack(const std::string & payload);
 

@@ -175,7 +175,7 @@ int run_client()
   if (service_available) {
     auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
     request->data = true;
-    service_future = client->async_send_request(request);
+    service_future = client->async_send_request(request).future.share();
   }
 
   geometry_msgs::msg::PoseStamped pose;

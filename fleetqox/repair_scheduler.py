@@ -84,7 +84,11 @@ class RepairDecision:
             "selected_paths": list(self.selected_paths),
             "allocated_bytes": self.allocated_bytes,
             "expected_success": self.expected_success,
-            "expected_latency_ms": self.expected_latency_ms,
+            "expected_latency_ms": (
+                self.expected_latency_ms
+                if math.isfinite(self.expected_latency_ms)
+                else None
+            ),
             "remaining_deadline_ms": self.remaining_deadline_ms,
             "utility": self.utility,
             "reason": self.reason,

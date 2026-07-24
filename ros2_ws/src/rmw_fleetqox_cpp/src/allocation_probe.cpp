@@ -17,11 +17,23 @@
 #include "rmw/subscription_options.h"
 #include "rosidl_runtime_c/message_type_support_struct.h"
 
-extern "C" std::uint64_t rmw_fleetqox_cpp_socket_frames_received();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_data_frames_received();
 extern "C" std::uint64_t rmw_fleetqox_cpp_publisher_allocations_initialized();
 extern "C" std::uint64_t rmw_fleetqox_cpp_publisher_allocations_finalized();
 extern "C" std::uint64_t rmw_fleetqox_cpp_subscription_allocations_initialized();
 extern "C" std::uint64_t rmw_fleetqox_cpp_subscription_allocations_finalized();
+extern "C" size_t rmw_fleetqox_cpp_publisher_allocation_payload_capacity(
+  const rmw_publisher_allocation_t * allocation);
+extern "C" size_t rmw_fleetqox_cpp_subscription_allocation_payload_capacity(
+  const rmw_subscription_allocation_t * allocation);
+extern "C" std::uint64_t rmw_fleetqox_cpp_publisher_allocation_uses(
+  const rmw_publisher_allocation_t * allocation);
+extern "C" std::uint64_t rmw_fleetqox_cpp_subscription_allocation_uses(
+  const rmw_subscription_allocation_t * allocation);
+extern "C" std::uint64_t rmw_fleetqox_cpp_publisher_allocation_capacity_growths(
+  const rmw_publisher_allocation_t * allocation);
+extern "C" std::uint64_t rmw_fleetqox_cpp_subscription_allocation_capacity_growths(
+  const rmw_subscription_allocation_t * allocation);
 
 namespace
 {
@@ -69,7 +81,7 @@ std::string serialized_message_string(const rmw_serialized_message_t & message)
 bool wait_for_received_frames(std::uint64_t baseline, std::uint64_t expected_delta)
 {
   for (int attempt = 0; attempt < 200; ++attempt) {
-    if (rmw_fleetqox_cpp_socket_frames_received() >= baseline + expected_delta) {
+    if (rmw_fleetqox_cpp_socket_data_frames_received() >= baseline + expected_delta) {
       return true;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -140,21 +152,60 @@ int main()
 
   rmw_serialized_message_t outgoing = rmw_get_zero_initialized_serialized_message();
   rmw_serialized_message_t incoming = rmw_get_zero_initialized_serialized_message();
-  const std::string payload = "fleetqox allocation ABI no-op publish/take";
+  const std::string payload = "fleetqox allocation-backed payload scratch publish/take";
   const bool messages_initialized =
     init_serialized_message(&outgoing, payload, &allocator) &&
     rmw_serialized_message_init(&incoming, 1, &allocator) == RMW_RET_OK;
 
-  const std::uint64_t frames_before = rmw_fleetqox_cpp_socket_frames_received();
-  const rmw_ret_t publish_ret = publisher == nullptr || !messages_initialized ?
-    RMW_RET_ERROR :
-    rmw_publish_serialized_message(publisher, &outgoing, &publisher_allocation);
-  const bool receive_ready = wait_for_received_frames(frames_before, publish_ret == RMW_RET_OK ? 1 : 0);
+  constexpr std::uint64_t kOperationCount = 8;
+  const size_t publisher_capacity_before =
+    rmw_fleetqox_cpp_publisher_allocation_payload_capacity(&publisher_allocation);
+  const size_t subscription_capacity_before =
+    rmw_fleetqox_cpp_subscription_allocation_payload_capacity(&subscription_allocation);
+  const std::uint64_t frames_before = rmw_fleetqox_cpp_socket_data_frames_received();
+  rmw_ret_t publish_ret = RMW_RET_OK;
+  rmw_ret_t take_ret = RMW_RET_OK;
+  bool receive_ready = true;
   bool taken = false;
-  const rmw_ret_t take_ret = subscription == nullptr || !messages_initialized ?
-    RMW_RET_ERROR :
-    rmw_take_serialized_message(subscription, &incoming, &taken, &subscription_allocation);
-  const std::string received = serialized_message_string(incoming);
+  bool all_received_match = true;
+  std::uint64_t completed_operations = 0;
+  for (std::uint64_t index = 0;
+    index < kOperationCount && publisher != nullptr && subscription != nullptr &&
+    messages_initialized;
+    ++index)
+  {
+    publish_ret = rmw_publish_serialized_message(publisher, &outgoing, &publisher_allocation);
+    receive_ready = publish_ret == RMW_RET_OK &&
+      wait_for_received_frames(frames_before, index + 1);
+    taken = false;
+    take_ret = receive_ready ?
+      rmw_take_serialized_message(subscription, &incoming, &taken, &subscription_allocation) :
+      RMW_RET_ERROR;
+    const std::string received = serialized_message_string(incoming);
+    if (publish_ret != RMW_RET_OK || !receive_ready || take_ret != RMW_RET_OK ||
+      !taken || received != payload)
+    {
+      all_received_match = false;
+      break;
+    }
+    ++completed_operations;
+  }
+  rmw_publisher_allocation_t uninitialized_allocation{};
+  const rmw_ret_t uninitialized_allocation_ret =
+    publisher == nullptr || !messages_initialized ? RMW_RET_ERROR :
+    rmw_publish_serialized_message(publisher, &outgoing, &uninitialized_allocation);
+  const size_t publisher_capacity_after =
+    rmw_fleetqox_cpp_publisher_allocation_payload_capacity(&publisher_allocation);
+  const size_t subscription_capacity_after =
+    rmw_fleetqox_cpp_subscription_allocation_payload_capacity(&subscription_allocation);
+  const std::uint64_t publisher_uses =
+    rmw_fleetqox_cpp_publisher_allocation_uses(&publisher_allocation);
+  const std::uint64_t subscription_uses =
+    rmw_fleetqox_cpp_subscription_allocation_uses(&subscription_allocation);
+  const std::uint64_t publisher_capacity_growths =
+    rmw_fleetqox_cpp_publisher_allocation_capacity_growths(&publisher_allocation);
+  const std::uint64_t subscription_capacity_growths =
+    rmw_fleetqox_cpp_subscription_allocation_capacity_growths(&subscription_allocation);
 
   const std::uint64_t pub_fini_before = rmw_fleetqox_cpp_publisher_allocations_finalized();
   const std::uint64_t sub_fini_before = rmw_fleetqox_cpp_subscription_allocations_finalized();
@@ -192,20 +243,32 @@ int main()
     publisher != nullptr &&
     subscription != nullptr &&
     messages_initialized &&
+    completed_operations == kOperationCount &&
+    all_received_match &&
     publish_ret == RMW_RET_OK &&
     receive_ready &&
     take_ret == RMW_RET_OK &&
-    taken &&
-    received == payload;
+    taken;
+  const bool payload_scratch_reuse_ok =
+    publisher_capacity_before >= payload.size() &&
+    subscription_capacity_before >= payload.size() &&
+    publisher_capacity_after == publisher_capacity_before &&
+    subscription_capacity_after == subscription_capacity_before &&
+    publisher_uses == kOperationCount &&
+    subscription_uses == kOperationCount &&
+    publisher_capacity_growths == 0 &&
+    subscription_capacity_growths == 0 &&
+    uninitialized_allocation_ret == RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
   const bool cleanup_ok =
     outgoing_fini_ret == RMW_RET_OK &&
     incoming_fini_ret == RMW_RET_OK &&
     destroy_pub_ret == RMW_RET_OK &&
     destroy_sub_ret == RMW_RET_OK &&
     destroy_node_ret == RMW_RET_OK;
-  const bool ok = allocation_lifecycle_ok && publish_take_ok && cleanup_ok;
+  const bool ok =
+    allocation_lifecycle_ok && publish_take_ok && payload_scratch_reuse_ok && cleanup_ok;
 
-  std::cout << "{\"schema_version\":\"fleetrmw.allocation_probe.v1\",";
+  std::cout << "{\"schema_version\":\"fleetrmw.allocation_probe.v2\",";
   std::cout << "\"status\":\"" << (ok ? "ok" : "failed") << "\",";
   std::cout << "\"topic\":\"" << topic << "\",";
   std::cout << "\"publisher_allocation_init_ret\":" << static_cast<int>(pub_alloc_init_ret) << ",";
@@ -220,11 +283,25 @@ int main()
   std::cout << "\"take_with_allocation_ret\":" << static_cast<int>(take_ret) << ",";
   std::cout << "\"receive_ready\":" << (receive_ready ? "true" : "false") << ",";
   std::cout << "\"taken\":" << (taken ? "true" : "false") << ",";
-  std::cout << "\"received\":\"" << json_escape(received) << "\",";
+  std::cout << "\"payload\":\"" << json_escape(payload) << "\",";
+  std::cout << "\"operation_count\":" << kOperationCount << ",";
+  std::cout << "\"completed_operations\":" << completed_operations << ",";
+  std::cout << "\"publisher_payload_capacity_before\":" << publisher_capacity_before << ",";
+  std::cout << "\"publisher_payload_capacity_after\":" << publisher_capacity_after << ",";
+  std::cout << "\"subscription_payload_capacity_before\":" << subscription_capacity_before << ",";
+  std::cout << "\"subscription_payload_capacity_after\":" << subscription_capacity_after << ",";
+  std::cout << "\"publisher_allocation_uses\":" << publisher_uses << ",";
+  std::cout << "\"subscription_allocation_uses\":" << subscription_uses << ",";
+  std::cout << "\"publisher_capacity_growths\":" << publisher_capacity_growths << ",";
+  std::cout << "\"subscription_capacity_growths\":" << subscription_capacity_growths << ",";
+  std::cout << "\"uninitialized_allocation_ret\":" <<
+    static_cast<int>(uninitialized_allocation_ret) << ",";
   std::cout << "\"allocation_lifecycle_ok\":" <<
     (allocation_lifecycle_ok ? "true" : "false") << ",";
   std::cout << "\"publish_take_with_allocation_ok\":" <<
     (publish_take_ok ? "true" : "false") << ",";
+  std::cout << "\"payload_scratch_reuse_ok\":" <<
+    (payload_scratch_reuse_ok ? "true" : "false") << ",";
   std::cout << "\"deep_preallocation\":false}" << std::endl;
   return ok ? 0 : 1;
 }

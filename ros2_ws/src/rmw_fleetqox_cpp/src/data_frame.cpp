@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <stdexcept>
 #include <sstream>
 
@@ -91,6 +92,38 @@ std::optional<std::uint64_t> json_uint_value(const std::string & payload, const 
     return std::nullopt;
   }
   return static_cast<std::uint64_t>(std::stoull(payload.substr(i, end - i)));
+}
+
+std::optional<double> json_double_value(const std::string & payload, const std::string & key)
+{
+  const auto value_start = json_value_start(payload, key);
+  if (!value_start) {
+    return std::nullopt;
+  }
+  std::size_t end = *value_start;
+  while (end < payload.size()) {
+    const char c = payload[end];
+    if (!(std::isdigit(static_cast<unsigned char>(c)) || c == '-' || c == '+' ||
+      c == '.' || c == 'e' || c == 'E'))
+    {
+      break;
+    }
+    ++end;
+  }
+  if (end == *value_start) {
+    return std::nullopt;
+  }
+  try {
+    return std::stod(payload.substr(*value_start, end - *value_start));
+  } catch (const std::exception &) {
+    return std::nullopt;
+  }
+}
+
+bool json_bool_value(const std::string & payload, const std::string & key)
+{
+  const auto value_start = json_value_start(payload, key);
+  return value_start && payload.compare(*value_start, 4, "true") == 0;
 }
 
 void encode_graph_qos(std::ostringstream & out, const GraphQosProfile & qos)
@@ -353,6 +386,19 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> missing_ranges_from_ack_nac
   return ranges;
 }
 
+std::vector<std::pair<std::uint64_t, std::uint64_t>> json_uint_pair_array_value(
+  const std::string & payload,
+  const std::string & key)
+{
+  const auto values = uint_values_after(payload, key);
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
+  ranges.reserve(values.size() / 2);
+  for (std::size_t i = 0; i + 1 < values.size(); i += 2) {
+    ranges.emplace_back(values[i], values[i + 1]);
+  }
+  return ranges;
+}
+
 }  // namespace
 
 std::string stream_key(const DataFrame & frame)
@@ -366,8 +412,16 @@ std::string encode_data_frame(const DataFrame & frame)
   out << kDataFrameMagic;
   out << "{\"schema_version\":\"" << kDataFrameSchemaVersion << "\",";
   out << "\"kind\":\"sidecar_packet_frame\",";
+  out << "\"domain_id\":" << frame.domain_id << ",";
+  if (!frame.type_name.empty()) {
+    out << "\"type_name\":\"" << json_escape(frame.type_name) << "\",";
+  }
   out << "\"route\":{\"robot_id\":\"" << json_escape(frame.robot_id) << "\",";
-  out << "\"topic\":\"" << json_escape(frame.topic) << "\"},";
+  out << "\"topic\":\"" << json_escape(frame.topic) << "\"";
+  if (!frame.flow_class.empty()) {
+    out << ",\"flow_class\":\"" << json_escape(frame.flow_class) << "\"";
+  }
+  out << "},";
   out << "\"sample_envelope\":{";
   out << "\"robot_id\":\"" << json_escape(frame.robot_id) << "\",";
   out << "\"topic\":\"" << json_escape(frame.topic) << "\",";
@@ -380,6 +434,21 @@ std::string encode_data_frame(const DataFrame & frame)
     out << "\"encoding\":\"hex\",";
     out << "\"size\":" << frame.serialized_payload.size() << ",";
     out << "\"data\":\"" << hex_encode(frame.serialized_payload) << "\"}";
+  }
+  if (frame.deadline_ms > 0.0) {
+    out << ",\"delivery\":{\"deadline_ms\":" << frame.deadline_ms << "}";
+  }
+  if (frame.qoe_debt > 0.0 || frame.task_criticality > 0.0) {
+    out << ",\"qox\":{\"qoe_debt\":" << frame.qoe_debt << ",";
+    out << "\"task_criticality\":" << frame.task_criticality << "}";
+  }
+  if (frame.age_ms > 0.0) {
+    out << ",\"timing\":{\"age_ms\":" << frame.age_ms << "}";
+  }
+  if (frame.repair_requested || frame.prior_repair_attempts > 0) {
+    out << ",\"repair\":{\"requested\":" <<
+      (frame.repair_requested ? "true" : "false") << ",";
+    out << "\"prior_attempts\":" << frame.prior_repair_attempts << "}";
   }
   out << "}";
   return out.str();
@@ -400,6 +469,10 @@ std::optional<DataFrame> decode_data_frame(const std::string & payload)
   const std::string sample_envelope = json_object_value(body, "sample_envelope").value_or(body);
   const std::string source_metadata = json_object_value(body, "source_metadata").value_or("");
   const std::string serialized_payload = json_object_value(body, "serialized_payload").value_or("");
+  const std::string delivery = json_object_value(body, "delivery").value_or("");
+  const std::string qox = json_object_value(body, "qox").value_or("");
+  const std::string timing = json_object_value(body, "timing").value_or("");
+  const std::string repair = json_object_value(body, "repair").value_or("");
   const auto robot_id = first_present(
     json_string_value(route, "robot_id"),
     json_string_value(sample_envelope, "robot_id"));
@@ -437,7 +510,16 @@ std::optional<DataFrame> decode_data_frame(const std::string & payload)
     *publisher_id,
     *sequence,
     static_cast<std::int64_t>(*timestamp),
-    payload_bytes};
+    payload_bytes,
+    json_uint_value(body, "domain_id").value_or(0),
+    json_string_value(body, "type_name").value_or(""),
+    json_string_value(route, "flow_class").value_or(""),
+    json_double_value(delivery, "deadline_ms").value_or(0.0),
+    json_double_value(timing, "age_ms").value_or(0.0),
+    json_double_value(qox, "qoe_debt").value_or(0.0),
+    json_double_value(qox, "task_criticality").value_or(0.0),
+    json_bool_value(repair, "requested"),
+    json_uint_value(repair, "prior_attempts").value_or(0)};
 }
 
 std::string encode_route_advertisement(const RouteAdvertisement & advertisement)
@@ -446,6 +528,7 @@ std::string encode_route_advertisement(const RouteAdvertisement & advertisement)
   out << kDataFrameMagic;
   out << "{\"schema_version\":\"" << kRouteAdvertisementSchemaVersion << "\",";
   out << "\"kind\":\"route_advertisement\",";
+  out << "\"domain_id\":" << advertisement.domain_id << ",";
   out << "\"endpoint_id\":\"" << json_escape(advertisement.endpoint_id) << "\",";
   out << "\"role\":\"" << json_escape(advertisement.role) << "\",";
   out << "\"topic\":\"" << json_escape(advertisement.topic) << "\",";
@@ -477,6 +560,7 @@ std::optional<RouteAdvertisement> decode_route_advertisement(const std::string &
   advertisement.topic = *topic;
   advertisement.type_name = json_string_value(body, "type_name").value_or("");
   advertisement.lease_ms = json_uint_value(body, "lease_ms").value_or(0);
+  advertisement.domain_id = json_uint_value(body, "domain_id").value_or(0);
   return advertisement;
 }
 
@@ -486,6 +570,7 @@ std::string encode_graph_advertisement(const GraphAdvertisement & advertisement)
   out << kDataFrameMagic;
   out << "{\"schema_version\":\"" << kGraphAdvertisementSchemaVersion << "\",";
   out << "\"kind\":\"graph_advertisement\",";
+  out << "\"domain_id\":" << advertisement.domain_id << ",";
   out << "\"endpoint_id\":\"" << json_escape(advertisement.endpoint_id) << "\",";
   out << "\"action\":\"" << json_escape(advertisement.action) << "\",";
   out << "\"entity_kind\":\"" << json_escape(advertisement.entity_kind) << "\",";
@@ -531,6 +616,7 @@ std::optional<GraphAdvertisement> decode_graph_advertisement(const std::string &
     advertisement.qos = decode_graph_qos(qos);
   }
   advertisement.lease_ms = json_uint_value(body, "lease_ms").value_or(0);
+  advertisement.domain_id = json_uint_value(body, "domain_id").value_or(0);
   return advertisement;
 }
 
@@ -540,6 +626,7 @@ std::string encode_service_frame(const ServiceFrame & frame)
   out << kDataFrameMagic;
   out << "{\"schema_version\":\"" << kServiceFrameSchemaVersion << "\",";
   out << "\"kind\":\"service_frame\",";
+  out << "\"domain_id\":" << frame.domain_id << ",";
   out << "\"role\":\"" << json_escape(frame.role) << "\",";
   out << "\"service_name\":\"" << json_escape(frame.service_name) << "\",";
   out << "\"type_name\":\"" << json_escape(frame.type_name) << "\",";
@@ -604,7 +691,8 @@ std::optional<ServiceFrame> decode_service_frame(const std::string & payload)
     static_cast<std::int64_t>(*sequence_id),
     static_cast<std::int64_t>(*source_timestamp_ns),
     static_cast<std::int64_t>(lifespan_ns),
-    payload_bytes};
+    payload_bytes,
+    json_uint_value(body, "domain_id").value_or(0)};
 }
 
 bool service_frame_expired(const ServiceFrame & frame, std::int64_t now_ns)
@@ -621,6 +709,7 @@ std::string encode_action_frame(const ActionFrame & frame)
   out << kDataFrameMagic;
   out << "{\"schema_version\":\"" << kActionFrameSchemaVersion << "\",";
   out << "\"kind\":\"action_frame\",";
+  out << "\"domain_id\":" << frame.domain_id << ",";
   out << "\"role\":\"" << json_escape(frame.role) << "\",";
   out << "\"action_name\":\"" << json_escape(frame.action_name) << "\",";
   out << "\"type_name\":\"" << json_escape(frame.type_name) << "\",";
@@ -686,7 +775,8 @@ std::optional<ActionFrame> decode_action_frame(const std::string & payload)
     static_cast<std::int64_t>(*sequence_id),
     static_cast<std::int64_t>(*source_timestamp_ns),
     static_cast<std::int64_t>(lifespan_ns),
-    payload_bytes};
+    payload_bytes,
+    json_uint_value(body, "domain_id").value_or(0)};
 }
 
 bool action_frame_expired(const ActionFrame & frame, std::int64_t now_ns)
@@ -722,37 +812,55 @@ AckNackFeedback feedback_from_sequence_state(const SequenceState & state)
   AckNackFeedback feedback;
   feedback.highest_contiguous_sequence = state.highest_contiguous_sequence;
   feedback.highest_observed_sequence = state.highest_observed_sequence;
-  std::uint64_t range_start = 0;
-  std::uint64_t previous = 0;
-  for (std::uint64_t candidate = state.highest_contiguous_sequence + 1;
-    candidate <= state.highest_observed_sequence; ++candidate)
+  if (state.highest_contiguous_sequence >= state.highest_observed_sequence ||
+    state.highest_contiguous_sequence == std::numeric_limits<std::uint64_t>::max())
   {
-    if (state.observed_sequences.find(candidate) != state.observed_sequences.end()) {
-      if (range_start != 0) {
-        feedback.missing_sequence_ranges.emplace_back(range_start, previous);
-      }
-      range_start = 0;
-      previous = 0;
+    return feedback;
+  }
+
+  std::uint64_t next_missing_candidate = state.highest_contiguous_sequence + 1;
+  bool exhausted_sequence_space = false;
+  for (auto observed = state.observed_sequences.lower_bound(next_missing_candidate);
+    observed != state.observed_sequences.end() &&
+    *observed <= state.highest_observed_sequence;
+    ++observed)
+  {
+    if (*observed < next_missing_candidate) {
       continue;
     }
-    if (range_start == 0) {
-      range_start = candidate;
+    if (*observed > next_missing_candidate) {
+      feedback.missing_sequence_ranges.emplace_back(
+        next_missing_candidate, *observed - 1);
     }
-    previous = candidate;
+    if (*observed == std::numeric_limits<std::uint64_t>::max()) {
+      exhausted_sequence_space = true;
+      break;
+    }
+    next_missing_candidate = *observed + 1;
   }
-  if (range_start != 0) {
-    feedback.missing_sequence_ranges.emplace_back(range_start, previous);
+  if (!exhausted_sequence_space &&
+    next_missing_candidate <= state.highest_observed_sequence)
+  {
+    feedback.missing_sequence_ranges.emplace_back(
+      next_missing_candidate, state.highest_observed_sequence);
   }
   return feedback;
 }
 
-std::string encode_ack_nack(const DataFrame & frame, const AckNackFeedback & feedback)
+std::string encode_ack_nack(
+  const DataFrame & frame,
+  const AckNackFeedback & feedback,
+  const std::string & subscriber_id)
 {
   std::ostringstream out;
   out << "{\"schema_version\":\"" << kAckNackSchemaVersion << "\",";
   out << "\"kind\":\"source_sequence_ack_nack\",";
+  out << "\"domain_id\":" << frame.domain_id << ",";
   out << "\"robot_id\":\"" << json_escape(frame.robot_id) << "\",";
   out << "\"source_topic\":\"" << json_escape(frame.topic) << "\",";
+  if (!subscriber_id.empty()) {
+    out << "\"subscriber_id\":\"" << json_escape(subscriber_id) << "\",";
+  }
   out << "\"stream_key\":[\"source_stream\",\"" << json_escape(frame.robot_id) << "\",";
   out << "\"" << json_escape(frame.topic) << "\",\"" << json_escape(frame.publisher_id) << "\"],";
   out << "\"ack\":{\"source_sequence_number\":" << frame.source_sequence_number << ",";
@@ -796,6 +904,7 @@ std::optional<AckNackFrame> decode_ack_nack(const std::string & payload)
   frame.robot_id = *robot_id;
   frame.topic = *topic;
   frame.publisher_id = stream_key[3];
+  frame.subscriber_id = json_string_value(body, "subscriber_id").value_or("");
   frame.ack_sequence_number = *sequence;
   frame.source_timestamp_ns = static_cast<std::int64_t>(*timestamp);
   frame.missing_sequence_ranges = missing_ranges_from_ack_nack(body);
@@ -805,7 +914,69 @@ std::optional<AckNackFrame> decode_ack_nack(const std::string & payload)
     json_uint_value(state, "highest_observed_sequence").value_or(0);
   frame.duplicate = body.find("\"duplicate\":true") != std::string::npos;
   frame.out_of_order = body.find("\"out_of_order\":true") != std::string::npos;
+  frame.domain_id = json_uint_value(body, "domain_id").value_or(0);
   return frame;
+}
+
+std::string encode_unrecoverable_loss_notice(const UnrecoverableLossNotice & notice)
+{
+  std::ostringstream out;
+  out << "{\"schema_version\":\"" << kUnrecoverableLossNoticeSchemaVersion << "\",";
+  out << "\"kind\":\"source_sequence_unrecoverable\",";
+  out << "\"domain_id\":" << notice.domain_id << ",";
+  out << "\"robot_id\":\"" << json_escape(notice.robot_id) << "\",";
+  out << "\"source_topic\":\"" << json_escape(notice.topic) << "\",";
+  out << "\"publisher_id\":\"" << json_escape(notice.publisher_id) << "\",";
+  out << "\"subscriber_id\":\"" << json_escape(notice.subscriber_id) << "\",";
+  out << "\"source_timestamp_ns\":" << notice.source_timestamp_ns << ",";
+  out << "\"lost_sequence_ranges\":[";
+  for (std::size_t i = 0; i < notice.lost_sequence_ranges.size(); ++i) {
+    if (i > 0) {
+      out << ",";
+    }
+    out << "[" << notice.lost_sequence_ranges[i].first << ",";
+    out << notice.lost_sequence_ranges[i].second << "]";
+  }
+  out << "]}";
+  return out.str();
+}
+
+std::optional<UnrecoverableLossNotice> decode_unrecoverable_loss_notice(
+  const std::string & payload)
+{
+  const std::string stripped = strip_padding(payload);
+  const std::string body = stripped.rfind(kDataFrameMagic, 0) == 0 ?
+    stripped.substr(std::string(kDataFrameMagic).size()) : stripped;
+  if (!json_has_string_value(
+      body, "schema_version", kUnrecoverableLossNoticeSchemaVersion) ||
+    !json_has_string_value(body, "kind", "source_sequence_unrecoverable"))
+  {
+    return std::nullopt;
+  }
+  const auto robot_id = json_string_value(body, "robot_id");
+  const auto topic = json_string_value(body, "source_topic");
+  const auto publisher_id = json_string_value(body, "publisher_id");
+  const auto subscriber_id = json_string_value(body, "subscriber_id");
+  const auto timestamp = json_uint_value(body, "source_timestamp_ns");
+  const auto ranges = json_uint_pair_array_value(body, "lost_sequence_ranges");
+  if (!robot_id || !topic || !publisher_id || !subscriber_id || !timestamp ||
+    subscriber_id->empty() || ranges.empty())
+  {
+    return std::nullopt;
+  }
+  for (const auto & range : ranges) {
+    if (range.first == 0 || range.first > range.second) {
+      return std::nullopt;
+    }
+  }
+  return UnrecoverableLossNotice{
+    *robot_id,
+    *topic,
+    *publisher_id,
+    *subscriber_id,
+    static_cast<std::int64_t>(*timestamp),
+    ranges,
+    json_uint_value(body, "domain_id").value_or(0)};
 }
 
 std::vector<std::uint64_t> missing_sequences_from_ack_nack(const std::string & payload)

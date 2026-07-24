@@ -697,6 +697,9 @@ class SidecarRuntimeTest(unittest.TestCase):
                     ],
                 }
             )
+            tracked = runtime._control_lease_ack_tracker[("robot_0000", 44)]
+            self.assertTrue(tracked["ack_nack_gap_pending"])
+            tracked["first_send_ns"] -= 3_000_000_000
             flushed = runtime._flush_control_lease_ack_retransmits(
                 "event_json",
                 tick=2,
@@ -713,6 +716,7 @@ class SidecarRuntimeTest(unittest.TestCase):
             1,
         )
         self.assertEqual(flushed, 1)
+        self.assertNotIn("ack_nack_gap_pending", tracked)
         self.assertEqual(len(fake_udp.payloads), 2)
         retransmit = json.loads(fake_udp.payloads[1].rstrip(b" ").decode("utf-8"))
         self.assertEqual(retransmit["event_id"], 44)
@@ -1576,6 +1580,7 @@ class SidecarRuntimeTest(unittest.TestCase):
                     decision_log=Path(tmpdir) / "decisions.jsonl",
                 )
             )
+            ready_event = threading.Event()
             thread = threading.Thread(
                 target=serve_tcp,
                 kwargs={
@@ -1584,10 +1589,12 @@ class SidecarRuntimeTest(unittest.TestCase):
                     "runtime": runtime,
                     "idle_timeout_s": 5.0,
                     "max_runtime_s": 5.0,
+                    "ready_event": ready_event,
                 },
                 daemon=True,
             )
             thread.start()
+            self.assertTrue(ready_event.wait(timeout=2.0))
             batches = generate_synthetic_batches(
                 scenario="runtime_tcp_test",
                 robots=1,
@@ -1613,6 +1620,7 @@ class SidecarRuntimeTest(unittest.TestCase):
                 policy="fleetqox_semantic_contract_budgeted",
             )
         )
+        ready_event = threading.Event()
         thread = threading.Thread(
             target=serve_tcp,
             kwargs={
@@ -1621,10 +1629,12 @@ class SidecarRuntimeTest(unittest.TestCase):
                 "runtime": runtime,
                 "idle_timeout_s": 5.0,
                 "max_runtime_s": 5.0,
+                "ready_event": ready_event,
             },
             daemon=True,
         )
         thread.start()
+        self.assertTrue(ready_event.wait(timeout=2.0))
         batch = generate_synthetic_batches(
             scenario="runtime_tcp_feedback_test",
             robots=1,

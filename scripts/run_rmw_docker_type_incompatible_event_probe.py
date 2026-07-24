@@ -1,0 +1,150 @@
+"""Build and run the FleetRMW incompatible-type QoS event probe."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import subprocess
+import sys
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.run_rmw_docker_shared_memory_probe import parse_last_json
+
+
+SCHEMA_VERSION = "fleetrmw.docker_type_incompatible_event_probe.v1"
+DEFAULT_IMAGE = "localhost/fleetrmw/rmw-netem:jazzy"
+
+
+def parse_json_rows(stdout: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            rows.append(data)
+    return rows
+
+
+def type_incompatible_probe_ok(probe: dict[str, Any]) -> bool:
+    return (
+        probe.get("status") == "ok"
+        and probe.get("type_incompatible_event_production") is True
+        and probe.get("publisher_incompatible_type_supported") is True
+        and probe.get("subscription_incompatible_type_supported") is True
+        and probe.get("publisher_taken") is True
+        and probe.get("publisher_wait_ready") is True
+        and probe.get("publisher_total_count") == 1
+        and probe.get("publisher_total_count_change") == 1
+        and int(probe.get("publisher_callback_events", 0)) >= 1
+        and probe.get("publisher_mismatched_endpoint_matched_taken") is False
+        and probe.get("publisher_mismatched_endpoint_matched_wait_ready") is False
+        and probe.get("subscription_taken") is True
+        and probe.get("subscription_wait_ready") is True
+        and probe.get("subscription_total_count") == 1
+        and probe.get("subscription_total_count_change") == 1
+        and int(probe.get("subscription_callback_events", 0)) >= 1
+        and probe.get("subscription_mismatched_endpoint_matched_taken") is False
+        and probe.get("subscription_mismatched_endpoint_matched_wait_ready") is False
+    )
+
+
+def run_probe(*, root: Path, image: str, iterations: int = 1) -> dict[str, Any]:
+    run_count = max(iterations, 1)
+    command = (
+        "source /opt/ros/jazzy/setup.bash && "
+        "rm -rf /tmp/fq-type-incompat-build /tmp/fq-type-incompat-install "
+        "/tmp/fq-type-incompat-log && "
+        "colcon --log-base /tmp/fq-type-incompat-log build --base-paths ros2_ws/src "
+        "--packages-select rmw_fleetqox_cpp --build-base /tmp/fq-type-incompat-build "
+        "--install-base /tmp/fq-type-incompat-install --cmake-args -DCMAKE_BUILD_TYPE=Release "
+        ">/dev/null && source /tmp/fq-type-incompat-install/setup.bash && "
+        f"for i in $(seq 1 {run_count}); do "
+        "/tmp/fq-type-incompat-install/rmw_fleetqox_cpp/lib/rmw_fleetqox_cpp/"
+        "fleetrmw_type_incompatible_event_probe || exit $?; done"
+    )
+    completed = subprocess.run(
+        [
+            "docker", "run", "--rm", "--entrypoint", "bash",
+            "-v", f"{root}:/work", "-w", "/work", image, "-lc", command,
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    rows = parse_json_rows(completed.stdout)
+    probe = rows[-1] if rows else parse_last_json(completed.stdout)
+    ok_run_count = sum(1 for row in rows if type_incompatible_probe_ok(row))
+    ok = (
+        completed.returncode == 0
+        and len(rows) == run_count
+        and ok_run_count == run_count
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": "ok" if ok else "failed",
+        "image": image,
+        "returncode": completed.returncode,
+        "run_count": run_count,
+        "ok_run_count": ok_run_count,
+        "type_incompatible_event_production": ok,
+        "type_incompatible_event_scope": "local_same_process_same_topic_type_mismatch",
+        "type_incompatible_repeated_event_claim": ok and run_count >= 5,
+        "publisher_total_count": probe.get("publisher_total_count"),
+        "publisher_total_count_change": probe.get("publisher_total_count_change"),
+        "publisher_callback_events": probe.get("publisher_callback_events"),
+        "publisher_mismatched_endpoint_matched_taken": probe.get(
+            "publisher_mismatched_endpoint_matched_taken"
+        ),
+        "publisher_mismatched_endpoint_matched_wait_ready": probe.get(
+            "publisher_mismatched_endpoint_matched_wait_ready"
+        ),
+        "subscription_total_count": probe.get("subscription_total_count"),
+        "subscription_total_count_change": probe.get("subscription_total_count_change"),
+        "subscription_callback_events": probe.get("subscription_callback_events"),
+        "subscription_mismatched_endpoint_matched_taken": probe.get(
+            "subscription_mismatched_endpoint_matched_taken"
+        ),
+        "subscription_mismatched_endpoint_matched_wait_ready": probe.get(
+            "subscription_mismatched_endpoint_matched_wait_ready"
+        ),
+        "probe": probe,
+        "runs": rows,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--iterations", type=int, default=1)
+    parser.add_argument(
+        "--summary-json",
+        default="results_rmw_socket/docker_type_incompatible_event_probe_summary.json",
+    )
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    summary = run_probe(root=ROOT, image=args.image, iterations=args.iterations)
+    output = ROOT / args.summary_json
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.json:
+        print(json.dumps(summary, sort_keys=True))
+    else:
+        print(f"status={summary['status']}")
+    return 0 if summary["status"] == "ok" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

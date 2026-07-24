@@ -432,6 +432,7 @@ class Ros2LiveBridgeTest(unittest.TestCase):
                     decision_log=Path(tmpdir) / "decisions.jsonl",
                 )
             )
+            ready = threading.Event()
             thread = threading.Thread(
                 target=serve_tcp,
                 kwargs={
@@ -440,11 +441,13 @@ class Ros2LiveBridgeTest(unittest.TestCase):
                     "runtime": runtime,
                     "idle_timeout_s": 5.0,
                     "max_runtime_s": 5.0,
+                    "ready_event": ready,
                 },
                 daemon=True,
             )
             thread.start()
             try:
+                self.assertTrue(ready.wait(timeout=2.0))
                 client = SidecarTcpClient("127.0.0.1", listen_port)
                 response = client.send_batch(batch)
                 stop = client.stop()

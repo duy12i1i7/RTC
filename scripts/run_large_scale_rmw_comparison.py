@@ -253,7 +253,12 @@ def row_needs_infrastructure_rerun(row: dict[str, Any]) -> bool:
     )
     process_failed = any(
         int(result.get(key, 0) or 0) != 0
-        for key in ("publisher_returncode", "subscriber_returncode", "router_returncode")
+        for key in (
+            "publisher_returncode",
+            "relay_returncode",
+            "subscriber_returncode",
+            "router_returncode",
+        )
     )
     return delivered and process_failed
 

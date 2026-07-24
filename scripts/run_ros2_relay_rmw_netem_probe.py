@@ -1,0 +1,491 @@
+"""Run a publisher-relay-subscriber ROS 2 RMW baseline under Docker netem."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.run_rmw_docker_multi_robot_live_telemetry_plan_probe import (  # noqa: E402
+    NETEM_SCHEMA_VERSION,
+    NETEM_SEED_SEMANTICS,
+    netem_config_for_path,
+    netem_shell_prefix,
+    profile_by_name,
+)
+from scripts.run_ros2_direct_rmw_netem_probe import (  # noqa: E402
+    PUBLISHER_SCRIPT,
+    SUBSCRIBER_SCRIPT,
+    _float,
+    container_diagnostics,
+    excerpt,
+    netem_status_ok,
+    parse_last_json,
+    probe_rmw_available,
+    read_json,
+    ros_command,
+    run,
+    start_container,
+    topic_specs_for_robot_count,
+    wait_for_container_path,
+    wait_for_container_tcp,
+    write_zenoh_session_config,
+)
+
+
+SCHEMA_VERSION = "fleetrmw.ros2_relay_rmw_netem_probe.v1"
+DEFAULT_IMAGE = "localhost/fleetrmw/rmw-netem:jazzy"
+
+
+def ingress_specs(specs: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [
+        {**spec, "topic": f"{spec['topic']}/_fleetqox_ingress"}
+        for spec in specs
+    ]
+
+
+def write_relay_probe_scripts(
+    *,
+    subscriber_script: Path,
+    publisher_script: Path,
+    relay_script: Path,
+    destination_specs: list[dict[str, str]],
+    source_specs: list[dict[str, str]],
+    samples: int,
+    publish_interval_ms: int,
+    timeout_s: float,
+    publisher_linger_s: float,
+) -> None:
+    destination_json = json.dumps(destination_specs, sort_keys=True)
+    source_json = json.dumps(source_specs, sort_keys=True)
+    subscriber_script.write_text(
+        SUBSCRIBER_SCRIPT.replace("__SAMPLES__", str(samples))
+        .replace("__TIMEOUT_S__", repr(timeout_s))
+        .replace("__TOPIC_SPECS_JSON__", destination_json),
+        encoding="utf-8",
+    )
+    publisher_script.write_text(
+        PUBLISHER_SCRIPT.replace("__SAMPLES__", str(samples))
+        .replace("__PUBLISH_INTERVAL_S__", repr(publish_interval_ms / 1000.0))
+        .replace("__PUBLISHER_LINGER_S__", repr(publisher_linger_s))
+        .replace("__TOPIC_SPECS_JSON__", source_json),
+        encoding="utf-8",
+    )
+    mappings = [
+        {
+            "source": source["topic"],
+            "destination": destination["topic"],
+            "kind": destination["kind"],
+            "flow": destination["flow"],
+        }
+        for source, destination in zip(source_specs, destination_specs, strict=True)
+    ]
+    relay_script.write_text(
+        RELAY_SCRIPT.replace("__MAPPINGS_JSON__", json.dumps(mappings, sort_keys=True))
+        .replace("__SAMPLES__", str(samples))
+        .replace("__TIMEOUT_S__", repr(timeout_s))
+        .replace("__RELAY_LINGER_S__", repr(publisher_linger_s + 0.5)),
+        encoding="utf-8",
+    )
+
+
+def run_probe(
+    *,
+    root: Path,
+    image: str,
+    rmw: str,
+    profile: str,
+    enable_netem: bool,
+    require_netem: bool,
+    netem_loss_scale: float,
+    repetition_seed: int | None,
+    samples: int,
+    robot_count: int,
+    publish_interval_ms: int,
+    timeout_s: float,
+    publisher_linger_s: float = 6.0,
+) -> dict[str, Any]:
+    if samples <= 0 or robot_count <= 0:
+        raise ValueError("samples and robot_count must be positive")
+    if publish_interval_ms < 0 or timeout_s <= 0 or publisher_linger_s < 0:
+        raise ValueError("timing values are outside their valid range")
+    if netem_loss_scale < 0:
+        raise ValueError("netem_loss_scale must be non-negative")
+    destinations = topic_specs_for_robot_count(robot_count)
+    sources = ingress_specs(destinations)
+    expected_control = samples * robot_count
+    expected_state = samples * robot_count
+    availability = probe_rmw_available(image, rmw)
+    if not availability["available"]:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "skipped",
+            "reason": "rmw_unavailable",
+            "image": image,
+            "rmw": rmw,
+            "profile": profile,
+            "robot_count": robot_count,
+            "rmw_probe": availability,
+        }
+
+    nonce = time.time_ns()
+    suffix = f"{os.getpid()}-{nonce}"
+    domain_id = 120 + (nonce % 80)
+    network = f"fleetrmw-ros2-relay-net-{suffix}"
+    subscriber_name = f"fleetrmw-ros2-relay-sub-{suffix}"
+    relay_name = f"fleetrmw-ros2-relay-mid-{suffix}"
+    publisher_name = f"fleetrmw-ros2-relay-pub-{suffix}"
+    zenoh_router_name = f"fleetrmw-ros2-relay-zenoh-router-{suffix}"
+    work_dir = root / f".tmp_fleetrmw_ros2_relay_{suffix}"
+    subscriber_script = work_dir / "subscriber.py"
+    relay_script = work_dir / "relay.py"
+    publisher_script = work_dir / "publisher.py"
+    netem_status_path = work_dir / "publisher_netem_status.json"
+    netem_status_container = f"/work/{netem_status_path.relative_to(root)}"
+    publisher_ready_container = "/tmp/fleetrmw_probe_ready"
+    publisher_start_container = "/tmp/fleetrmw_probe_start"
+    zenoh_config = work_dir / "zenoh-session-router.json5"
+    zenoh_config_container = f"/work/{zenoh_config.relative_to(root)}"
+    use_zenoh_router = rmw == "rmw_zenoh_cpp"
+    netem = netem_config_for_path(
+        profile_by_name(profile),
+        path_id="primary_wifi",
+        loss_scale=netem_loss_scale,
+        repetition_seed=repetition_seed,
+    )
+    try:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        write_relay_probe_scripts(
+            subscriber_script=subscriber_script,
+            relay_script=relay_script,
+            publisher_script=publisher_script,
+            destination_specs=destinations,
+            source_specs=sources,
+            samples=samples,
+            publish_interval_ms=publish_interval_ms,
+            timeout_s=timeout_s,
+            publisher_linger_s=publisher_linger_s,
+        )
+        run(["docker", "network", "create", network])
+        if use_zenoh_router:
+            write_zenoh_session_config(zenoh_config, router_host=zenoh_router_name)
+            start_container(
+                root=root,
+                image=image,
+                name=zenoh_router_name,
+                network=network,
+                command=(
+                    "source /opt/ros/jazzy/setup.bash && "
+                    "exec ros2 run rmw_zenoh_cpp rmw_zenohd"
+                ),
+            )
+            wait_for_container_tcp(zenoh_router_name, port=7447, timeout_s=15.0)
+
+        def command_for(script: Path) -> str:
+            return ros_command(
+                rmw=rmw,
+                domain_id=domain_id,
+                python_path=f"/work/{script.relative_to(root)}",
+                zenoh_session_config_uri=(
+                    zenoh_config_container if use_zenoh_router else None
+                ),
+            )
+
+        start_container(
+            root=root,
+            image=image,
+            name=subscriber_name,
+            network=network,
+            command=command_for(subscriber_script),
+        )
+        time.sleep(0.5)
+        start_container(
+            root=root,
+            image=image,
+            name=relay_name,
+            network=network,
+            command=command_for(relay_script),
+        )
+        time.sleep(1.0)
+        start_container(
+            root=root,
+            image=image,
+            name=publisher_name,
+            network=network,
+            command=(
+                f"export FLEETQOX_PROBE_READY_FILE={publisher_ready_container} "
+                f"FLEETQOX_PROBE_START_FILE={publisher_start_container} && "
+                + command_for(publisher_script)
+            ),
+            extra_args=("--cap-add", "NET_ADMIN") if enable_netem else (),
+        )
+        wait_for_container_path(
+            publisher_name, publisher_ready_container, timeout_s=12.0
+        )
+        if enable_netem:
+            run(
+                [
+                    "docker",
+                    "exec",
+                    publisher_name,
+                    "bash",
+                    "-lc",
+                    netem_shell_prefix(
+                        netem,
+                        status_file=netem_status_container,
+                        require=require_netem,
+                    ),
+                ]
+            )
+        run(["docker", "exec", publisher_name, "touch", publisher_start_container])
+        publisher_rc = int(run(["docker", "wait", publisher_name]).stdout.strip())
+        relay_rc = int(run(["docker", "wait", relay_name]).stdout.strip())
+        subscriber_rc = int(run(["docker", "wait", subscriber_name]).stdout.strip())
+        publisher = parse_last_json(run(["docker", "logs", publisher_name]).stdout)
+        relay = parse_last_json(run(["docker", "logs", relay_name]).stdout)
+        subscriber = parse_last_json(run(["docker", "logs", subscriber_name]).stdout)
+        netem_status = {"direct_pub": read_json(netem_status_path)}
+        netem_ok = netem_status_ok(
+            netem_status, enabled=enable_netem, required=require_netem
+        )
+        control_count = int(subscriber.get("control_payload_count", 0))
+        state_count = int(subscriber.get("state_payload_count", 0))
+        relay_count = int(relay.get("relayed_count", 0))
+        expected_total = len(destinations) * samples
+        ok = (
+            publisher_rc == 0
+            and relay_rc == 0
+            and subscriber_rc == 0
+            and publisher.get("status") == "ok"
+            and relay.get("status") == "ok"
+            and subscriber.get("status") == "ok"
+            and relay_count >= expected_total
+            and control_count >= expected_control
+            and state_count >= expected_state
+            and netem_ok
+        )
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok" if ok else "failed",
+            "system": rmw,
+            "topology": "publisher-relay-subscriber",
+            "relay_scope": "rclpy_std_msgs_string_deserialize_republish",
+            "image": image,
+            "rmw": rmw,
+            "profile": profile,
+            "profile_config": profile_by_name(profile).as_dict(),
+            "robot_count": robot_count,
+            "topic_count": len(destinations),
+            "samples": samples,
+            "repetition_seed": repetition_seed,
+            "publisher_linger_s": publisher_linger_s,
+            "zenoh_router_enabled": use_zenoh_router,
+            "netem_enabled": enable_netem,
+            "netem_required": require_netem,
+            "netem_loss_scale": netem_loss_scale,
+            "netem": netem,
+            "netem_status": netem_status,
+            "netem_schema_version": NETEM_SCHEMA_VERSION,
+            "netem_seed_semantics": NETEM_SEED_SEMANTICS if enable_netem else "",
+            "rmw_probe": availability,
+            "publisher_returncode": publisher_rc,
+            "relay_returncode": relay_rc,
+            "subscriber_returncode": subscriber_rc,
+            "publisher": publisher,
+            "relay": relay,
+            "subscriber": subscriber,
+            "relay_expected_count": expected_total,
+            "relay_payload_count": relay_count,
+            "control_payload_count": control_count,
+            "state_payload_count": state_count,
+            "control_expected_count": expected_control,
+            "state_expected_count": expected_state,
+            "control_delivery_ratio": control_count / expected_control,
+            "state_delivery_ratio": state_count / expected_state,
+            "control_latency_ms_mean": _float(
+                subscriber.get("control_latency_ms_mean")
+            ),
+            "state_latency_ms_mean": _float(
+                subscriber.get("state_latency_ms_mean")
+            ),
+            "control_latency_ms_p95": _float(
+                subscriber.get("control_latency_ms_p95")
+            ),
+            "state_latency_ms_p95": _float(subscriber.get("state_latency_ms_p95")),
+            "min_topic_delivery_ratio": _float(
+                subscriber.get("min_topic_delivery_ratio")
+            ),
+            "per_topic_payload_count": subscriber.get("per_topic_payload_count", {}),
+            "per_topic_delivery_ratio": subscriber.get("per_topic_delivery_ratio", {}),
+        }
+    except subprocess.CalledProcessError as exc:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "failed",
+            "reason": "harness_exception",
+            "image": image,
+            "rmw": rmw,
+            "profile": profile,
+            "robot_count": robot_count,
+            "repetition_seed": repetition_seed,
+            "returncode": exc.returncode,
+            "stdout_excerpt": excerpt(exc.stdout),
+            "stderr_excerpt": excerpt(exc.stderr),
+            "publisher_diagnostics": container_diagnostics(publisher_name),
+            "relay_diagnostics": container_diagnostics(relay_name),
+            "subscriber_diagnostics": container_diagnostics(subscriber_name),
+            "zenoh_router_diagnostics": (
+                container_diagnostics(zenoh_router_name) if use_zenoh_router else {}
+            ),
+        }
+    finally:
+        for name in (
+            publisher_name,
+            relay_name,
+            subscriber_name,
+            zenoh_router_name,
+        ):
+            subprocess.run(
+                ["docker", "rm", "-f", name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        subprocess.run(
+            ["docker", "network", "rm", network],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--rmw", default="rmw_fastrtps_cpp")
+    parser.add_argument("--profile", default="roaming")
+    parser.add_argument("--enable-netem", action="store_true")
+    parser.add_argument("--require-netem", action="store_true")
+    parser.add_argument("--netem-loss-scale", type=float, default=0.25)
+    parser.add_argument("--repetition-seed", type=int, default=7)
+    parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument("--robot-count", type=int, default=8)
+    parser.add_argument("--publish-interval-ms", type=int, default=50)
+    parser.add_argument("--timeout-s", type=float, default=25.0)
+    parser.add_argument("--publisher-linger-s", type=float, default=6.0)
+    parser.add_argument(
+        "--summary-json",
+        type=Path,
+        default=Path("results_rmw_socket/ros2_relay_rmw_netem_probe_summary.json"),
+    )
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    summary = run_probe(
+        root=ROOT,
+        image=args.image,
+        rmw=args.rmw,
+        profile=args.profile,
+        enable_netem=args.enable_netem,
+        require_netem=args.require_netem,
+        netem_loss_scale=max(args.netem_loss_scale, 0.0),
+        repetition_seed=args.repetition_seed,
+        samples=max(args.samples, 1),
+        robot_count=max(args.robot_count, 1),
+        publish_interval_ms=max(args.publish_interval_ms, 0),
+        timeout_s=max(args.timeout_s, 1.0),
+        publisher_linger_s=max(args.publisher_linger_s, 0.0),
+    )
+    args.summary_json.parent.mkdir(parents=True, exist_ok=True)
+    args.summary_json.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    if args.json:
+        print(json.dumps(summary, sort_keys=True))
+    else:
+        print(
+            f"status={summary['status']} rmw={summary.get('rmw')} "
+            f"relay={summary.get('relay_payload_count')}"
+        )
+    return 0 if summary["status"] in {"ok", "skipped"} else 1
+
+
+RELAY_SCRIPT = r'''
+import json
+import time
+
+import rclpy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from std_msgs.msg import String
+
+MAPPINGS = __MAPPINGS_JSON__
+SAMPLES = __SAMPLES__
+TIMEOUT_S = __TIMEOUT_S__
+RELAY_LINGER_S = __RELAY_LINGER_S__
+
+rclpy.init()
+node = rclpy.create_node("fleetrmw_same_hop_baseline_relay")
+qos = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=max(10, SAMPLES * 2),
+    reliability=ReliabilityPolicy.RELIABLE,
+)
+publishers = {
+    mapping["source"]: node.create_publisher(String, mapping["destination"], qos)
+    for mapping in MAPPINGS
+}
+counts = {mapping["source"]: 0 for mapping in MAPPINGS}
+
+
+def make_callback(source):
+    def callback(message):
+        publishers[source].publish(message)
+        counts[source] += 1
+    return callback
+
+
+subscriptions = [
+    node.create_subscription(String, mapping["source"], make_callback(mapping["source"]), qos)
+    for mapping in MAPPINGS
+]
+discovery_deadline = time.time() + 8.0
+while time.time() < discovery_deadline:
+    rclpy.spin_once(node, timeout_sec=0.05)
+    if all(publisher.get_subscription_count() > 0 for publisher in publishers.values()):
+        break
+
+deadline = time.time() + TIMEOUT_S
+while time.time() < deadline:
+    rclpy.spin_once(node, timeout_sec=0.1)
+    if all(count >= SAMPLES for count in counts.values()):
+        break
+
+time.sleep(RELAY_LINGER_S)
+status = "ok" if all(count >= SAMPLES for count in counts.values()) else "failed"
+result = {
+    "status": status,
+    "relayed_count": sum(counts.values()),
+    "expected_count": SAMPLES * len(MAPPINGS),
+    "per_source_count": counts,
+    "min_source_count": min(counts.values()) if counts else 0,
+    "mapping_count": len(MAPPINGS),
+}
+print(json.dumps(result, sort_keys=True))
+node.destroy_node()
+rclpy.shutdown()
+raise SystemExit(0 if status == "ok" else 1)
+'''
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

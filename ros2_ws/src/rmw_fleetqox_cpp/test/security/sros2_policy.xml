@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<policy version="0.2.0"
+  xmlns:xi="http://www.w3.org/2001/XInclude">
+  <enclaves>
+    <enclave path="/fleetqox/security_probe">
+      <profiles>
+        <profile ns="/fleetqox" node="sros2_permissions_probe">
+          <topics publish="DENY">
+            <topic>/fleetqox/sros2_denied</topic>
+          </topics>
+          <topics subscribe="DENY">
+            <topic>/fleetqox/sros2_subscribe_denied</topic>
+          </topics>
+          <topics publish="ALLOW" subscribe="ALLOW">
+            <topic>/fleetqox/sros2_allowed</topic>
+            <topic>/parameter_events</topic>
+            <topic>/rosout</topic>
+          </topics>
+          <topics publish="ALLOW">
+            <topic>/fleetqox/sros2_subscribe_denied</topic>
+            <topic>/fleetqox/sros2_subscribe_default_denied</topic>
+          </topics>
+          <services request="ALLOW" reply="ALLOW">
+            <service>/fleetqox/sros2_allowed_service</service>
+          </services>
+          <services request="DENY">
+            <service>/fleetqox/sros2_request_denied_service</service>
+          </services>
+          <services request="ALLOW" reply="DENY">
+            <service>/fleetqox/sros2_response_denied_service</service>
+          </services>
+          <actions call="ALLOW" execute="ALLOW">
+            <action>/fleetqox/lookup_transform</action>
+          </actions>
+          <actions call="DENY" execute="ALLOW">
+            <action>/fleetqox/lookup_transform_call_denied</action>
+          </actions>
+          <actions call="ALLOW" execute="DENY">
+            <action>/fleetqox/lookup_transform_execute_denied</action>
+          </actions>
+        </profile>
+      </profiles>
+    </enclave>
+  </enclaves>
+</policy>

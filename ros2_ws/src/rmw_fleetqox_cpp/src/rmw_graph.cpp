@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include <set>
 #include <string>
 #include <tuple>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -23,6 +25,9 @@
 #include "rmw/rmw.h"
 #include "rmw/topic_endpoint_info_array.h"
 
+extern "C" void rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(
+  std::size_t domain_id);
+
 namespace
 {
 
@@ -30,6 +35,7 @@ constexpr const char * kIdentifier = "rmw_fleetqox_cpp";
 
 struct NodeRecord
 {
+  std::size_t domain_id = 0;
   std::string name;
   std::string namespace_;
   std::size_t count = 0;
@@ -53,7 +59,10 @@ struct ServiceRecord
   std::size_t client_count = 0;
 };
 
+using GraphNameKey = std::pair<std::size_t, std::string>;
+using NodeKey = std::tuple<std::size_t, std::string, std::string>;
 using RemoteGraphKey = std::tuple<
+  std::uint64_t,
   std::string,
   std::string,
   std::string,
@@ -65,6 +74,7 @@ using SteadyClock = std::chrono::steady_clock;
 struct RemoteGraphEndpoint
 {
   bool publisher = false;
+  std::uint64_t domain_id = 0;
   std::string node_name;
   std::string node_namespace;
   std::string topic_name;
@@ -78,6 +88,7 @@ struct RemoteGraphEndpoint
 struct LocalGraphEndpoint
 {
   bool publisher = false;
+  std::size_t domain_id = 0;
   std::string node_name;
   std::string node_namespace;
   std::string topic_name;
@@ -101,32 +112,37 @@ struct TopicEndpointSnapshot
 struct LocalServiceGraphEndpoint
 {
   bool service = false;
+  std::size_t domain_id = 0;
   std::string node_name;
   std::string node_namespace;
   std::string service_name;
   std::string type_name;
   std::string endpoint_id;
+  rmw_qos_profile_t qos = rmw_qos_profile_default;
 };
 
 struct RemoteServiceGraphEndpoint
 {
   bool service = false;
+  std::uint64_t domain_id = 0;
   std::string node_name;
   std::string node_namespace;
   std::string service_name;
   std::string type_name;
   std::string endpoint_id;
+  rmw_qos_profile_t qos = rmw_qos_profile_default;
   SteadyClock::time_point expires_at;
 };
 
 std::mutex g_graph_mutex;
-std::map<std::pair<std::string, std::string>, NodeRecord> g_nodes;
-std::map<std::string, TopicRecord> g_topics;
-std::map<std::string, ServiceRecord> g_services;
+std::map<NodeKey, NodeRecord> g_nodes;
+std::map<GraphNameKey, TopicRecord> g_topics;
+std::map<GraphNameKey, ServiceRecord> g_services;
 std::map<std::string, LocalGraphEndpoint> g_local_graph_endpoints;
 std::map<RemoteGraphKey, RemoteGraphEndpoint> g_remote_graph_endpoints;
 std::map<std::string, LocalServiceGraphEndpoint> g_local_service_endpoints;
 std::map<RemoteGraphKey, RemoteServiceGraphEndpoint> g_remote_service_endpoints;
+std::atomic<bool> g_remote_graph_lease_monitor_started{false};
 
 bool identifier_matches(const char * identifier)
 {
@@ -180,9 +196,13 @@ std::array<std::uint8_t, RMW_GID_STORAGE_SIZE> copy_endpoint_gid(
   return gid;
 }
 
-void add_topic_endpoint_locked(const std::string & topic_name, const std::string & type_name, bool publisher)
+void add_topic_endpoint_locked(
+  std::size_t domain_id,
+  const std::string & topic_name,
+  const std::string & type_name,
+  bool publisher)
 {
-  TopicRecord & record = g_topics[topic_name];
+  TopicRecord & record = g_topics[GraphNameKey{domain_id, topic_name}];
   record.name = topic_name;
   record.types.insert(type_name);
   ++record.type_counts[type_name];
@@ -193,9 +213,13 @@ void add_topic_endpoint_locked(const std::string & topic_name, const std::string
   }
 }
 
-void remove_topic_endpoint_locked(const std::string & topic_name, const std::string & type_name, bool publisher)
+void remove_topic_endpoint_locked(
+  std::size_t domain_id,
+  const std::string & topic_name,
+  const std::string & type_name,
+  bool publisher)
 {
-  auto found = g_topics.find(topic_name);
+  auto found = g_topics.find(GraphNameKey{domain_id, topic_name});
   if (found == g_topics.end()) {
     return;
   }
@@ -221,9 +245,13 @@ void remove_topic_endpoint_locked(const std::string & topic_name, const std::str
   }
 }
 
-void add_service_endpoint_locked(const std::string & service_name, const std::string & type_name, bool service)
+void add_service_endpoint_locked(
+  std::size_t domain_id,
+  const std::string & service_name,
+  const std::string & type_name,
+  bool service)
 {
-  ServiceRecord & record = g_services[service_name];
+  ServiceRecord & record = g_services[GraphNameKey{domain_id, service_name}];
   record.name = service_name;
   record.types.insert(type_name);
   ++record.type_counts[type_name];
@@ -234,9 +262,13 @@ void add_service_endpoint_locked(const std::string & service_name, const std::st
   }
 }
 
-void remove_service_endpoint_locked(const std::string & service_name, const std::string & type_name, bool service)
+void remove_service_endpoint_locked(
+  std::size_t domain_id,
+  const std::string & service_name,
+  const std::string & type_name,
+  bool service)
 {
-  auto found = g_services.find(service_name);
+  auto found = g_services.find(GraphNameKey{domain_id, service_name});
   if (found == g_services.end()) {
     return;
   }
@@ -264,38 +296,54 @@ void remove_service_endpoint_locked(const std::string & service_name, const std:
 
 void remove_local_endpoint_locked(const LocalGraphEndpoint & endpoint)
 {
-  remove_topic_endpoint_locked(endpoint.topic_name, endpoint.type_name, endpoint.publisher);
+  remove_topic_endpoint_locked(
+    endpoint.domain_id, endpoint.topic_name, endpoint.type_name, endpoint.publisher);
 }
 
 void remove_local_service_endpoint_locked(const LocalServiceGraphEndpoint & endpoint)
 {
-  remove_service_endpoint_locked(endpoint.service_name, endpoint.type_name, endpoint.service);
+  remove_service_endpoint_locked(
+    endpoint.domain_id, endpoint.service_name, endpoint.type_name, endpoint.service);
 }
 
-void remove_local_endpoint_locked(bool publisher, const char * endpoint_id)
+bool remove_local_endpoint_locked(
+  bool publisher,
+  const char * endpoint_id,
+  std::size_t * removed_domain_id)
 {
   if (endpoint_id == nullptr) {
-    return;
+    return false;
   }
   const auto found = g_local_graph_endpoints.find(local_endpoint_key(publisher, endpoint_id));
   if (found == g_local_graph_endpoints.end()) {
-    return;
+    return false;
+  }
+  if (removed_domain_id != nullptr) {
+    *removed_domain_id = found->second.domain_id;
   }
   remove_local_endpoint_locked(found->second);
   g_local_graph_endpoints.erase(found);
+  return true;
 }
 
-void remove_local_service_endpoint_locked(bool service, const char * endpoint_id)
+bool remove_local_service_endpoint_locked(
+  bool service,
+  const char * endpoint_id,
+  std::size_t * removed_domain_id)
 {
   if (endpoint_id == nullptr) {
-    return;
+    return false;
   }
   const auto found = g_local_service_endpoints.find(local_service_endpoint_key(service, endpoint_id));
   if (found == g_local_service_endpoints.end()) {
-    return;
+    return false;
+  }
+  if (removed_domain_id != nullptr) {
+    *removed_domain_id = found->second.domain_id;
   }
   remove_local_service_endpoint_locked(found->second);
   g_local_service_endpoints.erase(found);
+  return true;
 }
 
 void add_topic_endpoint(const char * topic_name, const char * type_name, bool publisher)
@@ -304,7 +352,8 @@ void add_topic_endpoint(const char * topic_name, const char * type_name, bool pu
     return;
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
-  add_topic_endpoint_locked(topic_name, type_name, publisher);
+  add_topic_endpoint_locked(0, topic_name, type_name, publisher);
+  rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(0);
 }
 
 void add_local_endpoint(
@@ -316,7 +365,8 @@ void add_local_endpoint(
   const char * endpoint_id,
   const std::uint8_t * endpoint_gid,
   size_t endpoint_gid_size,
-  const rmw_qos_profile_t * qos)
+  const rmw_qos_profile_t * qos,
+  std::size_t domain_id)
 {
   if (topic_name == nullptr || type_name == nullptr || endpoint_id == nullptr) {
     return;
@@ -328,11 +378,12 @@ void add_local_endpoint(
     remove_local_endpoint_locked(found->second);
     g_local_graph_endpoints.erase(found);
   }
-  add_topic_endpoint_locked(topic_name, type_name, publisher);
+  add_topic_endpoint_locked(domain_id, topic_name, type_name, publisher);
   g_local_graph_endpoints.emplace(
     key,
     LocalGraphEndpoint{
       publisher,
+      domain_id,
       node_name != nullptr ? node_name : "",
       node_namespace != nullptr ? node_namespace : "",
       topic_name,
@@ -340,6 +391,7 @@ void add_local_endpoint(
       endpoint_id,
       copy_endpoint_gid(endpoint_gid, endpoint_gid_size),
       qos != nullptr ? *qos : rmw_qos_profile_default});
+  rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
 }
 
 void add_local_service_endpoint(
@@ -348,7 +400,9 @@ void add_local_service_endpoint(
   const char * node_namespace,
   const char * service_name,
   const char * type_name,
-  const char * endpoint_id)
+  const char * endpoint_id,
+  const rmw_qos_profile_t * qos,
+  std::size_t domain_id)
 {
   if (service_name == nullptr || type_name == nullptr || endpoint_id == nullptr) {
     return;
@@ -360,16 +414,52 @@ void add_local_service_endpoint(
     remove_local_service_endpoint_locked(found->second);
     g_local_service_endpoints.erase(found);
   }
-  add_service_endpoint_locked(service_name, type_name, service);
+  add_service_endpoint_locked(domain_id, service_name, type_name, service);
   g_local_service_endpoints.emplace(
     key,
     LocalServiceGraphEndpoint{
       service,
+      domain_id,
       node_name != nullptr ? node_name : "",
       node_namespace != nullptr ? node_namespace : "",
       service_name,
       type_name,
-      endpoint_id});
+      endpoint_id,
+      qos != nullptr ? *qos : rmw_qos_profile_default});
+  rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
+}
+
+bool service_qos_matches_client(
+  const rmw_qos_profile_t & service_qos,
+  const rmw_qos_profile_t & client_qos)
+{
+  rmw_qos_compatibility_type_t request_compatibility = RMW_QOS_COMPATIBILITY_ERROR;
+  rmw_qos_compatibility_type_t response_compatibility = RMW_QOS_COMPATIBILITY_ERROR;
+  const rmw_ret_t request_ret = rmw_qos_profile_check_compatible(
+    client_qos, service_qos, &request_compatibility, nullptr, 0);
+  const rmw_ret_t response_ret = rmw_qos_profile_check_compatible(
+    service_qos, client_qos, &response_compatibility, nullptr, 0);
+  return request_ret == RMW_RET_OK && response_ret == RMW_RET_OK &&
+         request_compatibility != RMW_QOS_COMPATIBILITY_ERROR &&
+         response_compatibility != RMW_QOS_COMPATIBILITY_ERROR;
+}
+
+bool graph_qos_profiles_equal(
+  const rmw_qos_profile_t & left,
+  const rmw_qos_profile_t & right)
+{
+  return left.history == right.history &&
+         left.depth == right.depth &&
+         left.reliability == right.reliability &&
+         left.durability == right.durability &&
+         left.deadline.sec == right.deadline.sec &&
+         left.deadline.nsec == right.deadline.nsec &&
+         left.lifespan.sec == right.lifespan.sec &&
+         left.lifespan.nsec == right.lifespan.nsec &&
+         left.liveliness == right.liveliness &&
+         left.liveliness_lease_duration.sec == right.liveliness_lease_duration.sec &&
+         left.liveliness_lease_duration.nsec == right.liveliness_lease_duration.nsec &&
+         left.avoid_ros_namespace_conventions == right.avoid_ros_namespace_conventions;
 }
 
 void remove_topic_endpoint(const char * topic_name, const char * type_name, bool publisher)
@@ -378,14 +468,17 @@ void remove_topic_endpoint(const char * topic_name, const char * type_name, bool
     return;
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
-  remove_topic_endpoint_locked(topic_name, type_name, publisher);
+  remove_topic_endpoint_locked(0, topic_name, type_name, publisher);
+  rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(0);
 }
 
 void remove_remote_endpoint_locked(const RemoteGraphEndpoint & endpoint)
 {
-  remove_topic_endpoint_locked(endpoint.topic_name, endpoint.type_name, endpoint.publisher);
+  remove_topic_endpoint_locked(
+    endpoint.domain_id, endpoint.topic_name, endpoint.type_name, endpoint.publisher);
   if (!endpoint.node_name.empty()) {
-    auto found = g_nodes.find(std::make_pair(endpoint.node_name, endpoint.node_namespace));
+    auto found = g_nodes.find(
+      NodeKey{endpoint.domain_id, endpoint.node_name, endpoint.node_namespace});
     if (found != g_nodes.end()) {
       if (found->second.count > 1) {
         --found->second.count;
@@ -398,9 +491,11 @@ void remove_remote_endpoint_locked(const RemoteGraphEndpoint & endpoint)
 
 void remove_remote_service_endpoint_locked(const RemoteServiceGraphEndpoint & endpoint)
 {
-  remove_service_endpoint_locked(endpoint.service_name, endpoint.type_name, endpoint.service);
+  remove_service_endpoint_locked(
+    endpoint.domain_id, endpoint.service_name, endpoint.type_name, endpoint.service);
   if (!endpoint.node_name.empty()) {
-    auto found = g_nodes.find(std::make_pair(endpoint.node_name, endpoint.node_namespace));
+    auto found = g_nodes.find(
+      NodeKey{endpoint.domain_id, endpoint.node_name, endpoint.node_namespace});
     if (found != g_nodes.end()) {
       if (found->second.count > 1) {
         --found->second.count;
@@ -411,34 +506,69 @@ void remove_remote_service_endpoint_locked(const RemoteServiceGraphEndpoint & en
   }
 }
 
-void purge_expired_remote_graph_locked(SteadyClock::time_point now)
+bool purge_expired_remote_graph_locked(SteadyClock::time_point now)
 {
+  bool changed = false;
+  std::set<std::size_t> changed_domains;
   for (auto it = g_remote_graph_endpoints.begin(); it != g_remote_graph_endpoints.end();) {
     if (it->second.expires_at > now) {
       ++it;
       continue;
     }
+    changed_domains.insert(it->second.domain_id);
     remove_remote_endpoint_locked(it->second);
     it = g_remote_graph_endpoints.erase(it);
+    changed = true;
   }
   for (auto it = g_remote_service_endpoints.begin(); it != g_remote_service_endpoints.end();) {
     if (it->second.expires_at > now) {
       ++it;
       continue;
     }
+    changed_domains.insert(it->second.domain_id);
     remove_remote_service_endpoint_locked(it->second);
     it = g_remote_service_endpoints.erase(it);
+    changed = true;
+  }
+  if (changed) {
+    for (const std::size_t domain_id : changed_domains) {
+      rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
+    }
+  }
+  return changed;
+}
+
+void remote_graph_lease_monitor_loop()
+{
+  constexpr auto kPollInterval = std::chrono::milliseconds(20);
+  while (true) {
+    std::this_thread::sleep_for(kPollInterval);
+    std::lock_guard<std::mutex> lock(g_graph_mutex);
+    purge_expired_remote_graph_locked(SteadyClock::now());
   }
 }
 
-std::vector<TopicEndpointSnapshot> endpoint_snapshot(const std::string & topic_name, bool publisher)
+void ensure_remote_graph_lease_monitor()
+{
+  bool expected = false;
+  if (g_remote_graph_lease_monitor_started.compare_exchange_strong(expected, true)) {
+    std::thread(remote_graph_lease_monitor_loop).detach();
+  }
+}
+
+std::vector<TopicEndpointSnapshot> endpoint_snapshot(
+  std::size_t domain_id,
+  const std::string & topic_name,
+  bool publisher)
 {
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
   std::vector<TopicEndpointSnapshot> endpoints;
   for (const auto & item : g_local_graph_endpoints) {
     const LocalGraphEndpoint & endpoint = item.second;
-    if (endpoint.publisher != publisher || endpoint.topic_name != topic_name) {
+    if (endpoint.domain_id != domain_id || endpoint.publisher != publisher ||
+      endpoint.topic_name != topic_name)
+    {
       continue;
     }
     endpoints.push_back(
@@ -453,7 +583,9 @@ std::vector<TopicEndpointSnapshot> endpoint_snapshot(const std::string & topic_n
   }
   for (const auto & item : g_remote_graph_endpoints) {
     const RemoteGraphEndpoint & endpoint = item.second;
-    if (endpoint.publisher != publisher || endpoint.topic_name != topic_name) {
+    if (endpoint.domain_id != domain_id || endpoint.publisher != publisher ||
+      endpoint.topic_name != topic_name)
+    {
       continue;
     }
     endpoints.push_back(
@@ -614,25 +746,31 @@ rmw_ret_t fill_names_and_types(
   return RMW_RET_OK;
 }
 
-std::vector<TopicRecord> topic_snapshot()
+std::vector<TopicRecord> topic_snapshot(std::size_t domain_id)
 {
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
   std::vector<TopicRecord> topics;
   topics.reserve(g_topics.size());
   for (const auto & item : g_topics) {
+    if (item.first.first != domain_id) {
+      continue;
+    }
     topics.push_back(item.second);
   }
   return topics;
 }
 
-std::vector<TopicRecord> service_snapshot()
+std::vector<TopicRecord> service_snapshot(std::size_t domain_id)
 {
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
   std::vector<TopicRecord> services;
   services.reserve(g_services.size());
   for (const auto & item : g_services) {
+    if (item.first.first != domain_id) {
+      continue;
+    }
     if (item.second.service_count == 0) {
       continue;
     }
@@ -666,6 +804,7 @@ void add_endpoint_service_record(
 }
 
 std::vector<TopicRecord> topic_snapshot_by_node(
+  std::size_t domain_id,
   const char * node_name,
   const char * node_namespace,
   bool publisher,
@@ -681,7 +820,7 @@ std::vector<TopicRecord> topic_snapshot_by_node(
   purge_expired_remote_graph_locked(SteadyClock::now());
   const std::string requested_name = node_name;
   const std::string requested_namespace = node_namespace;
-  const auto node_key = std::make_pair(requested_name, requested_namespace);
+  const NodeKey node_key{domain_id, requested_name, requested_namespace};
   if (g_nodes.find(node_key) == g_nodes.end()) {
     return {};
   }
@@ -691,7 +830,7 @@ std::vector<TopicRecord> topic_snapshot_by_node(
   std::map<std::string, TopicRecord> records;
   for (const auto & item : g_local_graph_endpoints) {
     const LocalGraphEndpoint & endpoint = item.second;
-    if (endpoint.publisher == publisher &&
+    if (endpoint.domain_id == domain_id && endpoint.publisher == publisher &&
       endpoint.node_name == requested_name &&
       endpoint.node_namespace == requested_namespace)
     {
@@ -700,7 +839,7 @@ std::vector<TopicRecord> topic_snapshot_by_node(
   }
   for (const auto & item : g_remote_graph_endpoints) {
     const RemoteGraphEndpoint & endpoint = item.second;
-    if (endpoint.publisher == publisher &&
+    if (endpoint.domain_id == domain_id && endpoint.publisher == publisher &&
       endpoint.node_name == requested_name &&
       endpoint.node_namespace == requested_namespace)
     {
@@ -716,6 +855,7 @@ std::vector<TopicRecord> topic_snapshot_by_node(
 }
 
 std::vector<TopicRecord> service_snapshot_by_node(
+  std::size_t domain_id,
   const char * node_name,
   const char * node_namespace,
   bool service,
@@ -731,7 +871,7 @@ std::vector<TopicRecord> service_snapshot_by_node(
   purge_expired_remote_graph_locked(SteadyClock::now());
   const std::string requested_name = node_name;
   const std::string requested_namespace = node_namespace;
-  const auto node_key = std::make_pair(requested_name, requested_namespace);
+  const NodeKey node_key{domain_id, requested_name, requested_namespace};
   if (g_nodes.find(node_key) == g_nodes.end()) {
     return {};
   }
@@ -741,7 +881,7 @@ std::vector<TopicRecord> service_snapshot_by_node(
   std::map<std::string, TopicRecord> records;
   for (const auto & item : g_local_service_endpoints) {
     const LocalServiceGraphEndpoint & endpoint = item.second;
-    if (endpoint.service == service &&
+    if (endpoint.domain_id == domain_id && endpoint.service == service &&
       endpoint.node_name == requested_name &&
       endpoint.node_namespace == requested_namespace)
     {
@@ -750,7 +890,7 @@ std::vector<TopicRecord> service_snapshot_by_node(
   }
   for (const auto & item : g_remote_service_endpoints) {
     const RemoteServiceGraphEndpoint & endpoint = item.second;
-    if (endpoint.service == service &&
+    if (endpoint.domain_id == domain_id && endpoint.service == service &&
       endpoint.node_name == requested_name &&
       endpoint.node_namespace == requested_namespace)
     {
@@ -767,29 +907,71 @@ std::vector<TopicRecord> service_snapshot_by_node(
 
 }  // namespace
 
+std::vector<std::string> rmw_fleetqox_cpp_graph_matched_subscription_endpoint_ids(
+  std::size_t domain_id,
+  const std::string & topic_name,
+  const std::string & type_name,
+  const rmw_qos_profile_t & publisher_qos)
+{
+  std::lock_guard<std::mutex> lock(g_graph_mutex);
+  purge_expired_remote_graph_locked(SteadyClock::now());
+  std::vector<std::string> endpoint_ids;
+  const auto append_if_compatible = [&](const auto & endpoint) {
+      if (endpoint.domain_id != domain_id || endpoint.publisher || endpoint.topic_name != topic_name ||
+        endpoint.type_name != type_name ||
+        endpoint.qos.reliability == RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT)
+      {
+        return;
+      }
+      rmw_qos_compatibility_type_t compatibility = RMW_QOS_COMPATIBILITY_ERROR;
+      const rmw_ret_t ret = rmw_qos_profile_check_compatible(
+        publisher_qos, endpoint.qos, &compatibility, nullptr, 0);
+      if (ret == RMW_RET_OK && compatibility != RMW_QOS_COMPATIBILITY_ERROR) {
+        endpoint_ids.push_back(endpoint.endpoint_id);
+      }
+    };
+  for (const auto & item : g_local_graph_endpoints) {
+    append_if_compatible(item.second);
+  }
+  for (const auto & item : g_remote_graph_endpoints) {
+    append_if_compatible(item.second);
+  }
+  std::sort(endpoint_ids.begin(), endpoint_ids.end());
+  endpoint_ids.erase(std::unique(endpoint_ids.begin(), endpoint_ids.end()), endpoint_ids.end());
+  return endpoint_ids;
+}
+
 extern "C"
 {
 
-void rmw_fleetqox_cpp_graph_register_node(const char * name, const char * namespace_)
+void rmw_fleetqox_cpp_graph_register_node(
+  const char * name,
+  const char * namespace_,
+  std::size_t domain_id)
 {
   if (name == nullptr || namespace_ == nullptr) {
     return;
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
-  auto key = std::make_pair(std::string(name), std::string(namespace_));
+  const NodeKey key{domain_id, std::string(name), std::string(namespace_)};
   NodeRecord & record = g_nodes[key];
+  record.domain_id = domain_id;
   record.name = name;
   record.namespace_ = namespace_;
   ++record.count;
+  rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
 }
 
-void rmw_fleetqox_cpp_graph_unregister_node(const char * name, const char * namespace_)
+void rmw_fleetqox_cpp_graph_unregister_node(
+  const char * name,
+  const char * namespace_,
+  std::size_t domain_id)
 {
   if (name == nullptr || namespace_ == nullptr) {
     return;
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
-  auto found = g_nodes.find(std::make_pair(std::string(name), std::string(namespace_)));
+  auto found = g_nodes.find(NodeKey{domain_id, std::string(name), std::string(namespace_)});
   if (found == g_nodes.end()) {
     return;
   }
@@ -798,6 +980,7 @@ void rmw_fleetqox_cpp_graph_unregister_node(const char * name, const char * name
   } else {
     g_nodes.erase(found);
   }
+  rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
 }
 
 void rmw_fleetqox_cpp_graph_register_publisher(const char * topic_name, const char * type_name)
@@ -828,7 +1011,8 @@ void rmw_fleetqox_cpp_graph_register_publisher_endpoint(
   const char * endpoint_id,
   const std::uint8_t * endpoint_gid,
   size_t endpoint_gid_size,
-  const rmw_qos_profile_t * qos)
+  const rmw_qos_profile_t * qos,
+  std::size_t domain_id)
 {
   add_local_endpoint(
     true,
@@ -839,13 +1023,17 @@ void rmw_fleetqox_cpp_graph_register_publisher_endpoint(
     endpoint_id,
     endpoint_gid,
     endpoint_gid_size,
-    qos);
+    qos,
+    domain_id);
 }
 
 void rmw_fleetqox_cpp_graph_unregister_publisher_endpoint(const char * endpoint_id)
 {
   std::lock_guard<std::mutex> lock(g_graph_mutex);
-  remove_local_endpoint_locked(true, endpoint_id);
+  std::size_t domain_id = 0;
+  if (remove_local_endpoint_locked(true, endpoint_id, &domain_id)) {
+    rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
+  }
 }
 
 void rmw_fleetqox_cpp_graph_register_subscription_endpoint(
@@ -856,7 +1044,8 @@ void rmw_fleetqox_cpp_graph_register_subscription_endpoint(
   const char * endpoint_id,
   const std::uint8_t * endpoint_gid,
   size_t endpoint_gid_size,
-  const rmw_qos_profile_t * qos)
+  const rmw_qos_profile_t * qos,
+  std::size_t domain_id)
 {
   add_local_endpoint(
     false,
@@ -867,13 +1056,17 @@ void rmw_fleetqox_cpp_graph_register_subscription_endpoint(
     endpoint_id,
     endpoint_gid,
     endpoint_gid_size,
-    qos);
+    qos,
+    domain_id);
 }
 
 void rmw_fleetqox_cpp_graph_unregister_subscription_endpoint(const char * endpoint_id)
 {
   std::lock_guard<std::mutex> lock(g_graph_mutex);
-  remove_local_endpoint_locked(false, endpoint_id);
+  std::size_t domain_id = 0;
+  if (remove_local_endpoint_locked(false, endpoint_id, &domain_id)) {
+    rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
+  }
 }
 
 void rmw_fleetqox_cpp_graph_register_service_endpoint(
@@ -881,15 +1074,21 @@ void rmw_fleetqox_cpp_graph_register_service_endpoint(
   const char * node_namespace,
   const char * service_name,
   const char * type_name,
-  const char * endpoint_id)
+  const char * endpoint_id,
+  const rmw_qos_profile_t * qos,
+  std::size_t domain_id)
 {
-  add_local_service_endpoint(true, node_name, node_namespace, service_name, type_name, endpoint_id);
+  add_local_service_endpoint(
+    true, node_name, node_namespace, service_name, type_name, endpoint_id, qos, domain_id);
 }
 
 void rmw_fleetqox_cpp_graph_unregister_service_endpoint(const char * endpoint_id)
 {
   std::lock_guard<std::mutex> lock(g_graph_mutex);
-  remove_local_service_endpoint_locked(true, endpoint_id);
+  std::size_t domain_id = 0;
+  if (remove_local_service_endpoint_locked(true, endpoint_id, &domain_id)) {
+    rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
+  }
 }
 
 void rmw_fleetqox_cpp_graph_register_client_endpoint(
@@ -897,18 +1096,24 @@ void rmw_fleetqox_cpp_graph_register_client_endpoint(
   const char * node_namespace,
   const char * service_name,
   const char * type_name,
-  const char * endpoint_id)
+  const char * endpoint_id,
+  const rmw_qos_profile_t * qos,
+  std::size_t domain_id)
 {
-  add_local_service_endpoint(false, node_name, node_namespace, service_name, type_name, endpoint_id);
+  add_local_service_endpoint(
+    false, node_name, node_namespace, service_name, type_name, endpoint_id, qos, domain_id);
 }
 
 void rmw_fleetqox_cpp_graph_unregister_client_endpoint(const char * endpoint_id)
 {
   std::lock_guard<std::mutex> lock(g_graph_mutex);
-  remove_local_service_endpoint_locked(false, endpoint_id);
+  std::size_t domain_id = 0;
+  if (remove_local_service_endpoint_locked(false, endpoint_id, &domain_id)) {
+    rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
+  }
 }
 
-void rmw_fleetqox_cpp_graph_apply_remote_advertisement_with_info(
+void rmw_fleetqox_cpp_graph_apply_remote_advertisement_with_info_in_domain(
   const char * action,
   const char * entity_kind,
   const char * node_name,
@@ -919,6 +1124,7 @@ void rmw_fleetqox_cpp_graph_apply_remote_advertisement_with_info(
   const std::uint8_t * endpoint_gid,
   size_t endpoint_gid_size,
   const rmw_qos_profile_t * qos,
+  std::uint64_t domain_id,
   std::uint64_t lease_ms)
 {
   if (action == nullptr || entity_kind == nullptr || topic_name == nullptr || type_name == nullptr ||
@@ -940,10 +1146,12 @@ void rmw_fleetqox_cpp_graph_apply_remote_advertisement_with_info(
   if (!is_topic_endpoint && !is_service_endpoint) {
     return;
   }
+  ensure_remote_graph_lease_monitor();
 
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
   const auto key = std::make_tuple(
+    domain_id,
     std::string(endpoint_id),
     std::string(entity_kind),
     std::string(topic_name),
@@ -954,65 +1162,135 @@ void rmw_fleetqox_cpp_graph_apply_remote_advertisement_with_info(
   if (is_service_endpoint) {
     auto service_found = g_remote_service_endpoints.find(key);
     if (is_remove) {
-      if (service_found != g_remote_service_endpoints.end()) {
-        remove_remote_service_endpoint_locked(service_found->second);
-        g_remote_service_endpoints.erase(service_found);
+      bool changed = false;
+      for (auto it = g_remote_service_endpoints.begin();
+        it != g_remote_service_endpoints.end();)
+      {
+        if (it->second.domain_id == domain_id && it->second.service == is_service &&
+          it->second.endpoint_id == endpoint_id)
+        {
+          remove_remote_service_endpoint_locked(it->second);
+          it = g_remote_service_endpoints.erase(it);
+          changed = true;
+        } else {
+          ++it;
+        }
+      }
+      if (changed) {
+        rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
       }
       return;
     }
     if (service_found != g_remote_service_endpoints.end()) {
+      const rmw_qos_profile_t renewed_qos =
+        qos != nullptr ? *qos : rmw_qos_profile_default;
+      const bool changed = !graph_qos_profiles_equal(service_found->second.qos, renewed_qos);
       service_found->second.expires_at = SteadyClock::now() + lease_duration(lease_ms);
+      service_found->second.qos = renewed_qos;
+      if (changed) {
+        rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
+      }
       return;
     }
+    for (auto it = g_remote_service_endpoints.begin();
+      it != g_remote_service_endpoints.end();)
+    {
+      if (it->second.domain_id == domain_id && it->second.service == is_service &&
+        it->second.endpoint_id == endpoint_id)
+      {
+        remove_remote_service_endpoint_locked(it->second);
+        it = g_remote_service_endpoints.erase(it);
+      } else {
+        ++it;
+      }
+    }
     if (node_name != nullptr && node_name[0] != '\0' && node_namespace != nullptr) {
-      auto node_key = std::make_pair(std::string(node_name), std::string(node_namespace));
+      const NodeKey node_key{
+        domain_id, std::string(node_name), std::string(node_namespace)};
       NodeRecord & node_record = g_nodes[node_key];
+      node_record.domain_id = domain_id;
       node_record.name = node_name;
       node_record.namespace_ = node_namespace;
       ++node_record.count;
     }
-    add_service_endpoint_locked(topic_name, type_name, is_service);
+    add_service_endpoint_locked(domain_id, topic_name, type_name, is_service);
     g_remote_service_endpoints.emplace(
       key,
       RemoteServiceGraphEndpoint{
         is_service,
+        domain_id,
         node_name != nullptr ? node_name : "",
         node_namespace != nullptr ? node_namespace : "",
         topic_name,
         type_name,
         endpoint_id,
+        qos != nullptr ? *qos : rmw_qos_profile_default,
         SteadyClock::now() + lease_duration(lease_ms)});
+    rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
     return;
   }
 
   auto found = g_remote_graph_endpoints.find(key);
   if (is_remove) {
-    if (found != g_remote_graph_endpoints.end()) {
-      remove_remote_endpoint_locked(found->second);
-      g_remote_graph_endpoints.erase(found);
+    bool changed = false;
+    for (auto it = g_remote_graph_endpoints.begin(); it != g_remote_graph_endpoints.end();) {
+      if (it->second.domain_id == domain_id && it->second.publisher == is_publisher &&
+        it->second.endpoint_id == endpoint_id)
+      {
+        remove_remote_endpoint_locked(it->second);
+        it = g_remote_graph_endpoints.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
+    }
+    if (changed) {
+      rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
     }
     return;
   }
 
   if (found != g_remote_graph_endpoints.end()) {
+    const std::array<std::uint8_t, RMW_GID_STORAGE_SIZE> renewed_gid =
+      copy_endpoint_gid(endpoint_gid, endpoint_gid_size);
+    const rmw_qos_profile_t renewed_qos = qos != nullptr ? *qos : rmw_qos_profile_default;
+    const bool changed = found->second.endpoint_gid != renewed_gid ||
+      !graph_qos_profiles_equal(found->second.qos, renewed_qos);
     found->second.expires_at = SteadyClock::now() + lease_duration(lease_ms);
-    found->second.endpoint_gid = copy_endpoint_gid(endpoint_gid, endpoint_gid_size);
-    found->second.qos = qos != nullptr ? *qos : rmw_qos_profile_default;
+    found->second.endpoint_gid = renewed_gid;
+    found->second.qos = renewed_qos;
+    if (changed) {
+      rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
+    }
     return;
   }
 
+  for (auto it = g_remote_graph_endpoints.begin(); it != g_remote_graph_endpoints.end();) {
+    if (it->second.domain_id == domain_id && it->second.publisher == is_publisher &&
+      it->second.endpoint_id == endpoint_id)
+    {
+      remove_remote_endpoint_locked(it->second);
+      it = g_remote_graph_endpoints.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
   if (node_name != nullptr && node_name[0] != '\0' && node_namespace != nullptr) {
-    auto node_key = std::make_pair(std::string(node_name), std::string(node_namespace));
+    const NodeKey node_key{
+      domain_id, std::string(node_name), std::string(node_namespace)};
     NodeRecord & node_record = g_nodes[node_key];
+    node_record.domain_id = domain_id;
     node_record.name = node_name;
     node_record.namespace_ = node_namespace;
     ++node_record.count;
   }
-  add_topic_endpoint_locked(topic_name, type_name, is_publisher);
+  add_topic_endpoint_locked(domain_id, topic_name, type_name, is_publisher);
   g_remote_graph_endpoints.emplace(
     key,
     RemoteGraphEndpoint{
       is_publisher,
+      domain_id,
       node_name != nullptr ? node_name : "",
       node_namespace != nullptr ? node_namespace : "",
       topic_name,
@@ -1021,6 +1299,61 @@ void rmw_fleetqox_cpp_graph_apply_remote_advertisement_with_info(
       copy_endpoint_gid(endpoint_gid, endpoint_gid_size),
       qos != nullptr ? *qos : rmw_qos_profile_default,
       SteadyClock::now() + lease_duration(lease_ms)});
+  rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(domain_id);
+}
+
+void rmw_fleetqox_cpp_graph_apply_remote_advertisement_with_info(
+  const char * action,
+  const char * entity_kind,
+  const char * node_name,
+  const char * node_namespace,
+  const char * topic_name,
+  const char * type_name,
+  const char * endpoint_id,
+  const std::uint8_t * endpoint_gid,
+  size_t endpoint_gid_size,
+  const rmw_qos_profile_t * qos,
+  std::uint64_t lease_ms)
+{
+  rmw_fleetqox_cpp_graph_apply_remote_advertisement_with_info_in_domain(
+    action,
+    entity_kind,
+    node_name,
+    node_namespace,
+    topic_name,
+    type_name,
+    endpoint_id,
+    endpoint_gid,
+    endpoint_gid_size,
+    qos,
+    0,
+    lease_ms);
+}
+
+void rmw_fleetqox_cpp_graph_apply_remote_advertisement_in_domain(
+  const char * action,
+  const char * entity_kind,
+  const char * node_name,
+  const char * node_namespace,
+  const char * topic_name,
+  const char * type_name,
+  const char * endpoint_id,
+  std::uint64_t domain_id,
+  std::uint64_t lease_ms)
+{
+  rmw_fleetqox_cpp_graph_apply_remote_advertisement_with_info_in_domain(
+    action,
+    entity_kind,
+    node_name,
+    node_namespace,
+    topic_name,
+    type_name,
+    endpoint_id,
+    nullptr,
+    0,
+    nullptr,
+    domain_id,
+    lease_ms);
 }
 
 void rmw_fleetqox_cpp_graph_apply_remote_advertisement(
@@ -1065,9 +1398,13 @@ rmw_ret_t rmw_get_node_names(
   {
     std::lock_guard<std::mutex> lock(g_graph_mutex);
     purge_expired_remote_graph_locked(SteadyClock::now());
+    const std::size_t domain_id = node->context->actual_domain_id;
     names.reserve(g_nodes.size());
     namespaces.reserve(g_nodes.size());
     for (const auto & item : g_nodes) {
+      if (item.second.domain_id != domain_id) {
+        continue;
+      }
       names.push_back(item.second.name);
       namespaces.push_back(item.second.namespace_);
     }
@@ -1120,7 +1457,8 @@ rmw_ret_t rmw_get_topic_names_and_types(
   if (ret != RMW_RET_OK) {
     return ret;
   }
-  return fill_names_and_types(topic_names_and_types, topic_snapshot(), allocator);
+  return fill_names_and_types(
+    topic_names_and_types, topic_snapshot(node->context->actual_domain_id), allocator);
 }
 
 rmw_ret_t rmw_get_service_names_and_types(
@@ -1132,7 +1470,8 @@ rmw_ret_t rmw_get_service_names_and_types(
   if (ret != RMW_RET_OK) {
     return ret;
   }
-  return fill_names_and_types(service_names_and_types, service_snapshot(), allocator);
+  return fill_names_and_types(
+    service_names_and_types, service_snapshot(node->context->actual_domain_id), allocator);
 }
 
 rmw_ret_t rmw_get_publisher_names_and_types_by_node(
@@ -1154,7 +1493,8 @@ rmw_ret_t rmw_get_publisher_names_and_types_by_node(
   }
   bool node_found = false;
   std::vector<TopicRecord> topics =
-    topic_snapshot_by_node(node_name, node_namespace, true, &node_found);
+    topic_snapshot_by_node(
+    node->context->actual_domain_id, node_name, node_namespace, true, &node_found);
   if (!node_found) {
     RMW_SET_ERROR_MSG("node name not found in rmw_fleetqox_cpp graph");
     return RMW_RET_NODE_NAME_NON_EXISTENT;
@@ -1181,7 +1521,8 @@ rmw_ret_t rmw_get_subscriber_names_and_types_by_node(
   }
   bool node_found = false;
   std::vector<TopicRecord> topics =
-    topic_snapshot_by_node(node_name, node_namespace, false, &node_found);
+    topic_snapshot_by_node(
+    node->context->actual_domain_id, node_name, node_namespace, false, &node_found);
   if (!node_found) {
     RMW_SET_ERROR_MSG("node name not found in rmw_fleetqox_cpp graph");
     return RMW_RET_NODE_NAME_NON_EXISTENT;
@@ -1206,7 +1547,8 @@ rmw_ret_t rmw_get_service_names_and_types_by_node(
   }
   bool node_found = false;
   std::vector<TopicRecord> services =
-    service_snapshot_by_node(node_name, node_namespace, true, &node_found);
+    service_snapshot_by_node(
+    node->context->actual_domain_id, node_name, node_namespace, true, &node_found);
   if (!node_found) {
     RMW_SET_ERROR_MSG("node name not found in rmw_fleetqox_cpp graph");
     return RMW_RET_NODE_NAME_NON_EXISTENT;
@@ -1231,7 +1573,8 @@ rmw_ret_t rmw_get_client_names_and_types_by_node(
   }
   bool node_found = false;
   std::vector<TopicRecord> clients =
-    service_snapshot_by_node(node_name, node_namespace, false, &node_found);
+    service_snapshot_by_node(
+    node->context->actual_domain_id, node_name, node_namespace, false, &node_found);
   if (!node_found) {
     RMW_SET_ERROR_MSG("node name not found in rmw_fleetqox_cpp graph");
     return RMW_RET_NODE_NAME_NON_EXISTENT;
@@ -1254,7 +1597,7 @@ rmw_ret_t rmw_count_publishers(
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
-  const auto found = g_topics.find(topic_name);
+  const auto found = g_topics.find(GraphNameKey{node->context->actual_domain_id, topic_name});
   *count = found == g_topics.end() ? 0 : found->second.publisher_count;
   return RMW_RET_OK;
 }
@@ -1274,7 +1617,7 @@ rmw_ret_t rmw_count_subscribers(
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
-  const auto found = g_topics.find(topic_name);
+  const auto found = g_topics.find(GraphNameKey{node->context->actual_domain_id, topic_name});
   *count = found == g_topics.end() ? 0 : found->second.subscription_count;
   return RMW_RET_OK;
 }
@@ -1294,7 +1637,7 @@ rmw_ret_t rmw_count_services(
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
-  const auto found = g_services.find(service_name);
+  const auto found = g_services.find(GraphNameKey{node->context->actual_domain_id, service_name});
   *count = found == g_services.end() ? 0 : found->second.service_count;
   return RMW_RET_OK;
 }
@@ -1314,7 +1657,7 @@ rmw_ret_t rmw_count_clients(
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
-  const auto found = g_services.find(service_name);
+  const auto found = g_services.find(GraphNameKey{node->context->actual_domain_id, service_name});
   *count = found == g_services.end() ? 0 : found->second.client_count;
   return RMW_RET_OK;
 }
@@ -1326,29 +1669,115 @@ size_t rmw_fleetqox_cpp_graph_service_count(const char * service_name)
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
-  const auto found = g_services.find(service_name);
+  const auto found = g_services.find(GraphNameKey{0, service_name});
   return found == g_services.end() ? 0 : found->second.service_count;
 }
 
-size_t rmw_fleetqox_cpp_graph_publisher_count(const char * topic_name)
+size_t rmw_fleetqox_cpp_graph_matching_service_count_in_domain(
+  const char * service_name,
+  const char * type_name,
+  const rmw_qos_profile_t * client_qos,
+  std::size_t domain_id)
+{
+  if (!topic_is_valid(service_name) || type_name == nullptr || client_qos == nullptr) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(g_graph_mutex);
+  purge_expired_remote_graph_locked(SteadyClock::now());
+  size_t count = 0;
+  const auto append_if_matching =
+    [&](const auto & endpoint)
+    {
+      if (endpoint.domain_id == domain_id && endpoint.service &&
+        endpoint.service_name == service_name &&
+        endpoint.type_name == type_name && service_qos_matches_client(endpoint.qos, *client_qos))
+      {
+        ++count;
+      }
+    };
+  for (const auto & item : g_local_service_endpoints) {
+    append_if_matching(item.second);
+  }
+  for (const auto & item : g_remote_service_endpoints) {
+    append_if_matching(item.second);
+  }
+  return count;
+}
+
+size_t rmw_fleetqox_cpp_graph_matching_service_count(
+  const char * service_name,
+  const char * type_name,
+  const rmw_qos_profile_t * client_qos)
+{
+  return rmw_fleetqox_cpp_graph_matching_service_count_in_domain(
+    service_name, type_name, client_qos, 0);
+}
+
+bool rmw_fleetqox_cpp_graph_client_matches_service_in_domain(
+  const char * client_endpoint_id,
+  const char * service_name,
+  const char * type_name,
+  const rmw_qos_profile_t * service_qos,
+  std::size_t domain_id)
+{
+  if (client_endpoint_id == nullptr || !topic_is_valid(service_name) ||
+    type_name == nullptr || service_qos == nullptr)
+  {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_graph_mutex);
+  purge_expired_remote_graph_locked(SteadyClock::now());
+  const auto endpoint_matches =
+    [&](const auto & endpoint)
+    {
+      return endpoint.domain_id == domain_id && !endpoint.service &&
+             endpoint.endpoint_id == client_endpoint_id &&
+             endpoint.service_name == service_name && endpoint.type_name == type_name &&
+             service_qos_matches_client(*service_qos, endpoint.qos);
+    };
+  return std::any_of(
+    g_local_service_endpoints.begin(),
+    g_local_service_endpoints.end(),
+    [&](const auto & item) {return endpoint_matches(item.second);}) ||
+         std::any_of(
+    g_remote_service_endpoints.begin(),
+    g_remote_service_endpoints.end(),
+    [&](const auto & item) {return endpoint_matches(item.second);});
+}
+
+bool rmw_fleetqox_cpp_graph_client_matches_service(
+  const char * client_endpoint_id,
+  const char * service_name,
+  const char * type_name,
+  const rmw_qos_profile_t * service_qos)
+{
+  return rmw_fleetqox_cpp_graph_client_matches_service_in_domain(
+    client_endpoint_id, service_name, type_name, service_qos, 0);
+}
+
+size_t rmw_fleetqox_cpp_graph_publisher_count(
+  const char * topic_name,
+  std::size_t domain_id)
 {
   if (!topic_is_valid(topic_name)) {
     return 0;
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
-  const auto found = g_topics.find(topic_name);
+  const auto found = g_topics.find(GraphNameKey{domain_id, topic_name});
   return found == g_topics.end() ? 0 : found->second.publisher_count;
 }
 
-size_t rmw_fleetqox_cpp_graph_subscription_count(const char * topic_name)
+size_t rmw_fleetqox_cpp_graph_subscription_count(
+  const char * topic_name,
+  std::size_t domain_id)
 {
   if (!topic_is_valid(topic_name)) {
     return 0;
   }
   std::lock_guard<std::mutex> lock(g_graph_mutex);
   purge_expired_remote_graph_locked(SteadyClock::now());
-  const auto found = g_topics.find(topic_name);
+  const auto found = g_topics.find(GraphNameKey{domain_id, topic_name});
   return found == g_topics.end() ? 0 : found->second.subscription_count;
 }
 
@@ -1370,7 +1799,7 @@ rmw_ret_t rmw_get_publishers_info_by_topic(
   }
   return fill_topic_endpoint_info_array(
     allocator,
-    endpoint_snapshot(topic_name, true),
+    endpoint_snapshot(node->context->actual_domain_id, topic_name, true),
     publishers_info);
 }
 
@@ -1392,7 +1821,7 @@ rmw_ret_t rmw_get_subscriptions_info_by_topic(
   }
   return fill_topic_endpoint_info_array(
     allocator,
-    endpoint_snapshot(topic_name, false),
+    endpoint_snapshot(node->context->actual_domain_id, topic_name, false),
     subscriptions_info);
 }
 

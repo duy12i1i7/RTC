@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""Prove authenticated application outcomes drive fleet admission over QUIC."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import time
+from typing import Any
+
+try:
+    from scripts.run_rmw_docker_quic_mtls_probe import certificate_command
+    from scripts.run_rmw_docker_quic_stateful_gateway_probe import (
+        DEFAULT_IMAGE,
+        SERVICE_SCHEMA_VERSION,
+        json_rows,
+        run,
+        wait_service_ready,
+    )
+except ModuleNotFoundError:
+    from run_rmw_docker_quic_mtls_probe import certificate_command
+    from run_rmw_docker_quic_stateful_gateway_probe import (
+        DEFAULT_IMAGE,
+        SERVICE_SCHEMA_VERSION,
+        json_rows,
+        run,
+        wait_service_ready,
+    )
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCHEMA_VERSION = "fleetrmw.docker_quic_application_outcome_probe.v1"
+PROBE_SCHEMA_VERSION = "fleetrmw.quic_application_outcome_probe.v1"
+
+
+def probe_ok(row: dict[str, Any]) -> bool:
+    return (
+        row.get("schema_version") == PROBE_SCHEMA_VERSION
+        and row.get("status") == "ok"
+        and row.get("seed_admitted") is True
+        and row.get("low_rejected_before_outcome") is True
+        and row.get("impersonation_rejected") is True
+        and row.get("unknown_frame_rejected") is True
+        and row.get("malformed_outcome_rejected") is True
+        and row.get("outcome_accepted") is True
+        and row.get("duplicate_outcome_idempotent") is True
+        and row.get("low_admitted_after_outcome") is True
+        and row.get("payloads_replayed") is True
+        and row.get("connections_created") == 7
+        and row.get("handshakes_completed") == 7
+        and row.get("streams_opened") == 10
+        and row.get("connection_reuse_count") == 3
+        and row.get("reconnects") == 4
+        and row.get("application_outcome_qoe_debt_claim") is True
+        and row.get("application_task_outcome_failure_pressure_claim") is True
+        and row.get("tls_peer_verification_required") is True
+        and row.get("mutual_tls_required") is True
+        and row.get("subprocess_backed") is False
+        and row.get("production_readiness") is False
+    )
+
+
+def service_ok(row: dict[str, Any]) -> bool:
+    metrics = row.get("metrics", {})
+    admission = metrics.get("admission", {})
+    transport = row.get("transport_metrics", {})
+    return (
+        row.get("schema_version") == SERVICE_SCHEMA_VERSION
+        and row.get("status") == "stopped"
+        and row.get("clean_teardown") is True
+        and row.get("client_certificate_required") is True
+        and row.get("publisher_identity_binding") is True
+        and row.get("publisher_identity_source") == "uri_san"
+        and row.get("client_crl_configured") is True
+        and row.get("admission_policy_configured") is True
+        and row.get("native_path_observations_configured") is False
+        and row.get("native_qoe_debt_configured") is False
+        and row.get("application_outcome_qoe_debt_configured") is True
+        and metrics.get("requests_total") == 9
+        and metrics.get("post_requests") == 3
+        and metrics.get("get_requests") == 2
+        and metrics.get("observation_requests") == 0
+        and metrics.get("application_outcome_requests") == 4
+        and metrics.get("application_outcome_updates") == 1
+        and metrics.get("application_task_outcome_updates") == 1
+        and metrics.get("application_task_outcome_failures") == 1
+        and metrics.get("application_outcome_duplicates") == 1
+        and metrics.get("application_outcome_unknown_frames") == 1
+        and metrics.get("invalid_application_outcomes") == 1
+        and metrics.get("accepted_frames") == 2
+        and metrics.get("duplicate_frames") == 0
+        and metrics.get("invalid_frames") == 0
+        and metrics.get("dequeued_frames") == 2
+        and metrics.get("empty_takes") == 0
+        and metrics.get("retained_frames") == 2
+        and metrics.get("topic_count") == 1
+        and metrics.get("consumer_count") == 1
+        and metrics.get("application_outcome_key_count") == 1
+        and admission.get("accepted_total") == 2
+        and admission.get("accepted_cumulative") == 2
+        and admission.get("rejected_by_reason")
+        == {"qox_score_below_threshold": 1}
+        and admission.get("application_outcome_qoe_debt_enabled") is True
+        and admission.get("application_outcome_qoe_debt_ewma_alpha") == 1.0
+        and admission.get("application_outcome_qoe_debt_updates") == 1
+        and admission.get("application_task_outcome_updates") == 1
+        and admission.get("application_task_outcome_failures") == 1
+        and admission.get("active_observation_count") == 1
+        and admission.get("active_observations_by_source")
+        == {"application_outcome": 1}
+        and admission.get("active_observations_by_qoe_debt_source")
+        == {"gateway_derived_outcome": 1}
+        and admission.get("observation_updates") == 1
+        and admission.get("observation_updates_by_source")
+        == {"application_outcome": 1}
+        and admission.get("observation_score_uses") == 1
+        and transport.get("connections_created") == 7
+        and transport.get("h3_sessions_negotiated") == 7
+        and transport.get("client_certificates_accepted") == 7
+        and transport.get("publisher_identity_authorization_rejected") == 1
+        and transport.get(
+            "application_outcome_identity_authorization_rejected"
+        ) == 1
+        and transport.get("missing_client_certificates_rejected") == 0
+        and transport.get("untrusted_client_certificates_rejected") == 0
+        and transport.get("revoked_client_certificates_rejected") == 0
+        and transport.get("malformed_h3_requests_rejected") == 0
+        and transport.get("mtls_private_adapter_installs") == 7
+    )
+
+
+def policy_document() -> dict[str, Any]:
+    return {
+        "schema_version": "fleetrmw.quic_gateway_admission_policy.v1",
+        "default_action": "deny",
+        "observation_ttl_ms": 5000,
+        "application_outcome_qoe_debt": {
+            "enabled": True,
+            "ewma_alpha": 1.0,
+        },
+        "rules": [{
+            "domain_id": 42,
+            "topic": "/fleetqox/application_outcome",
+            "traffic_class": "control",
+            "max_accepted_frames": 2,
+            "allowed_publishers": ["mtls-publisher"],
+            "min_admission_score": 0.45,
+        }],
+    }
+
+
+def run_client(
+    *, root: Path, image: str, network: str, name: str, install: str,
+    certs: Path, qlogs: Path,
+) -> subprocess.CompletedProcess[str]:
+    command = (
+        "source /opt/ros/jazzy/setup.bash && "
+        f"source {install}/setup.bash && "
+        "tc qdisc replace dev eth0 root netem delay 9ms 2ms loss 0.2% && "
+        "tc qdisc show dev eth0 && "
+        "export FLEETQOX_RMW_REMOTE_TRANSPORT=quic_gateway && "
+        "export FLEETQOX_RMW_QUIC_BACKEND=inprocess && "
+        "export FLEETQOX_RMW_QUIC_GATEWAY=fleetqox-mtls-gateway:4503 && "
+        "export FLEETQOX_RMW_QUIC_SNI=localhost && "
+        "export FLEETQOX_RMW_QUIC_TIMEOUT=8s && "
+        f"export FLEETQOX_RMW_QUIC_CA_FILE=/work/"
+        f"{(certs / 'server-ca.crt').relative_to(root)} && "
+        f"export FLEETQOX_RMW_QUIC_CLIENT_CERT_FILE=/work/"
+        f"{(certs / 'client.crt').relative_to(root)} && "
+        f"export FLEETQOX_RMW_QUIC_CLIENT_KEY_FILE=/work/"
+        f"{(certs / 'client.key').relative_to(root)} && "
+        f"export FLEETQOX_RMW_QUIC_QLOG_DIR=/work/{qlogs.relative_to(root)} && "
+        f"{install}/rmw_fleetqox_cpp/lib/rmw_fleetqox_cpp/"
+        "fleetrmw_quic_application_outcome_probe"
+    )
+    return run([
+        "docker", "run", "--rm", "--name", name,
+        "--network", network, "--cap-add", "NET_ADMIN",
+        "--entrypoint", "bash", "-v", f"{root}:/work", "-w", "/work",
+        image, "-lc", command,
+    ])
+
+
+def run_case(
+    *, root: Path, image: str, network: str, install: str,
+    temp_root: Path, index: int,
+) -> dict[str, Any]:
+    suffix = f"{os.getpid()}-{index}"
+    service_name = f"fleetrmw-outcome-service-{suffix}"
+    case_root = temp_root / f"run-{index}"
+    service_qlogs = case_root / "service-qlogs"
+    client_qlogs = case_root / "client-qlogs"
+    service_qlogs.mkdir(parents=True, exist_ok=True)
+    client_qlogs.mkdir(parents=True, exist_ok=True)
+    certs = temp_root / "certs"
+    policy = temp_root / "admission-policy.json"
+    service_command = (
+        "tc qdisc replace dev eth0 root netem delay 11ms 2ms loss 0.2% && "
+        "tc qdisc show dev eth0 && "
+        "exec python3 scripts/fleetrmw_quic_gateway_service.py "
+        "--host 0.0.0.0 --port 4503 "
+        f"--certificate /work/{(certs / 'server.crt').relative_to(root)} "
+        f"--private-key /work/{(certs / 'server.key').relative_to(root)} "
+        f"--client-ca /work/{(certs / 'client-ca.crt').relative_to(root)} "
+        f"--client-crl /work/{(certs / 'client.crl.pem').relative_to(root)} "
+        "--require-client-certificate "
+        "--publisher-identity-uri-prefix spiffe://fleetqox/publishers/ "
+        f"--admission-policy /work/{policy.relative_to(root)} "
+        f"--qlog-dir /work/{service_qlogs.relative_to(root)} "
+        "--max-frames-per-topic 8 --max-frame-bytes 65536"
+    )
+    started = run([
+        "docker", "run", "-d", "--name", service_name,
+        "--network", network, "--network-alias", "fleetqox-mtls-gateway",
+        "--cap-add", "NET_ADMIN", "--entrypoint", "bash",
+        "-v", f"{root}:/work", "-w", "/work", image, "-lc", service_command,
+    ])
+    ready = started.returncode == 0 and wait_service_ready(service_name)
+    client = subprocess.CompletedProcess([], 1, "", "service_not_ready")
+    service_exit_code = -1
+    service_logs = ""
+    try:
+        if ready:
+            client = run_client(
+                root=root,
+                image=image,
+                network=network,
+                name=f"fleetrmw-outcome-client-{suffix}",
+                install=install,
+                certs=certs,
+                qlogs=client_qlogs,
+            )
+        time.sleep(0.5)
+        run(["docker", "stop", "--time", "3", service_name])
+        inspected = run([
+            "docker", "inspect", "-f", "{{.State.ExitCode}}", service_name
+        ])
+        if inspected.returncode == 0 and inspected.stdout.strip():
+            service_exit_code = int(inspected.stdout.strip())
+        service_logs = run(["docker", "logs", service_name]).stdout
+    finally:
+        run(["docker", "rm", "-f", service_name])
+
+    probe_rows = json_rows(client.stdout)
+    service_rows = json_rows(service_logs)
+    probe = probe_rows[-1] if probe_rows else {}
+    service = service_rows[-1] if service_rows else {}
+    qlogs = [
+        path
+        for directory in (service_qlogs, client_qlogs)
+        for path in directory.glob("*")
+        if path.is_file()
+    ]
+    netem_ok = "qdisc netem" in service_logs and "qdisc netem" in client.stdout
+    qlog_ok = qlogs and all(path.stat().st_size > 0 for path in qlogs)
+    ok = (
+        ready
+        and client.returncode == 0
+        and service_exit_code == 0
+        and probe_ok(probe)
+        and service_ok(service)
+        and netem_ok
+        and bool(qlog_ok)
+    )
+    return {
+        "index": index,
+        "status": "ok" if ok else "failed",
+        "probe": probe,
+        "service": service,
+        "netem_configured_both_containers": netem_ok,
+        "qlog_file_count": len(qlogs),
+        "qlog_total_bytes": sum(path.stat().st_size for path in qlogs),
+        "client_returncode": client.returncode,
+        "service_exit_code": service_exit_code,
+        "client_stdout": "" if ok else client.stdout,
+        "client_stderr": "" if ok else client.stderr,
+        "service_logs": "" if ok else service_logs,
+    }
+
+
+def run_probe(
+    *, root: Path, image: str, iterations: int, keep_temp: bool
+) -> dict[str, Any]:
+    run_count = max(1, iterations)
+    temp_root = root / f".tmp_fleetrmw_quic_application_outcome_{os.getpid()}"
+    certs = temp_root / "certs"
+    certs.mkdir(parents=True, exist_ok=True)
+    (temp_root / "admission-policy.json").write_text(
+        json.dumps(policy_document(), sort_keys=True) + "\n", encoding="utf-8"
+    )
+    build_root = "/work/.tmp_fleetrmw_quic_application_outcome_build"
+    install = "/work/.tmp_fleetrmw_quic_application_outcome_install"
+    log_root = "/work/.tmp_fleetrmw_quic_application_outcome_log"
+    cert_result = run([
+        "docker", "run", "--rm", "--entrypoint", "bash",
+        "-v", f"{root}:/work", "-w", "/work", image, "-lc",
+        certificate_command(certs, root),
+    ])
+    build = run([
+        "docker", "run", "--rm", "--entrypoint", "bash",
+        "-v", f"{root}:/work", "-w", "/work", image, "-lc",
+        "source /opt/ros/jazzy/setup.bash && "
+        f"rm -rf {build_root} {install} {log_root} && "
+        f"colcon --log-base {log_root} build --base-paths ros2_ws/src "
+        "--packages-select rmw_fleetqox_cpp "
+        f"--build-base {build_root} --install-base {install} "
+        "--cmake-args -DCMAKE_BUILD_TYPE=Release",
+    ])
+    network = f"fleetrmw-outcome-net-{os.getpid()}"
+    network_result = run(["docker", "network", "create", network])
+    runs: list[dict[str, Any]] = []
+    try:
+        if cert_result.returncode == build.returncode == network_result.returncode == 0:
+            for index in range(1, run_count + 1):
+                runs.append(run_case(
+                    root=root,
+                    image=image,
+                    network=network,
+                    install=install,
+                    temp_root=temp_root,
+                    index=index,
+                ))
+    finally:
+        run(["docker", "network", "rm", network])
+        if not keep_temp:
+            cleanup = run([
+                "docker", "run", "--rm", "--entrypoint", "bash",
+                "-v", f"{root}:/work", image, "-lc",
+                f"rm -rf {build_root} {install} {log_root}",
+            ])
+            if cleanup.returncode == 0:
+                shutil.rmtree(temp_root, ignore_errors=True)
+
+    successful = sum(row.get("status") == "ok" for row in runs)
+    status = "ok" if (
+        cert_result.returncode == build.returncode == network_result.returncode == 0
+        and len(runs) == successful == run_count
+    ) else "failed"
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": status,
+        "run_count": run_count,
+        "successful_runs": successful,
+        "failed_run_count": run_count - successful,
+        "container_count_per_run": 2,
+        "real_quic_v1_h3": True,
+        "mutual_tls_client_authentication_required": True,
+        "publisher_identity_binding_required": True,
+        "external_observation_api_used": False,
+        "authenticated_application_outcome_feedback_claim": status == "ok",
+        "application_outcome_known_frame_binding_claim": status == "ok",
+        "application_outcome_publisher_identity_binding_claim": status == "ok",
+        "application_outcome_replay_idempotence_claim": status == "ok",
+        "application_outcome_malformed_fail_closed_claim": status == "ok",
+        "application_outcome_qoe_debt_claim": status == "ok",
+        "application_task_outcome_failure_pressure_claim": status == "ok",
+        "application_outcome_admission_effect_claim": status == "ok",
+        "application_outcome_qoe_debt_kind": (
+            "ewma_authenticated_delivery_deadline_latency_task_pressure"
+        ),
+        "production_quic_backend_claim": False,
+        "production_readiness": False,
+        "certificate_returncode": cert_result.returncode,
+        "build_returncode": build.returncode,
+        "build_stderr": build.stderr[-4000:],
+        "network_returncode": network_result.returncode,
+        "runs": runs,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--iterations", type=int, default=5)
+    parser.add_argument("--keep-temp", action="store_true")
+    parser.add_argument(
+        "--summary-json",
+        default="results_rmw_socket/docker_quic_application_outcome_probe_summary.json",
+    )
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    summary = run_probe(
+        root=ROOT,
+        image=args.image,
+        iterations=args.iterations,
+        keep_temp=args.keep_temp,
+    )
+    output = ROOT / args.summary_json
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(summary, sort_keys=True) + "\n", encoding="utf-8")
+    if args.json:
+        print(json.dumps(summary, sort_keys=True))
+    else:
+        print("fleetrmw-quic-application-outcome-probe")
+        print(f"  status: {summary['status']}")
+        print(f"  successful_runs: {summary['successful_runs']}/{summary['run_count']}")
+    return 0 if summary["status"] == "ok" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

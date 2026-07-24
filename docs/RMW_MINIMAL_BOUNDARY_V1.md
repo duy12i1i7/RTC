@@ -59,6 +59,9 @@ Implemented in `fleetqox/rmw_boundary.py`:
     `FLEETQOX_RMW_BIND=host:port` and `FLEETQOX_RMW_PEERS=host:port,...`;
   - exports graph guard condition, guard trigger, wait-set create/destroy, and
     `rmw_wait` readiness for local serialized subscriptions;
+  - enforces wait-set capacity, zero-as-unbounded, non-null entry, active
+    same-context, and shutdown semantics, and retains the entity unchanged when
+    a destroy call supplies a non-owner node;
   - exports a minimal in-process graph cache for node names, topic names/types,
     publisher counts, and subscriber counts;
   - builds a `fleetrmw_lifecycle_probe` executable for the ABI lifecycle path;
@@ -118,7 +121,8 @@ Implemented in `fleetqox/rmw_boundary.py`:
     events, dynamic messages, network-flow endpoints, callbacks,
     and serialization-support hooks, keeping `rcl` loader symbol resolution
     clean while unsupported APIs return controlled `RMW_RET_UNSUPPORTED`;
-  - builds a `fleetrmw_wait_probe` executable for graph guard and wait-set
+  - builds a `fleetrmw_wait_probe` executable for automatically triggered graph
+    guard and wait-set
     readiness;
   - builds a `fleetrmw_graph_probe` executable for node/topic graph queries;
   - builds a `fleetrmw_interprocess_pubsub_probe` executable for two-process
@@ -395,10 +399,26 @@ readiness through a registered waitable-subscription lookup that supports both
 forms.
 
 The wait-set artifact `results_rmw_socket/docker_rmw_wait_probe_summary.json`
-adds the next `rcl`-facing primitive: graph guard retrieval/trigger and
-`rmw_wait` readiness.  The Docker probe triggers the node graph guard, publishes
-one serialized message to a local subscription, and reports status `ok` with
-`graph_guard_ready=true`, `subscription_ready=true`, and `publish_ret=0`.
+adds the next `rcl`-facing primitive: automatic graph guard notification and
+`rmw_wait` readiness. The Docker probe registers publisher/subscription graph
+endpoints, publishes one serialized message to a local subscription, and
+reports status `ok` with
+`graph_guard_automatic=true`, `graph_guard_ready=true`,
+`subscription_ready=true`, and `publish_ret=0`. It also proves bounded-capacity
+rejection for native entity entries, `max_conditions=0` unbounded acceptance,
+externally polled `rcl` timer guards excluded from native capacity, null-entry rejection,
+cross-context rejection for two contexts in the same ROS domain, rejection
+after context shutdown, and publisher/subscription owner-node enforcement. The
+automatic graph-guard check itself is not manually triggered:
+publisher/subscription graph registration does so.
+
+The domain-isolation artifact
+`results_rmw_socket/docker_rmw_domain_isolation_probe_summary.json` creates two
+RMW contexts in ROS domains `31` and `32`. It proves domain-scoped graph guard
+wakeups and graph counts, same-domain serialized delivery with cross-domain
+non-delivery, service availability and request isolation, and leased remote
+graph isolation. All emitted FleetRMW data/control frame families carry
+`domain_id`; absent v1 fields retain compatibility by decoding as domain `0`.
 
 The graph artifact `results_rmw_socket/docker_rmw_graph_probe_summary.json`
 adds a minimal ROS graph cache.  The Docker probe creates one node, one
@@ -427,11 +447,12 @@ subscriber route, and forwards the data frame before the subscriber takes the
 opaque multi-container router payload from
 `/fleetqox/multicontainer_router_probe`.  Publisher/subscriber creation also
 emits `fleetrmw.graph_advertisement.v1`, and the router forwards those graph
-advertisements to a graph-only observer peer.  The router reports
-`route_advertisements=1`, `learned_routes=1`, `graph_advertisements=2`,
-`graph_forwarded=2`, `graph_peer_count=1`, `graph_publishers=1`,
-`graph_subscriptions=1`, `received_frames=1`, `forwarded_frames=1`, and
-`invalid_frames=0`; the subscriber reports `socket_frames_received=1`,
+advertisements to a graph-only observer peer. The router reports one learned
+route, at least one route advertisement, at least the initial two graph
+advertisements, `graph_peer_count=1`, `received_frames=1`,
+`forwarded_frames=1`, and `invalid_frames=0`; renewal advertisements may make
+the occurrence counters larger without adding duplicate learned endpoints.
+The subscriber reports `socket_frames_received=1`,
 `taken=true`, and `34` received bytes.  The observer does not create a local
 publisher or subscription on the topic, but its RMW graph queries report
 `topic_found=true`, `publisher_count=1`, `subscriber_count=1`,

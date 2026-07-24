@@ -1,5 +1,8 @@
+#include <algorithm>
 #include <new>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
@@ -21,6 +24,9 @@ struct rmw_context_impl_s
   rcutils_allocator_t allocator;
 };
 
+extern "C" int rmw_fleetqox_cpp_sros2_identity_validation_decision(
+  const char * enclave);
+
 namespace
 {
 
@@ -29,10 +35,14 @@ constexpr const char * kIdentifier = "rmw_fleetqox_cpp";
 struct FleetQoxNodeData
 {
   rcutils_allocator_t allocator;
+  std::size_t domain_id;
   char * name;
   char * namespace_;
   rmw_guard_condition_t * graph_guard_condition;
 };
+
+std::mutex g_node_guard_mutex;
+std::vector<FleetQoxNodeData *> g_node_guard_data;
 
 bool identifier_matches(const char * identifier)
 {
@@ -109,10 +119,37 @@ rmw_ret_t validate_node_name_and_namespace(const char * name, const char * names
 extern "C"
 {
 
-void rmw_fleetqox_cpp_graph_register_node(const char * name, const char * namespace_);
-void rmw_fleetqox_cpp_graph_unregister_node(const char * name, const char * namespace_);
+void rmw_fleetqox_cpp_graph_register_node(
+  const char * name, const char * namespace_, std::size_t domain_id);
+void rmw_fleetqox_cpp_graph_unregister_node(
+  const char * name, const char * namespace_, std::size_t domain_id);
 bool rmw_fleetqox_cpp_socket_ensure_started();
 const char * rmw_fleetqox_cpp_socket_init_error();
+
+void rmw_fleetqox_cpp_trigger_graph_guard_conditions()
+{
+  std::lock_guard<std::mutex> lock(g_node_guard_mutex);
+  for (FleetQoxNodeData * data : g_node_guard_data) {
+    if (data != nullptr && data->graph_guard_condition != nullptr) {
+      const rmw_ret_t ret = rmw_trigger_guard_condition(data->graph_guard_condition);
+      (void)ret;
+    }
+  }
+}
+
+void rmw_fleetqox_cpp_trigger_graph_guard_conditions_for_domain(std::size_t domain_id)
+{
+  std::lock_guard<std::mutex> lock(g_node_guard_mutex);
+  for (FleetQoxNodeData * data : g_node_guard_data) {
+    if (data == nullptr || data->domain_id != domain_id ||
+      data->graph_guard_condition == nullptr)
+    {
+      continue;
+    }
+    const rmw_ret_t ret = rmw_trigger_guard_condition(data->graph_guard_condition);
+    (void)ret;
+  }
+}
 
 rmw_init_options_t rmw_get_zero_initialized_init_options(void)
 {
@@ -262,6 +299,16 @@ rmw_ret_t rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
     RMW_SET_ERROR_MSG("rmw_init options allocator is invalid");
     return RMW_RET_INVALID_ARGUMENT;
   }
+  const int identity_decision =
+    rmw_fleetqox_cpp_sros2_identity_validation_decision(options->enclave);
+  if (identity_decision == 2) {
+    RMW_SET_ERROR_MSG("SROS2 local identity certificate/key/CA validation failed");
+    return RMW_RET_ERROR;
+  }
+  if (identity_decision == 3) {
+    RMW_SET_ERROR_MSG("SROS2 local identity certificate common name does not match enclave");
+    return RMW_RET_ERROR;
+  }
 
   void * impl_memory = options->allocator.allocate(sizeof(rmw_context_impl_s), options->allocator.state);
   if (impl_memory == nullptr) {
@@ -322,13 +369,10 @@ rmw_ret_t rmw_context_fini(rmw_context_t * context)
   rmw_context_impl_s * impl = context->impl;
   rcutils_allocator_t allocator = impl->allocator;
   ret = rmw_init_options_fini(&context->options);
-  if (ret != RMW_RET_OK) {
-    return ret;
-  }
   impl->~rmw_context_impl_s();
   allocator.deallocate(impl, allocator.state);
   *context = rmw_get_zero_initialized_context();
-  return RMW_RET_OK;
+  return ret;
 }
 
 rmw_node_t * rmw_create_node(
@@ -367,7 +411,8 @@ rmw_node_t * rmw_create_node(
     RMW_SET_ERROR_MSG("failed to allocate rmw_fleetqox_cpp node data");
     return nullptr;
   }
-  auto * data = new (data_memory) FleetQoxNodeData{allocator, nullptr, nullptr, nullptr};
+  auto * data = new (data_memory) FleetQoxNodeData{
+    allocator, context->actual_domain_id, nullptr, nullptr, nullptr};
   data->name = rcutils_strdup(name, allocator);
   data->namespace_ = rcutils_strdup(namespace_, allocator);
   if (data->name == nullptr || data->namespace_ == nullptr) {
@@ -395,7 +440,12 @@ rmw_node_t * rmw_create_node(
   node->name = data->name;
   node->namespace_ = data->namespace_;
   node->context = context;
-  rmw_fleetqox_cpp_graph_register_node(node->name, node->namespace_);
+  {
+    std::lock_guard<std::mutex> lock(g_node_guard_mutex);
+    g_node_guard_data.push_back(data);
+  }
+  rmw_fleetqox_cpp_graph_register_node(
+    node->name, node->namespace_, node->context->actual_domain_id);
   return node;
 }
 
@@ -412,7 +462,14 @@ rmw_ret_t rmw_destroy_node(rmw_node_t * node)
   auto * data = static_cast<FleetQoxNodeData *>(node->data);
   if (data != nullptr) {
     rcutils_allocator_t allocator = data->allocator;
-    rmw_fleetqox_cpp_graph_unregister_node(data->name, data->namespace_);
+    {
+      std::lock_guard<std::mutex> lock(g_node_guard_mutex);
+      g_node_guard_data.erase(
+        std::remove(g_node_guard_data.begin(), g_node_guard_data.end(), data),
+        g_node_guard_data.end());
+    }
+    rmw_fleetqox_cpp_graph_unregister_node(
+      data->name, data->namespace_, node->context->actual_domain_id);
     if (data->graph_guard_condition != nullptr) {
       const rmw_ret_t graph_guard_ret = rmw_destroy_guard_condition(data->graph_guard_condition);
       (void)graph_guard_ret;

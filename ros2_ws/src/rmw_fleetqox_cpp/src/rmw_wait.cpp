@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <thread>
@@ -26,6 +27,15 @@ extern "C" bool rmw_fleetqox_cpp_subscription_data_has_data(const void * subscri
 extern "C" bool rmw_fleetqox_cpp_waitable_subscription_has_data(const void * waitable);
 extern "C" bool rmw_fleetqox_cpp_waitable_service_has_request(const void * waitable);
 extern "C" bool rmw_fleetqox_cpp_waitable_client_has_response(const void * waitable);
+extern "C" bool rmw_fleetqox_cpp_waitable_event_has_status(const void * waitable);
+extern "C" const rmw_context_t * rmw_fleetqox_cpp_waitable_subscription_context(
+  const void * waitable);
+extern "C" const rmw_context_t * rmw_fleetqox_cpp_waitable_service_context(
+  const void * waitable);
+extern "C" const rmw_context_t * rmw_fleetqox_cpp_waitable_client_context(
+  const void * waitable);
+extern "C" const rmw_context_t * rmw_fleetqox_cpp_waitable_event_context(
+  const void * waitable);
 
 namespace
 {
@@ -35,6 +45,7 @@ constexpr const char * kIdentifier = "rmw_fleetqox_cpp";
 struct FleetQoxGuardConditionData
 {
   rcutils_allocator_t allocator;
+  rmw_context_t * context;
   std::atomic<bool> triggered;
 };
 
@@ -166,11 +177,17 @@ bool client_is_ready(void * client_waitable)
   return rmw_fleetqox_cpp_waitable_client_has_response(client_waitable);
 }
 
+bool event_is_ready(void * event_waitable)
+{
+  return rmw_fleetqox_cpp_waitable_event_has_status(event_waitable);
+}
+
 bool any_waitable_ready(
   rmw_subscriptions_t * subscriptions,
   rmw_services_t * services,
   rmw_clients_t * clients,
-  rmw_guard_conditions_t * guard_conditions)
+  rmw_guard_conditions_t * guard_conditions,
+  rmw_events_t * events)
 {
   if (subscriptions != nullptr) {
     for (size_t i = 0; i < subscriptions->subscriber_count; ++i) {
@@ -194,6 +211,13 @@ bool any_waitable_ready(
       }
     }
   }
+  if (events != nullptr) {
+    for (size_t i = 0; i < events->event_count; ++i) {
+      if (event_is_ready(events->events[i])) {
+        return true;
+      }
+    }
+  }
   if (guard_conditions != nullptr) {
     for (size_t i = 0; i < guard_conditions->guard_condition_count; ++i) {
       if (guard_condition_is_triggered(guard_conditions->guard_conditions[i])) {
@@ -202,6 +226,123 @@ bool any_waitable_ready(
     }
   }
   return false;
+}
+
+bool add_condition_count(size_t count, size_t * total)
+{
+  if (total == nullptr || count > std::numeric_limits<size_t>::max() - *total) {
+    return false;
+  }
+  *total += count;
+  return true;
+}
+
+rmw_ret_t validate_wait_inputs(
+  const rmw_subscriptions_t * subscriptions,
+  const rmw_services_t * services,
+  const rmw_clients_t * clients,
+  const rmw_guard_conditions_t * guard_conditions,
+  const rmw_events_t * events,
+  const FleetQoxWaitSetData * wait_set)
+{
+  if (wait_set == nullptr || !context_is_valid(wait_set->context)) {
+    RMW_SET_ERROR_MSG("wait set context is not active");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+
+  size_t condition_count = 0;
+  const auto count_array = [&condition_count](size_t count, const void * entries) {
+      return (count == 0 || entries != nullptr) && add_condition_count(count, &condition_count);
+    };
+  if ((subscriptions != nullptr &&
+    !count_array(subscriptions->subscriber_count, subscriptions->subscribers)) ||
+    (services != nullptr && !count_array(services->service_count, services->services)) ||
+    (clients != nullptr && !count_array(clients->client_count, clients->clients)) ||
+    (guard_conditions != nullptr &&
+    !count_array(guard_conditions->guard_condition_count, guard_conditions->guard_conditions)) ||
+    (events != nullptr && !count_array(events->event_count, events->events)))
+  {
+    RMW_SET_ERROR_MSG("wait input array is null or condition count overflowed");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  // rcl adds timer guard conditions to the RMW guard array, but deliberately
+  // omits timers from the max_conditions value passed to rmw_create_wait_set.
+  // Guard conditions are externally owned and only atomically polled here, so
+  // they do not consume this implementation's bounded native-condition slots.
+  const size_t guard_condition_count =
+    guard_conditions == nullptr ? 0u : guard_conditions->guard_condition_count;
+  const size_t capacity_condition_count = condition_count - guard_condition_count;
+  if (
+    wait_set->max_conditions != 0 &&
+    capacity_condition_count > wait_set->max_conditions)
+  {
+    RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+      "wait input exceeds wait set max_conditions: native=%zu total=%zu max=%zu "
+      "subscriptions=%zu guards=%zu services=%zu clients=%zu events=%zu",
+      capacity_condition_count,
+      condition_count,
+      wait_set->max_conditions,
+      subscriptions == nullptr ? 0u : subscriptions->subscriber_count,
+      guard_condition_count,
+      services == nullptr ? 0u : services->service_count,
+      clients == nullptr ? 0u : clients->client_count,
+      events == nullptr ? 0u : events->event_count);
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+
+  const rmw_context_t * expected_context = wait_set->context;
+  if (subscriptions != nullptr) {
+    for (size_t i = 0; i < subscriptions->subscriber_count; ++i) {
+      if (subscriptions->subscribers[i] == nullptr ||
+        rmw_fleetqox_cpp_waitable_subscription_context(subscriptions->subscribers[i]) !=
+        expected_context)
+      {
+        RMW_SET_ERROR_MSG("subscription waitable is null, invalid, or belongs to another context");
+        return RMW_RET_INVALID_ARGUMENT;
+      }
+    }
+  }
+  if (services != nullptr) {
+    for (size_t i = 0; i < services->service_count; ++i) {
+      if (services->services[i] == nullptr ||
+        rmw_fleetqox_cpp_waitable_service_context(services->services[i]) != expected_context)
+      {
+        RMW_SET_ERROR_MSG("service waitable is null, invalid, or belongs to another context");
+        return RMW_RET_INVALID_ARGUMENT;
+      }
+    }
+  }
+  if (clients != nullptr) {
+    for (size_t i = 0; i < clients->client_count; ++i) {
+      if (clients->clients[i] == nullptr ||
+        rmw_fleetqox_cpp_waitable_client_context(clients->clients[i]) != expected_context)
+      {
+        RMW_SET_ERROR_MSG("client waitable is null, invalid, or belongs to another context");
+        return RMW_RET_INVALID_ARGUMENT;
+      }
+    }
+  }
+  if (guard_conditions != nullptr) {
+    for (size_t i = 0; i < guard_conditions->guard_condition_count; ++i) {
+      FleetQoxGuardConditionData * data =
+        guard_data_from_waitable(guard_conditions->guard_conditions[i]);
+      if (data == nullptr || data->context != expected_context) {
+        RMW_SET_ERROR_MSG("guard condition is null, invalid, or belongs to another context");
+        return RMW_RET_INVALID_ARGUMENT;
+      }
+    }
+  }
+  if (events != nullptr) {
+    for (size_t i = 0; i < events->event_count; ++i) {
+      if (events->events[i] == nullptr ||
+        rmw_fleetqox_cpp_waitable_event_context(events->events[i]) != expected_context)
+      {
+        RMW_SET_ERROR_MSG("event waitable is null, invalid, or belongs to another context");
+        return RMW_RET_INVALID_ARGUMENT;
+      }
+    }
+  }
+  return RMW_RET_OK;
 }
 
 std::chrono::nanoseconds wait_timeout_to_nanoseconds(const rmw_time_t * wait_timeout)
@@ -219,15 +360,6 @@ std::chrono::nanoseconds wait_timeout_to_nanoseconds(const rmw_time_t * wait_tim
     return std::chrono::nanoseconds::max();
   }
   return seconds + nanoseconds;
-}
-
-void clear_events(rmw_events_t * events)
-{
-  if (events != nullptr) {
-    for (size_t i = 0; i < events->event_count; ++i) {
-      events->events[i] = nullptr;
-    }
-  }
 }
 
 }  // namespace
@@ -248,7 +380,7 @@ rmw_guard_condition_t * rmw_create_guard_condition(rmw_context_t * context)
   }
   rcutils_allocator_t allocator = context->options.allocator;
   FleetQoxGuardConditionData * data =
-    allocate_data<FleetQoxGuardConditionData>(allocator, allocator, false);
+    allocate_data<FleetQoxGuardConditionData>(allocator, allocator, context, false);
   if (data == nullptr) {
     rmw_guard_condition_free(guard_condition);
     RMW_SET_ERROR_MSG("failed to allocate guard condition data");
@@ -367,14 +499,24 @@ rmw_ret_t rmw_wait(
   if (ret != RMW_RET_OK) {
     return ret;
   }
-  if (wait_set_data(wait_set) == nullptr) {
+  FleetQoxWaitSetData * data = wait_set_data(wait_set);
+  if (data == nullptr) {
     RMW_SET_ERROR_MSG("wait set data is null");
     return RMW_RET_INVALID_ARGUMENT;
+  }
+  ret = validate_wait_inputs(
+    subscriptions, services, clients, guard_conditions, events, data);
+  if (ret != RMW_RET_OK) {
+    return ret;
   }
 
   const auto timeout = wait_timeout_to_nanoseconds(wait_timeout);
   const auto start = std::chrono::steady_clock::now();
-  while (!any_waitable_ready(subscriptions, services, clients, guard_conditions)) {
+  while (!any_waitable_ready(subscriptions, services, clients, guard_conditions, events)) {
+    if (!context_is_valid(data->context)) {
+      RMW_SET_ERROR_MSG("wait set context was shutdown while waiting");
+      return RMW_RET_ERROR;
+    }
     if (timeout.count() == 0) {
       break;
     }
@@ -390,6 +532,7 @@ rmw_ret_t rmw_wait(
   size_t ready_subscriptions = 0;
   size_t ready_services = 0;
   size_t ready_clients = 0;
+  size_t ready_events = 0;
   if (subscriptions != nullptr) {
     for (size_t i = 0; i < subscriptions->subscriber_count; ++i) {
       auto * subscription = static_cast<rmw_subscription_t *>(subscriptions->subscribers[i]);
@@ -430,15 +573,25 @@ rmw_ret_t rmw_wait(
       }
     }
   }
-  clear_events(events);
+  if (events != nullptr) {
+    for (size_t i = 0; i < events->event_count; ++i) {
+      if (!event_is_ready(events->events[i])) {
+        events->events[i] = nullptr;
+      } else {
+        any_ready = true;
+        ++ready_events;
+      }
+    }
+  }
   if (trace_wait_enabled()) {
     std::fprintf(
       stderr,
-      "fleetqox rmw_wait subscriptions=%zu ready_subscriptions=%zu ready_services=%zu ready_clients=%zu any_ready=%s\n",
+      "fleetqox rmw_wait subscriptions=%zu ready_subscriptions=%zu ready_services=%zu ready_clients=%zu ready_events=%zu any_ready=%s\n",
       subscriptions != nullptr ? subscriptions->subscriber_count : 0,
       ready_subscriptions,
       ready_services,
       ready_clients,
+      ready_events,
       any_ready ? "true" : "false");
   }
   return any_ready ? RMW_RET_OK : RMW_RET_TIMEOUT;

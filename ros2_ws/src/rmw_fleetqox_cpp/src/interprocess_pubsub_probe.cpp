@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -9,6 +10,7 @@
 #include <thread>
 
 #include "rcutils/allocator.h"
+#include "rcutils/strdup.h"
 #include "rmw/init.h"
 #include "rmw/init_options.h"
 #include "rmw/get_network_flow_endpoints.h"
@@ -30,6 +32,16 @@ extern "C" std::uint64_t rmw_fleetqox_cpp_shared_memory_overwritten_frames();
 extern "C" std::uint64_t rmw_fleetqox_cpp_duplicate_data_frames_deduped();
 extern "C" std::int64_t rmw_fleetqox_cpp_last_take_source_timestamp_ns();
 extern "C" std::int64_t rmw_fleetqox_cpp_last_take_timestamp_ns();
+extern "C" bool rmw_fleetqox_cpp_udp_peer_auth_enabled();
+extern "C" std::uint64_t rmw_fleetqox_cpp_udp_peer_auth_signed_frames();
+extern "C" std::uint64_t rmw_fleetqox_cpp_udp_peer_auth_verified_frames();
+extern "C" std::uint64_t rmw_fleetqox_cpp_udp_peer_auth_failures();
+extern "C" std::uint64_t rmw_fleetqox_cpp_udp_peer_auth_chain_failures();
+extern "C" std::uint64_t rmw_fleetqox_cpp_udp_peer_auth_signature_failures();
+extern "C" std::uint64_t rmw_fleetqox_cpp_udp_peer_auth_identity_denied();
+extern "C" bool rmw_fleetqox_cpp_udp_peer_auth_crl_enabled();
+extern "C" std::uint64_t rmw_fleetqox_cpp_udp_peer_auth_revoked_certificate_drops();
+extern "C" const char * rmw_fleetqox_cpp_udp_peer_auth_last_identity();
 
 namespace
 {
@@ -132,6 +144,19 @@ bool init_context(
   if (rmw_init_options_init(options, allocator) != RMW_RET_OK) {
     return false;
   }
+  const char * enclave = std::getenv("FLEETQOX_RMW_PROBE_ENCLAVE");
+  if (enclave != nullptr && enclave[0] != '\0') {
+    if (options->enclave != nullptr && options->allocator.deallocate != nullptr) {
+      options->allocator.deallocate(
+        const_cast<char *>(options->enclave), options->allocator.state);
+    }
+    options->enclave = rcutils_strdup(enclave, options->allocator);
+    if (options->enclave == nullptr) {
+      const rmw_ret_t fini_ret = rmw_init_options_fini(options);
+      (void)fini_ret;
+      return false;
+    }
+  }
   options->instance_id = 45;
   *context = rmw_get_zero_initialized_context();
   if (rmw_init(options, context) != RMW_RET_OK) {
@@ -210,6 +235,26 @@ void print_json_result(
             << rmw_fleetqox_cpp_shared_memory_overwritten_frames() << ",";
   std::cout << "\"network_flow_endpoint_count\":" << network_flow_endpoint_count << ",";
   std::cout << "\"duplicate_data_frames_deduped\":" << duplicate_data_frames_deduped << ",";
+  std::cout << "\"udp_peer_auth_enabled\":" <<
+    (rmw_fleetqox_cpp_udp_peer_auth_enabled() ? "true" : "false") << ",";
+  std::cout << "\"udp_peer_auth_signed_frames\":" <<
+    rmw_fleetqox_cpp_udp_peer_auth_signed_frames() << ",";
+  std::cout << "\"udp_peer_auth_verified_frames\":" <<
+    rmw_fleetqox_cpp_udp_peer_auth_verified_frames() << ",";
+  std::cout << "\"udp_peer_auth_failures\":" <<
+    rmw_fleetqox_cpp_udp_peer_auth_failures() << ",";
+  std::cout << "\"udp_peer_auth_chain_failures\":" <<
+    rmw_fleetqox_cpp_udp_peer_auth_chain_failures() << ",";
+  std::cout << "\"udp_peer_auth_signature_failures\":" <<
+    rmw_fleetqox_cpp_udp_peer_auth_signature_failures() << ",";
+  std::cout << "\"udp_peer_auth_identity_denied\":" <<
+    rmw_fleetqox_cpp_udp_peer_auth_identity_denied() << ",";
+  std::cout << "\"udp_peer_auth_crl_enabled\":" <<
+    (rmw_fleetqox_cpp_udp_peer_auth_crl_enabled() ? "true" : "false") << ",";
+  std::cout << "\"udp_peer_auth_revoked_certificate_drops\":" <<
+    rmw_fleetqox_cpp_udp_peer_auth_revoked_certificate_drops() << ",";
+  std::cout << "\"udp_peer_auth_last_identity\":\"" << json_escape(
+    rmw_fleetqox_cpp_udp_peer_auth_last_identity()) << "\",";
   std::cout << "\"taken\":" << (taken ? "true" : "false") << ",";
   std::cout << "\"bytes\":" << bytes << ",";
   std::cout << "\"take_age_ms\":" << take_age_ms << ",";

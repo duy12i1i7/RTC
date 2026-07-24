@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <initializer_list>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -16,7 +17,7 @@
 #include "rmw/subscription_options.h"
 #include "rosidl_runtime_c/message_type_support_struct.h"
 
-extern "C" std::uint64_t rmw_fleetqox_cpp_socket_frames_received();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_data_frames_received();
 
 namespace
 {
@@ -74,12 +75,38 @@ std::string serialized_message_string(const rmw_serialized_message_t & message)
 bool wait_for_received_frames(std::uint64_t baseline, std::uint64_t expected_delta)
 {
   for (int attempt = 0; attempt < 200; ++attempt) {
-    if (rmw_fleetqox_cpp_socket_frames_received() >= baseline + expected_delta) {
+    if (rmw_fleetqox_cpp_socket_data_frames_received() >= baseline + expected_delta) {
       return true;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   return false;
+}
+
+bool compatibility_case(
+  const rmw_qos_profile_t & publisher,
+  const rmw_qos_profile_t & subscription,
+  rmw_qos_compatibility_type_t expected,
+  std::initializer_list<const char *> reason_tokens,
+  std::string * observed_reason = nullptr)
+{
+  char reason[512]{};
+  rmw_qos_compatibility_type_t compatibility = RMW_QOS_COMPATIBILITY_OK;
+  const rmw_ret_t ret = rmw_qos_profile_check_compatible(
+    publisher, subscription, &compatibility, reason, sizeof(reason));
+  if (observed_reason != nullptr) {
+    *observed_reason = reason;
+  }
+  if (ret != RMW_RET_OK || compatibility != expected) {
+    return false;
+  }
+  const std::string text(reason);
+  for (const char * token : reason_tokens) {
+    if (token == nullptr || text.find(token) == std::string::npos) {
+      return false;
+    }
+  }
+  return expected != RMW_QOS_COMPATIBILITY_OK || text.empty();
 }
 
 }  // namespace
@@ -158,7 +185,7 @@ int main()
     return 1;
   }
 
-  const std::uint64_t depth_received_before = rmw_fleetqox_cpp_socket_frames_received();
+  const std::uint64_t depth_received_before = rmw_fleetqox_cpp_socket_data_frames_received();
   rmw_ret_t depth_publish_first_ret =
     rmw_publish_serialized_message(depth_publisher, &first, nullptr);
   rmw_ret_t depth_publish_second_ret =
@@ -172,7 +199,7 @@ int main()
     rmw_take_serialized_message(depth_subscription, &depth_incoming, &depth_second_take, nullptr);
   const std::string depth_received = serialized_message_string(depth_incoming);
 
-  const std::uint64_t lifespan_received_before = rmw_fleetqox_cpp_socket_frames_received();
+  const std::uint64_t lifespan_received_before = rmw_fleetqox_cpp_socket_data_frames_received();
   rmw_ret_t lifespan_publish_ret =
     rmw_publish_serialized_message(lifespan_publisher, &expired, nullptr);
   const bool lifespan_received_ready = wait_for_received_frames(lifespan_received_before, 1);
@@ -196,6 +223,77 @@ int main()
     lifespan_received_ready &&
     lifespan_take_ret == RMW_RET_OK &&
     !lifespan_taken;
+
+  rmw_qos_profile_t compatible_publisher = rmw_qos_profile_default;
+  compatible_publisher.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
+  compatible_publisher.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
+  compatible_publisher.liveliness = RMW_QOS_POLICY_LIVELINESS_AUTOMATIC;
+  compatible_publisher.deadline = RMW_QOS_DEADLINE_DEFAULT;
+  compatible_publisher.liveliness_lease_duration =
+    RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT;
+  rmw_qos_profile_t compatible_subscription = compatible_publisher;
+  const bool compatible_case_ok = compatibility_case(
+    compatible_publisher, compatible_subscription, RMW_QOS_COMPATIBILITY_OK, {});
+
+  rmw_qos_profile_t combined_error_publisher = compatible_publisher;
+  combined_error_publisher.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  rmw_qos_profile_t combined_error_subscription = compatible_subscription;
+  combined_error_subscription.durability = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL;
+  std::string combined_error_reason;
+  const bool combined_error_case_ok = compatibility_case(
+    combined_error_publisher,
+    combined_error_subscription,
+    RMW_QOS_COMPATIBILITY_ERROR,
+    {"best-effort", "transient-local"},
+    &combined_error_reason);
+
+  rmw_qos_profile_t deadline_missing_subscription = compatible_subscription;
+  deadline_missing_subscription.deadline = rmw_time_t{0, 10000000};
+  const bool deadline_missing_case_ok = compatibility_case(
+    compatible_publisher,
+    deadline_missing_subscription,
+    RMW_QOS_COMPATIBILITY_ERROR,
+    {"deadline but publisher does not"});
+
+  rmw_qos_profile_t deadline_slow_publisher = compatible_publisher;
+  deadline_slow_publisher.deadline = rmw_time_t{0, 20000000};
+  rmw_qos_profile_t deadline_fast_subscription = compatible_subscription;
+  deadline_fast_subscription.deadline = rmw_time_t{0, 10000000};
+  const bool deadline_order_case_ok = compatibility_case(
+    deadline_slow_publisher,
+    deadline_fast_subscription,
+    RMW_QOS_COMPATIBILITY_ERROR,
+    {"deadline is less"});
+
+  rmw_qos_profile_t manual_subscription = compatible_subscription;
+  manual_subscription.liveliness = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC;
+  const bool liveliness_kind_case_ok = compatibility_case(
+    compatible_publisher,
+    manual_subscription,
+    RMW_QOS_COMPATIBILITY_ERROR,
+    {"manual-by-topic"});
+
+  rmw_qos_profile_t lease_slow_publisher = compatible_publisher;
+  lease_slow_publisher.liveliness_lease_duration = rmw_time_t{0, 20000000};
+  rmw_qos_profile_t lease_fast_subscription = compatible_subscription;
+  lease_fast_subscription.liveliness_lease_duration = rmw_time_t{0, 10000000};
+  const bool lease_order_case_ok = compatibility_case(
+    lease_slow_publisher,
+    lease_fast_subscription,
+    RMW_QOS_COMPATIBILITY_ERROR,
+    {"subscription liveliness lease is less"});
+
+  rmw_qos_profile_t warning_publisher = compatible_publisher;
+  warning_publisher.reliability = RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT;
+  const bool warning_case_ok = compatibility_case(
+    warning_publisher,
+    compatible_subscription,
+    RMW_QOS_COMPATIBILITY_WARNING,
+    {"WARNING", "publisher reliability is unknown"});
+  const bool compatibility_matrix_ok =
+    compatible_case_ok && combined_error_case_ok && deadline_missing_case_ok &&
+    deadline_order_case_ok && liveliness_kind_case_ok && lease_order_case_ok &&
+    warning_case_ok;
 
   const rmw_ret_t first_fini_ret = rmw_serialized_message_fini(&first);
   const rmw_ret_t second_fini_ret = rmw_serialized_message_fini(&second);
@@ -222,8 +320,10 @@ int main()
     destroy_lifespan_sub_ret == RMW_RET_OK &&
     destroy_node_ret == RMW_RET_OK;
 
-  std::cout << "{\"schema_version\":\"fleetrmw.rmw_qos_probe.v1\",";
-  std::cout << "\"status\":\"" << (depth_ok && lifespan_ok && cleanup_ok ? "ok" : "failed") << "\",";
+  std::cout << "{\"schema_version\":\"fleetrmw.rmw_qos_probe.v2\",";
+  std::cout << "\"status\":\"" <<
+    (depth_ok && lifespan_ok && compatibility_matrix_ok && cleanup_ok ? "ok" : "failed") <<
+    "\",";
   std::cout << "\"depth_topic\":\"" << depth_topic << "\",";
   std::cout << "\"depth_policy\":\"KEEP_LAST\",";
   std::cout << "\"depth_limit\":1,";
@@ -235,7 +335,15 @@ int main()
   std::cout << "\"lifespan_ns\":5000000,";
   std::cout << "\"lifespan_received_ready\":" << (lifespan_received_ready ? "true" : "false") << ",";
   std::cout << "\"lifespan_taken\":" << (lifespan_taken ? "true" : "false") << ",";
-  std::cout << "\"lifespan_received\":\"" << json_escape(lifespan_received) << "\"}" << std::endl;
+  std::cout << "\"lifespan_received\":\"" << json_escape(lifespan_received) << "\",";
+  std::cout << "\"qos_compatibility_full_matrix\":" <<
+    (compatibility_matrix_ok ? "true" : "false") << ",";
+  std::cout << "\"qos_compatibility_error_reason_aggregation\":" <<
+    (combined_error_case_ok ? "true" : "false") << ",";
+  std::cout << "\"qos_compatibility_warning_semantics\":" <<
+    (warning_case_ok ? "true" : "false") << ",";
+  std::cout << "\"combined_error_reason\":\"" <<
+    json_escape(combined_error_reason) << "\"}" << std::endl;
 
-  return depth_ok && lifespan_ok && cleanup_ok ? 0 : 1;
+  return depth_ok && lifespan_ok && compatibility_matrix_ok && cleanup_ok ? 0 : 1;
 }

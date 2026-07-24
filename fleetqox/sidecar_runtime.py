@@ -802,6 +802,7 @@ class SidecarRuntime:
                     nack_unknown += 1
                     continue
                 state["last_send_ns"] = 0
+                state["ack_nack_gap_pending"] = True
                 state["ack_nack_gap_request_count"] = int(
                     state.get("ack_nack_gap_request_count", 0)
                 ) + 1
@@ -863,10 +864,13 @@ class SidecarRuntime:
             event["reason"] = f"control_lease_ack_retransmit={attempts}; {reason}"
             state["ack_retransmit_attempts"] = attempts
             self._control_lease_ack_robot_last_retransmit_tick[str(key[0])] = tick
-            emitted += self._send_udp_event(
+            sent = self._send_udp_event(
                 event,
                 str(event.get("_packet_format", packet_format)),
             )
+            emitted += sent
+            if sent > 0:
+                state.pop("ack_nack_gap_pending", None)
         return emitted
 
     def _control_lease_ack_retransmit_candidates(
@@ -883,6 +887,9 @@ class SidecarRuntime:
                 continue
             event = state.get("event", {})
             if not isinstance(event, Mapping):
+                continue
+            if bool(state.get("ack_nack_gap_pending", False)):
+                candidates.append((key, state))
                 continue
             if drain_all:
                 candidates.append((key, state))
@@ -1427,8 +1434,14 @@ def serve_tcp(
     runtime: SidecarRuntime,
     idle_timeout_s: float = 30.0,
     max_runtime_s: float = 300.0,
+    ready_event: threading.Event | None = None,
 ) -> None:
-    """Serve newline-delimited JSON batches over TCP."""
+    """Serve newline-delimited JSON batches over TCP.
+
+    When supplied, ``ready_event`` is set only after the listening socket has
+    been created.  In-process callers can therefore avoid racing their first
+    connection against server startup.
+    """
 
     started = time.monotonic()
     last_activity = started
@@ -1460,6 +1473,8 @@ def serve_tcp(
 
     with socket.create_server((host, port), reuse_port=False) as server:
         server.settimeout(0.25)
+        if ready_event is not None:
+            ready_event.set()
         while not stop_event.is_set():
             now = time.monotonic()
             if now - started > max_runtime_s:

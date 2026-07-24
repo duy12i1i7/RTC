@@ -4,6 +4,7 @@
 #include <gnutls/gnutls.h>
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto_gnutls.h>
+#include <nghttp3/nghttp3.h>
 
 int main()
 {
@@ -16,7 +17,11 @@ int main()
   const bool crypto_binding_ok = static_cast<int>(initial_level) >= 0;
   const char * gnutls_version = gnutls_check_version(nullptr);
   const bool gnutls_ok = gnutls_version != nullptr && gnutls_version[0] != '\0';
-  const bool ok = version_ok && quic_v1_supported && crypto_binding_ok && gnutls_ok;
+  const nghttp3_info * nghttp3_info_value = nghttp3_version(NGHTTP3_VERSION_NUM);
+  const bool nghttp3_ok = nghttp3_info_value != nullptr &&
+    nghttp3_info_value->version_str != nullptr;
+  const bool ok =
+    version_ok && quic_v1_supported && crypto_binding_ok && gnutls_ok && nghttp3_ok;
 
   std::cout << "{\"schema_version\":\"fleetrmw.quic_dependency_probe.v1\","
             << "\"status\":\"" << (ok ? "ok" : "failed") << "\","
@@ -25,7 +30,9 @@ int main()
             << "\"ngtcp2_version_num\":" << (info != nullptr ? info->version_num : 0) << ","
             << "\"quic_v1_supported\":" << (quic_v1_supported ? "true" : "false") << ","
             << "\"gnutls_version\":\"" << (gnutls_version != nullptr ? gnutls_version : "") << "\","
+            << "\"nghttp3_version\":\"" <<
+              (nghttp3_ok ? nghttp3_info_value->version_str : "") << "\","
             << "\"crypto_gnutls_binding_ok\":" << (crypto_binding_ok ? "true" : "false") << ","
-            << "\"rmw_integrated_backend\":false}\n";
+            << "\"rmw_integrated_backend\":true}\n";
   return ok ? 0 : 1;
 }

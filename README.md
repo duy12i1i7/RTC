@@ -38,8 +38,14 @@ This repository starts with the part that should be proven first:
   socket-backed serialized pub/sub data-frame path with both local loopback and
   env-configured inter-process peer probes, plus a Docker
   publisher-router-subscriber-observer route and lease-aware remote-graph
-  synchronization probe, type-erased and introspection-C/C++ ROS typed
-  publish/take probes, wait/guard, and graph probes; a standalone C++
+  synchronization probe and a two-context `ROS_DOMAIN_ID` isolation probe over
+  graph guards/counts, data, services, reliability/control frames, and leased
+  remote graph state, type-erased and introspection-C/C++ ROS typed
+  publish/take probes, wait/guard, and graph probes; wait sets enforce bounded
+  native-entity capacity (`0` means unbounded), non-null entries, active
+  same-context membership, while externally owned `rcl` timer guard conditions
+  do not consume capacity (matching Jazzy's omission of timers from
+  `max_conditions`), plus exact entity-owner node lifecycle checks; a standalone C++
   type-support regression round-trips `String` and nested `PoseStamped`, checks
   exact bounded `Pose` serialized-size calculation, and deliberately scopes
   unbounded artificial sizing as unsupported; a
@@ -50,20 +56,120 @@ This repository starts with the part that should be proven first:
   explicit UDP fallback path under injected SHM initialization failure; a
   hybrid gate then sends the same flow over local SHM and a remote UDP router,
   requires router forwarding, and proves application-level duplicate removal;
-- a no-op publisher/subscription allocation ABI lifecycle where init/fini
-  succeeds, allocation handles carry the FleetRMW identifier, and serialized
-  publish/take accepts allocation pointers in Docker; this is not a deep
-  preallocation or zero-copy claim;
-- a no-op QoS event ABI surface where publisher/subscription event init/fini,
-  event callback setters, support checks, and take-with-no-event pass in Docker;
-  this is explicitly not an event-production semantics claim;
+- a real publisher/subscription payload-scratch allocation ABI: init reserves
+  a type-support-bound 64 KiB scratch vector, typed/serialized publish and take
+  validate and reuse it, and `5/5` Docker runs each complete eight pairs with
+  exact use counts, stable capacity, zero scratch growths, and fail-closed
+  uninitialized handles. Frame/history/transport allocations remain, so this
+  is not a deep all-hot-path preallocation or zero-copy claim;
+- a real `rmw_take_sequence` ABI implementation with ordered full and partial
+  takes, unchanged output sequences on empty/invalid calls, and a
+  per-subscription lock that preserves consecutive queue ranges across
+  concurrent takes. A five-run Docker probe passes every semantic check and
+  an exported-symbol audit finds no Fast DDS Jazzy `rmw_*` symbol missing from
+  FleetRMW (`283` FleetRMW versus `95` baseline symbols);
+- a non-placeholder `rmw_publisher_wait_for_all_acked` path. ACK/NACK frames
+  carry a backward-compatible subscriber identity, each reliable write
+  snapshots its compatible subscription endpoint set, and the wait returns
+  only after every still-matched endpoint has acknowledged or the requested
+  timeout expires. In `5/5` Docker runs, a deliberately delayed second ACK
+  yields `RMW_RET_TIMEOUT` at `1/2` ACKs and OK at `2/2`; full DDS writer-history
+  and resource-limit equivalence remain outside this claim;
+- a separate `5/5` four-container remote ACK gate routes one DATA frame and two
+  subscriber-identified ACKs through the FleetRMW UDP router under netem. The
+  second subscriber delays its ACK by 450 ms, so the publisher must first time
+  out at `1/2` and then complete at `2/2`; all publisher/subscriber processes
+  and the router exit cleanly;
+- a QoS event ABI surface where publisher/subscription event init/fini,
+  event callback setters, support checks, and offered/requested deadline missed
+  event production pass in Docker; deadline misses are produced by a timer
+  after the first publish/receive or on the next publish/receive after a
+  deadline gap, become ready through `rmw_wait` while unread, and clear after
+  `rmw_take_event`; local publication/subscription matched events are produced
+  on same-process compatible endpoint create/destroy; local offered/requested
+  reliability-, durability-, and deadline-incompatible QoS events are produced for
+  best-effort publishers discovered by reliable subscriptions and volatile
+  publishers discovered by transient-local subscriptions plus offered deadlines
+  that exceed requested deadlines or omit a finite requested deadline; all four
+  slower/missing offered/requested deadline directions pass `5/5`. Local publisher/subscription
+  incompatible-type events are produced for same-topic type mismatches. The
+  same matched, reliability/durability/deadline-incompatible, exact
+  type-incompatible, and finite liveliness-changed lifecycle is now driven by UDP-learned remote graph
+  endpoints as well: renewal advertisements are deduplicated, explicit remove
+  disconnects immediately, and a killed peer disconnects after graph-lease
+  expiry under two-container UDP/netem. A separate two-container UDP/netem artifact produces both offered and
+  requested deadline-missed events after a real remote sample and idle gap,
+  with wait/take/callback/cleared-readiness checks passing `5/5`. The graph
+  artifact passes `5/5` runs across both removal
+  paths and proves automatic graph-guard add/disconnect wakeups without renewal
+  wakeup noise. The remote MANUAL_BY_TOPIC publisher now also proves
+  `RMW_EVENT_LIVELINESS_LOST` twice per run through callback/wait/take/clear.
+  A machine-readable aggregate validates at least one repeated real
+  UDP/netem multi-container path for all `11` non-invalid Jazzy RMW event
+  types (`35` source executions); it deliberately does not claim every
+  DDS/vendor-specific event semantic. Local subscription message-lost events are produced for `KEEP_LAST`
+  queue overwrite and `BEST_EFFORT` source-sequence gaps after a configurable
+  reorder grace period; the first received sample establishes the join baseline,
+  best-effort readers do not request repair, and a late reliable repair inside
+  the grace period suppresses a false loss event. A reliable writer whose
+  requested sample has already left `KEEP_LAST` history sends a
+  subscriber-targeted unrecoverable-loss notice, producing one loss event
+  instead of an endless NACK loop. A two-container UDP/netem probe repeats this
+  remote writer-history-exhaustion path `20/20`: duplicate immediate/idle repair
+  notices are received twice but counted as exactly one lost sample/event through
+  callback, `rmw_wait`, and `rmw_take_event`. A second campaign keeps the missing
+  sample in writer history and proves terminal budget exhaustion, max-attempt
+  exhaustion, and strict admission rejection `5/5` each, with clean process
+  teardown. Local manual liveliness lost/changed events are produced for finite
+  lease timeout and reassert; AUTOMATIC publishers are renewed by the RMW while
+  they exist, with an idle six-lease false-loss control passing `5/5`. A separate
+  two-container UDP/netem probe passes `5/5` for remote MANUAL_BY_TOPIC idle
+  timeout and explicit/publish wire reassertion while proving graph renewal does
+  not renew the independent liveliness lease. Another `5/5` remote probe proves
+  independent state for two simultaneous publishers, correct alive/not-alive
+  removal, and clean endpoint recreate churn. Local offered/requested
+  liveliness kind and slow/missing lease incompatibility events pass another
+  seven-scenario `5/5` Docker artifact. A local 64-publisher MANUAL_BY_TOPIC
+  scale probe verifies exact half-expiry/reassert/full-expiry/removal counts,
+  while 16 SYSTEM_DEFAULT publishers survive six idle lease intervals; all
+  five Docker repetitions pass. The same 64-publisher manual transition matrix
+  also passes `5/5` across two UDP/netem containers, with exact matched and
+  liveliness deltas, 96 expiries, and 32 reassertions per run. Default,
+  non-expiring leases now retain alive/remove events for SYSTEM_DEFAULT,
+  AUTOMATIC, MANUAL_BY_TOPIC, and BEST_AVAILABLE; UNKNOWN and deprecated
+  MANUAL_BY_NODE endpoint inputs fail closed in another `5/5` control.
+  BEST_AVAILABLE QoS selection now uses
+  the Jazzy `rmw_dds_common` algorithm over FleetRMW graph queries and passes
+  `5/5` for publisher/subscription, zero/mixed endpoint, actual-QoS, and frozen
+  create-time policy controls. A separate
+  `5/5` matrix covers `rmw_wait`/`rmw_take_event` for all eleven non-invalid
+  Jazzy event types across `35/35` component executions. Full DDS
+  message-lost/resource-limit semantics, deprecated participant-wide DDS
+  liveliness semantics, complete DDS/vendor-specific remote event semantics,
+  and the full QoS/type compatibility matrix remain out of scope; a separate
+  aggregate nevertheless proves at least one repeated UDP/netem path for all
+  eleven event types;
+- a complete ROS 2 profile-compatibility check for the policies represented by
+  `rmw_qos_profile_check_compatible`: reliability, durability, deadline,
+  liveliness kind, and liveliness lease duration. The Docker v2 QoS probe
+  verifies compatible, ERROR, aggregated-reason, and unknown-policy WARNING
+  cases; this does not broaden the separate remote-event-production claim;
+- a content-filter ABI where subscription filter set/get preserves expression
+  parameters, toggles CFT-enabled state, dynamically reconfigures/disables the
+  filter, and enforces parameterized comparisons plus SQL-like `AND/OR/NOT`
+  precedence, parentheses, `LIKE`, `BETWEEN`, `IN/NOT IN`, `IS NULL`, and
+  `IS NOT NULL` on key-value/std_msgs-style text payloads. Missing fields stay
+  SQL `unknown` through negation; malformed expressions and missing
+  parameter references fail closed; both the base and SQL-subset artifacts
+  repeat `5/5`. Typed-field reflection and the full DDS SQL dialect remain out
+  of scope;
 - a middleware-owned loaned-message lifecycle for introspection C/C++ where
   publisher borrow/publish-or-return and subscription take/return pass in
   Docker; this is explicitly a lifecycle/allocation claim, not zero-copy;
 - a real QUIC/TLS dependency gate using ngtcp2/GnuTLS `gtlsserver` and
   `gtlsclient` that completes a QUIC v1 handshake, negotiates ALPN `h3`,
-  emits qlog, and transfers a payload in Docker; this is explicitly not yet
-  an integrated RMW QUIC backend claim;
+  emits qlog, and transfers a payload in Docker; this dependency artifact is
+  scoped below the newer integrated in-process path;
 - a follow-on QUIC/FleetRMW wire-format gate that transfers a real
   `fleetrmw.data_frame.v1` through ngtcp2/GnuTLS QUIC/TLS/H3 and decodes it
   with the C++ `fleetrmw_frame_probe`, still scoped below integrated RMW
@@ -78,9 +184,293 @@ This repository starts with the part that should be proven first:
   single-publish and async-burst runs with qdisc counters and ngtcp2 path
   telemetry; this is subprocess-backed and not a full bidirectional production
   QUIC backend;
+- QUIC gateway session/tp/token file plumbing through ngtcp2/GnuTLS
+  `gtlsclient`, with a Docker burst probe that verifies session artifacts
+  persist across multiple uploads and parses log telemetry that separates
+  0-RTT packet attempts from accepted 0-RTT; this is not a 0-RTT, security
+  hardening, or full-duplex transport claim;
+- QUIC gateway take/download slices where the shared transport helper fetches
+  a `fleetrmw.data_frame.v1` over ngtcp2/GnuTLS QUIC/TLS/H3 GET, verifies
+  byte-for-byte payload integrity, and decodes it in C++, and an opt-in
+  `FLEETQOX_RMW_QUIC_GATEWAY_TAKE_ON_DEMAND=1` smoke wires that download path
+  into `rmw_take_serialized_message`; repeated RMW-take GETs also share
+  ngtcp2/GnuTLS session/tp/token files and report conservative session/0-RTT
+  telemetry. This is still subprocess-backed and not an accepted
+  0-RTT/session-resumption or full bidirectional production QUIC backend claim;
+- a same-server QUIC gateway bidirectional boundary probe where one
+  ngtcp2/GnuTLS `gtlsserver` accepts an RMW publish POST and then serves an
+  opt-in RMW take GET while both client invocations share session/tp/token
+  files across `5/5` repeated publish+take pairs; this proves sequential
+  publish+take gateway plumbing, not a production full-duplex backend. A
+  disable-early-data control keeps 0-RTT packet telemetry at zero when
+  `FLEETQOX_RMW_QUIC_DISABLE_EARLY_DATA=1`;
+- an integrated in-process QUIC v1/H3 backend using ngtcp2, GnuTLS, and
+  nghttp3. The Docker/netem gate executes 128 real `rmw_publish` calls and one
+  on-demand `rmw_take_serialized_message` over one connection and one verified
+  TLS handshake, observes 129 reliable bidirectional streams and 128
+  same-connection reuses with zero reconnects, emits three native client qlogs
+  plus three server qlogs, and rejects an unrelated CA. The final
+  `rmw_publish` and `rmw_take_serialized_message`
+  are launched by two independent threads and rendezvous into one POST/GET
+  pair before either response is driven: the probe records one concurrent RMW
+  API pair, two simultaneous API calls, and two simultaneous H3 streams. A
+  second positive connection verifies the explicit paired transport API. The
+  in-process client also rejects non-2xx HTTP/3 responses instead of silently
+  accepting them;
+- a stateful FleetQoX gateway service built on aioquic QUIC v1/H3. It validates
+  `fleetrmw.data_frame.v1`, stores bounded per-domain/topic history,
+  deduplicates `(publisher_id, sequence)`, and gives each consumer an
+  independent replay cursor. The canonical two-container Docker/netem gate
+  passes `5/5`: every run negotiates three H3 sessions, accepts three unique
+  frames plus one duplicate, replays sequences `1..3` to two consumers over
+  reused client sessions, propagates an invalid frame as HTTP 400, emits
+  client/server qlogs, and tears down cleanly. This does not claim accepted
+  0-RTT/resumption, clustered durability, predictive QoS/QoE admission, or a
+  production QUIC backend;
+- a follow-on public-RMW stateful gateway gate using three containers per run:
+  one `rmw_publish` process writes three introspection-C `std_msgs/String`
+  samples, a separate `rmw_take` process replays all three in order, and the
+  aioquic service mediates the six H3 requests. It passes `5/5` under netem;
+  both endpoints reuse one verified-TLS connection across three streams and
+  emit qlogs. This closes the inter-process public-RMW integration slice, not
+  the production security/admission boundary;
+- a mutual-TLS stateful gateway gate using six containers per run. The
+  in-process GnuTLS client loads a certificate/private-key pair, the aioquic
+  gateway requires a client certificate signed by its configured client CA,
+  and the Docker/netem artifact passes `5/5`: the trusted client writes one
+  frame while a missing-certificate client and an unrelated-CA client both
+  fail closed without changing gateway state. A second certificate signed by
+  the trusted CA but with a publisher URI SAN different from `publisher_id`
+  receives HTTP/3 403 under opt-in identity binding and also cannot mutate
+  state. This
+  gate also validates a CA-signed CRL at startup and rejects a trusted,
+  correctly identified client whose certificate serial is revoked. This
+  compatibility path now isolates the private TLS adapter, pins the Debian
+  aioquic package to `0.9.25-3build2`, requires runtime version `0.9.25`, and
+  fingerprints all three private method signatures before accepting traffic.
+  Any version/signature drift fails startup, and authentication is marked only
+  after CertificateVerify proves possession of the client private key. Current
+  upstream aioquic still lacks a public server client-auth API, so this remains
+  a guarded compatibility boundary; broader fleet identity policy, online
+  revocation/rotation, clustered state, and production hardening remain open;
+- a scoped fleet-admission gate inside the stateful QUIC service. A validated
+  JSON policy assigns domain/topic streams to traffic classes, allowlists
+  publishers, caps each stream, and caps total accepted frames across the
+  fleet. The two-container Docker/netem artifact passes `5/5`: it admits and
+  replays two control plus one bulk frame, then returns HTTP/3 429 for both
+  stream- and fleet-quota exhaustion and HTTP/3 403 for an unauthorized
+  publisher, without creating state for rejected frames. After the one-second
+  monotonic epoch rolls over, the previously fleet-quota-rejected state frame
+  is admitted and replayed, with cumulative and current-epoch counters kept
+  distinct. This is deterministic quota admission, not live predictive
+  QoS/QoE control;
+- a frame-carried QoS/QoE admission and repair-coupling gate. The C++
+  `fleetrmw.data_frame.v1` encoder now optionally carries traffic class,
+  deadline/age, QoE debt, task criticality, repair intent, and prior attempts.
+  The gateway computes a bounded criticality/debt/urgency score and invokes the
+  existing fleet repair scheduler when normal quota rejects a repair. The
+  Docker/netem artifact passes `5/5`: low score is rejected, high score is
+  admitted, one quota-overflow repair is assigned to private 5G, the next is
+  deferred by shared repair capacity, and both admitted payloads replay over
+  real H3. A follow-on `5/5` gate adds a versioned observation POST with a
+  bounded TTL and a two-frame batch endpoint. An externally supplied loss,
+  RTT, jitter, and debt observation raises the observed publisher's effective
+  score, so it wins a one-frame admission quota despite arriving second in the
+  request. A second batch places two repair requests against one shared
+  1024-byte budget: the high-criticality request is scheduled first and uses
+  622 bytes on private 5G, while the lower-score request is deferred; only the
+  two winners replay over H3. This is observation-fed, score-prioritized
+  sequential batch admission. A separate mTLS contrast gate now passes `5/5`
+  without calling the observation API: the baseline service rejects the same
+  frame at score threshold 0.32, while `--native-path-observations` reads the
+  authenticated QUIC session's smoothed RTT, RTT-variation proxy, and detected
+  packet-loss ratio and admits it. Observation source accounting proves all
+  five accepted cases are `quic_session_native`. This aioquic recovery adapter
+  is exact-version/signature gated and still private. A follow-on `5/5` mTLS
+  contrast keeps publisher debt at zero and raises the threshold so path-only
+  scoring rejects, while an opt-in gateway policy derives EWMA debt from
+  authenticated loss, RTT/deadline, and RTT-variation/deadline pressure and
+  admits the same frame. Provenance is `gateway_derived_path`; startup requires
+  mTLS and certificate publisher binding. This remains a path-pressure proxy,
+  not application jitter. A follow-on `5/5` mTLS/netem gate accepts a versioned
+  application-outcome report only for a known accepted publisher sequence,
+  binds its `publisher_id` to the client-certificate URI SAN, rejects
+  impersonation/unknown/malformed reports, and makes duplicate reports
+  idempotent. The report carries consistent `task_kind`, `terminal_status`, and
+  `task_succeeded` fields; a failed task delivery/deadline derives
+  provenance-tagged EWMA debt from delivery, deadline, latency, and task
+  pressure and changes the next
+  low-criticality frame from HTTP 429 to admission. A further `5/5`
+  mTLS/netem gate persists the authenticated outcome key and post-outcome
+  admission snapshot in the same SQLite transaction. A replacement gateway
+  restores both, treats replay as a duplicate without applying debt twice, then
+  admits and replays the low-criticality frame. This proves sequential
+  cross-gateway idempotence on one shared WAL store. The same scenario also
+  passes `5/5` against networked PostgreSQL 16 with `synchronous_commit=on`,
+  lease/fence tokens `1->2`, scrubbed connection telemetry, and a maximum
+  measured replacement-cycle latency of 4245 ms. Database-process failover is
+  deliberately not claimed by that artifact. The concurrency-8 Nav2/RMF Docker
+  workload now maps actual terminal action results (`SUCCEEDED`, `CANCELED`) and
+  an actual RMF submit response into three strict gateway-schema documents. It
+  proves that result delivery and task success remain distinct. The historical
+  concurrency-8 artifact explicitly records
+  `task_outcome_gateway_submission_performed=false`; a chained `5/5`
+  Docker/netem gate consumes its exact three documents,
+  seeds their known frame identities, and submits all three over mTLS/H3 with
+  one reused outcome session; every run records three task updates and one task
+  failure. A second `5/5` gate now performs this path directly in the still-live
+  ROS client process: the client PID matches the H3 submitter PID, `rclpy` and
+  its node remain active, and each run uses one verified mTLS handshake for six
+  H3 streams (five reuses). Netem is active on both the ROS client and gateway.
+  Two duplicate request/response transmissions on this live workload repair an
+  observed RMF batch response loss; all five canonical runs complete the RMF
+  batch and stop every container with code zero. The evidence is
+  `results_rmw_socket/docker_nav2_rmf_live_task_outcome_probe_summary.json`.
+  A public stable path API, globally optimal joint batch scheduling, and
+  cluster-wide replicated capacity state remain open;
+- a scoped active/passive durability gate for the aioquic gateway. With
+  `--state-db`, accepted frames, bounded dedup keys, and per-consumer replay
+  cursors commit through SQLite WAL with `synchronous=FULL`. The canonical
+  Docker/netem artifact passes `5/5`; each run starts three fresh gateway
+  instances against one run-local database. Instance A publishes three frames,
+  B recovers them and recognizes a replayed publish as a duplicate before
+  taking frames 1 and 2, and C recovers the committed cursor and takes only
+  frame 3. This proves sequential active/passive recovery on shared durable
+  storage, not active/active consensus, automatic leader election, replicated
+  storage, or cluster-wide admission/repair state. A follow-on `5/5` gate now
+  commits each accepted frame and its post-decision quota/repair snapshot in
+  one SQLite transaction. A replacement restores the exhausted normal quota,
+  cumulative counts, repair allocation, and repair count, then rejects a third
+  repair instead of resetting capacity. The policy has a deterministic
+  fingerprint: changed policy configuration and legacy retained frames lacking
+  admission state fail closed. This is still sequential shared-store failover,
+  not concurrent active/active coordination. A third `5/5` Docker/netem gate
+  adds a renewable SQLite single-writer lease and monotonic fence token. A
+  concurrent standby fails startup while the active lease is live; after clean
+  release, a replacement acquires token 2 and restores the exhausted
+  admission/repair state. Both frame/admission and consumer-cursor transactions
+  recheck holder, token, and expiry under `BEGIN IMMEDIATE`, so stale writers
+  fail closed. A fourth `5/5` gate starts B before A stops: B waits on the live
+  lease, then the same process automatically acquires token 2, opens H3, and
+  restores admission state after A exits. Measured stop-to-ready takeover is
+  203--208 ms. This is automatic shared-file standby takeover, not quorum or
+  consensus leader election; replicated/distributed storage, partition
+  tolerance, active/active operation, and regional disaster recovery remain
+  unclaimed. A fifth `5/5` Docker/netem gate replaces the shared host file with
+  a fresh PostgreSQL 16 database container per run. Both gateways connect over
+  the Docker network; frame plus admission state commits with
+  `synchronous_commit=on`, lease changes serialize under a PostgreSQL advisory
+  transaction lock, and frame/cursor writes recheck the lease row `FOR UPDATE`.
+  B waits while A owns token 1, automatically acquires token 2 after A stops,
+  restores the exhausted repair state, and rejects the next repair over real
+  QUIC/H3. Observed stop-to-ready takeover is 429--715 ms. This removes the
+  gateway shared-filesystem requirement, but the database is still one
+  process: database-process failover, replication, quorum/consensus, partition
+  tolerance, and production readiness remain unclaimed by that artifact. A
+  sixth `5/5` campaign adds a PostgreSQL synchronous streaming standby. It
+  verifies `streaming|sync` and positive flush/replay WAL positions after the
+  two acknowledged frame/admission commits, kills the primary process, waits
+  for A to detect lease-store loss and exit fail-closed, promotes the replica,
+  and lets pre-started B reconnect through a read-write multi-host DSN. B
+  acquires token 2, recovers both frames plus admission/repair state, and
+  rejects the next repair over QUIC/H3. Database-failure-to-gateway-ready is
+  3.129--3.154 s. This proves controlled synchronous database-process failover
+  without seeded acknowledged-state loss. Promotion is still issued by the
+  test orchestrator: automatic database leader election, a quorum DCS,
+  split-brain tolerance under partition, active/active gateways, regional DR,
+  and production readiness remain unclaimed at that stage. A seventh `5/5`
+  campaign adds a three-member etcd 3.5.17 Raft DCS and two independent
+  failover controllers plus a scoped Docker fence agent. It removes quorum by
+  killing two etcd members, then applies 100% egress loss in the still-running
+  PostgreSQL primary network namespace. The active gateway exits fail-closed,
+  the replica remains read-only, B remains unready, and both controllers record
+  DCS denial before quorum is restored. Exactly one controller then wins a
+  TTL-bound compare-and-put lease. The fence agent performs a linearizable,
+  mTLS-authenticated etcd lookup, matches controller value and lease ID, kills
+  only the configured primary through the Docker socket, and confirms it is
+  stopped; the controller calls `pg_promote` only after that confirmation. The
+  loser only observes promotion. B reconnects, acquires token 2, and restores
+  state over QUIC/H3. Failure-to-ready is 9.934--10.478 s. The HTTPS fence
+  endpoint requires a CA-verified client certificate and binds its CN to the
+  requested controller ID. A client without a certificate and an authenticated
+  client presenting a forged lease are both rejected while the primary remains
+  live. All etcd client/peer and controller/fence links require mutual TLS. This
+  proves scoped DCS-authorized Docker STONITH and one live-primary
+  partition/fence sequence. Each run then rebuilds the fenced primary from a
+  fresh physical basebackup with a dedicated slot and requires the new primary
+  to report it as `streaming|sync`; the rebuilt node is read-only and contains
+  both frames plus admission state. This restores Docker-scoped post-failover
+  redundancy. Each run then starts two independent automatic failback policy
+  controllers. Both first reject an intentionally asynchronous replica while
+  database roles remain unchanged. After synchronous `streaming|sync` with a
+  zero-byte replay gap is restored under 1/3 etcd, both still fail closed for
+  lack of quorum. Restoring 2/3 quorum yields exactly one failback lease winner.
+  A separate mTLS switchover agent binds certificate CN to controller ID,
+  validates its live DCS lease, and gracefully stops the current primary before
+  the winner promotes the original primary. Gateway C then acquires fence token
+  3, recovers the two frames plus admission state, and repeats the
+  exhausted-repair rejection over verified QUIC/H3. Automatic
+  failback-to-gateway-ready is 1.699--3.449 s. Finally, the former primary is
+  rebuilt from a fresh physical basebackup and must return as a synchronous
+  read-only standby containing the seeded state. This proves scoped automatic
+  policy/DCS failback in Docker, not production orchestration. The fence is not
+  a hardware/cloud fence, and broader split-brain partitions, certificate
+  rotation/revocation, production-grade automatic rejoin/failback, regional
+  DR, and production readiness remain false;
+- a repeated async-burst QUIC gateway soak runner that aggregates frames,
+  bytes, qlog size, drops/failures, and optional Docker/netem path telemetry
+  across multiple iterations; this is smoke/repeat evidence, not a long
+  security/stress campaign or full-duplex QUIC backend claim;
+- a Docker security-options ABI probe that verifies `rmw_init_options`
+  security/enclave lifecycle, deep-copy behavior, context init copy, shutdown,
+  and fini across `5/5` repeated runs. A separate opt-in
+  `FLEETQOX_RMW_SECURITY_POLICY` probe enforces FleetQoX publish allow/deny
+  rules across `5/5` repeated runs. A second security path uses `ros2 security`
+  to generate an enclave and signed DDS permissions artifact, verifies the
+  S/MIME signature against the permissions CA, validates the recovered XML
+  against the SROS2 XSD, and enforces grant/enclave, validity, domain,
+  publish/subscribe topic allow/deny, wildcard, and default-action semantics across
+  `5/5` runs. FleetRMW repeats the `permissions.p7s` signature/CA verification
+  inside the RMW before parsing; malformed XML and a byte-tampered signed policy
+  are denied fail-closed. The same generated policy is enforced on real
+  `rmw_send/take_request` and `rmw_send/take_response` SetBool paths, including
+  request/reply allow, explicit deny, and default deny. It also enforces the
+  SROS2 Action `call`/`execute` expansion on a real rclpy
+  `tf2_msgs/action/LookupTransform` path: the allowed action completes
+  goal/result/feedback, an explicit call deny fails in `rmw_send_request`, and
+  an execute deny drops the request before the server callback. This Action
+  matrix passes `5/5`. FleetRMW also verifies signed `governance.p7s`, applies
+  domain/topic read-write access-control switches, and repeats that path `5/5`;
+  the stock SROS2 Governance profile requesting ENCRYPT/SIGN and a tampered
+  governance signature are both denied fail-closed. Local identity credentials
+  are also checked before `rmw_init`: certificate chain, private-key match, and
+  certificate-CN/enclave equality pass `5/5`, while tampered cert, wrong key,
+  and wrong enclave controls fail closed. An opt-in UDP envelope provides
+  AES-256-GCM authenticated encryption, unique nonces, replay tracking, strict
+  key configuration, and tamper rejection across `5/5`. A certificate-signed
+  envelope authenticates remote SROS2 X.509 identities across `5/5`, with
+  allowlist, signature-tamper, and untrusted-CA controls failing closed. It
+  verifies an X.509 CRL and rejects revoked peers. HKDF-SHA256 derives and
+  rotates per-process session keys from the PSK plus a signed random salt. This
+  establishes scoped PSK sessions, but does not provide forward secrecy or
+  DDS-Security asymmetric key exchange; production hardening remains open;
+- a Docker stress/security campaign runner that aggregates security-options,
+  FleetQoX security policy, SROS2 permissions XML, UDP AEAD/peer auth,
+  dynamic serialization/take, allocation, QoS event,
+  content-filter, and QUIC async-burst soak components into one artifact. The
+  repeated profile has passed `48/48` component runs. The default long profile
+  subsequently passed eight full rounds over 3793 seconds under netem
+  (`20±5 ms`, `0.5%` loss): `80/80` component executions and `1680/1680`
+  probe runs, so the long campaign claim is now true;
 - an installed `rmw_fleetqox_cpp/capabilities.json` contract that marks the
   implementation `production_ready=false` and machine-scopes supported,
   partial, and unsupported ABI surfaces;
+- a unified benchmark report aggregator that reads existing JSON summaries and
+  the capability manifest, normalizes status/run counts/key metrics, and emits
+  a single JSON/Markdown view while preserving claim-boundary guards. Its
+  all-artifact status deliberately includes retained historical/debug/negative
+  runs, while the current capability-manifest status and true/false claim
+  counts are reported separately;
 - a repeated ROS 2 Docker T3 harness for packet-format/RMW matrices across
   publisher seeds and named netem profiles;
 - a three-seed Wi-Fi ROS 2 packet-format/RMW matrix where
@@ -180,11 +570,19 @@ This repository starts with the part that should be proven first:
   subscriber containers under the same named Wi-Fi/WAN/roaming impairment
   profiles, records missing RMW packages as `skipped`, and seeds the future
   same-envelope DDS/Zenoh comparison against FleetRMW-native routing;
-- a repeated `8/16/32`-robot, three-repetition comparison under data-plane
-  netem where FleetRMW router, Cyclone DDS, and Zenoh pass `9/9` rows and Fast
-  DDS passes `7/9`, with equal publisher reliability horizons, Zenoh router
-  bootstrap and 95% confidence intervals; its v2 report enforces split claim
-  scopes and sets cross-topology superiority to `allowed=false`;
+- a repeated `8/16/32`-robot, three-repetition split-scope comparison under
+  data-plane netem where all four FleetRMW/Fast DDS/Cyclone DDS/Zenoh systems
+  pass `9/9` rows in the current image; equal publisher reliability horizons,
+  Zenoh router bootstrap, and 95% confidence intervals are recorded, while the
+  v2 report still sets cross-topology superiority to `allowed=false` because
+  FleetRMW has a router hop and the baseline application paths are direct;
+- a separate matched-hop `8/16/32`-robot, three-seed Docker/netem comparison
+  where every system uses publisher-middle-subscriber. Cyclone DDS and Zenoh
+  pass `9/9`, FleetRMW passes `8/9`, and Fast DDS passes `6/9` (`32/36`
+  overall). The four failures retain genuine missing-payload observations.
+  Delivery/reliability comparison is allowed, but latency and architectural
+  superiority remain disallowed because FleetRMW forwards raw frames while the
+  common DDS/Zenoh relay deserializes and republishes `std_msgs/String`;
 - a repeated `8/16/32` actuated-repair capacity frontier where all `27/27`
   rows and `9/9` robot/capacity groups pass: sequence `2` is dropped once on
   both paths for repair candidates, admitted gaps are repaired on time,
@@ -208,6 +606,14 @@ This repository starts with the part that should be proven first:
   backhaul preserves each station's IP address across the transition. This
   permits a scoped roaming-handoff claim, not a general high-fidelity wireless
   or policy-superiority claim;
+- a pinned OMNeT++ 6.4.0/INET 4.7.0 ARM64 Docker runtime with a real
+  `TraceDrivenUdpApp` UDP path. Its matched routed-P2P parity matrix replays
+  identical traces, seeds, rates, delays, PER targets, and policy sets in ns-3
+  3.41 and INET. All `27/27` runtime pairs and `27/27` bounded-parity cases pass
+  across `8/16/32` robots and seeds `7,13,29` (`72,213` packet rows); maximum
+  delivery delta is `0.018314`, p99 delta `1.234667 ms`, relative utility delta
+  `0.023683`, and deadline-miss delta `0`. This closes the scoped runtime/parity
+  gap, while full TSN/mesh and high-fidelity wireless parity remain false;
 - an upstream Nav2/RMF router workload where `nav2_msgs/action/NavigateToPose`
   passes success, feedback, cancel, and result semantics while RMF
   `SubmitTask`/`CancelTask` services carry nested task types through the same
@@ -215,8 +621,73 @@ This repository starts with the part that should be proven first:
   navigation goals and four RMF submissions; the upstream
   `nav2_lifecycle_manager` C++ node drives a lifecycle companion through
   configure/activate/deactivate/cleanup, bringing the contract to `82/82`
-  service frames with zero invalid frames;
-  local compatible actions remain as CI fallbacks;
+  service frames with zero invalid frames; separate real Nav2
+  planner/controller probes configure `planner_server` with
+  `nav2_navfn_planner::NavfnPlanner` and `controller_server` with
+  `dwb_core::DWBLocalPlanner` through FleetRMW lifecycle services, then publish
+  repeated dynamic `/tf` over the same router and activate both nodes to
+  `active [3]`. A planner runtime probe also publishes repeated `/map` and
+  `/tf` through FleetRMW, sends upstream `ComputePathToPose`, and receives a
+  successful Navfn path (`error_code=0`). A controller runtime probe publishes
+  repeated `/map`, `/tf`, and `/odom`, sends upstream `FollowPath`, and receives
+  a successful DWB result (`error_code=0`). The current full-stack CI-light
+  Nav2 probe starts `bt_navigator` with a minimal
+  `ComputePathToPose -> FollowPath` behavior tree and sends upstream
+  `NavigateToPose`; planner, controller, and BT navigator all reach
+  `active [3]`, the goal succeeds with `error_code=0`, and FleetRMW forwards
+  the nested action/status/feedback traffic. A repeated same-pose wrapper
+  repeats that stack twice with fresh Docker processes, and a moving-base
+  probe sends a short `x=0.6` goal while a fake base consumes `/cmd_vel` and
+  republishes dynamic `/odom` and `/tf` through FleetRMW; the fake base records
+  four command messages and about `0.406 m` of motion. An extended moving-base
+  probe sends `x=1.2`, succeeds, forwards `/cmd_vel`, and records about
+  `0.956 m` of fake-base motion. A direct Nav2
+  `behavior_server` Spin recovery-action probe also activates
+  `nav2_behaviors::Spin`, sends `/spin`, forwards `/cmd_vel`, and rotates the
+  fake base about `0.616 rad`. A `NavigateToPose` recovery-tree probe then
+  runs a `RecoveryNode` where an intentional `MissingPlanner` compute-path
+  failure triggers `Spin`; the top-level goal aborts as expected after retry,
+  but `/spin`, `/cmd_vel`, and fake-base rotation prove the BT fallback path.
+  A recovered-success probe now executes `Spin` first and then successfully
+  completes a short `ComputePathToPose -> FollowPath` `NavigateToPose` goal
+  (`error_code=0`) while forwarding `/spin`, `/cmd_vel`, `/map`, `/odom`, and
+  `/tf`; a repeated wrapper runs that recovered-success path twice with fresh
+  Docker processes. A long moving-base wrapper repeats the unobstructed
+  `x=1.2` Nav2 BT pipeline three times with fresh Docker processes, requiring
+  repeated success, `/cmd_vel` forwarding, and aggregate fake-base motion. A
+  planner-level obstacle repair probe blocks `ComputePathToPose` with a static
+  occupancy-grid wall (`error_code=208`), then replaces the map with a clear
+  grid and replans successfully with `14` path poses. A follow-on full-stack
+  `NavigateToPose` obstacle retry probe starts planner, controller, and
+  `bt_navigator`, blocks an `x=0.8` goal with the wall (`ABORTED`,
+  `error_code=208`), then retries after publishing a clear map and succeeds
+  (`error_code=0`) while forwarding `62` service frames and recording about
+  `0.610 m` of fake-base motion. A same-goal obstacle recovery probe then keeps
+  one `NavigateToPose` goal active, lets the BT observe a planner failure,
+  executes a real `Wait` recovery action, publishes a clear map during that same
+  goal, and succeeds (`error_code=0`) with about `0.610 m` of fake-base motion
+  and `1989` forwarded service frames. This closes the scoped same-goal
+  external static-map repair claim; dynamic obstacle avoidance and production
+  costmap-clearing policy remain unclaimed. The Nav2/RMF router workload also
+  passes concurrency-8/16/32/64/128/256/512/1024/2048 upstream action/service
+  batches, with the concurrency-2048 run forwarding `12346` service frames.
+  The larger runs exercise FleetRMW UDP large-frame fragmentation/reassembly
+  plus router fragment passthrough for oversized action status/service bursts.
+  A concurrency-4096 single-batch run is retained as a negative Docker boundary
+  artifact because its all-at-once action send-goal phase still
+  loses/backpressures a small subset of `NavigateToPose` requests. The
+  admission-controlled total-4096 rerun with an 8-goal action window now passes
+  in Docker: `4096/4096` `NavigateToPose` goals are accepted and completed,
+  `4096/4096` RMF `SubmitTask` calls return, lifecycle-manager traffic remains
+  green, and the router forwards `106088` service frames with zero invalid
+  frames. This supports a scoped total-4096 upstream workload claim only with
+  admission/windowing, UDP socket-buffer/send-pacing tuning, and duplicate-safe
+  service-frame request/response repeats; unwindowed 4096 action bursts remain
+  outside the claim. The concurrency-8 artifact also records strict v1
+  application-outcome documents derived from real Nav2 success/cancel results
+  and a real RMF submit response. A separate chained `5/5` mTLS/netem artifact
+  submits those exact documents to the gateway with session reuse, while the
+  same-live-process claim remains false. Local compatible actions remain as CI fallbacks;
 - a controller-level live plan scale probe that drives the same planner across
   N robots and 2N ROS-style topics, measuring decision latency, final rule
   count, plan byte size, and redundant/unicast mode shape before larger

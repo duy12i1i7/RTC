@@ -27,6 +27,7 @@ namespace
 {
 
 constexpr size_t kMaxUdpPayloadBytes = 65507;
+constexpr const char * kFragmentPrefix = "FLEETQOX_FRAGMENT_V1|";
 
 struct RouterConfig
 {
@@ -71,6 +72,7 @@ struct TopicRoute
   std::string topic;
   sockaddr_in address{};
   std::chrono::steady_clock::time_point expires_at{};
+  std::uint64_t domain_id{0};
 };
 
 struct ServiceRoute
@@ -80,6 +82,7 @@ struct ServiceRoute
   std::string endpoint_id;
   sockaddr_in address{};
   std::chrono::steady_clock::time_point expires_at{};
+  std::uint64_t domain_id{0};
 };
 
 struct ActionRoute
@@ -89,6 +92,7 @@ struct ActionRoute
   std::string endpoint_id;
   sockaddr_in address{};
   std::chrono::steady_clock::time_point expires_at{};
+  std::uint64_t domain_id{0};
 };
 
 struct PublisherRoute
@@ -97,6 +101,7 @@ struct PublisherRoute
   std::string topic;
   sockaddr_in address{};
   std::chrono::steady_clock::time_point expires_at{};
+  std::uint64_t domain_id{0};
 };
 
 struct TopicQosLease
@@ -105,6 +110,7 @@ struct TopicQosLease
   std::string topic;
   rmw_fleetqox_cpp::GraphQosProfile qos;
   std::chrono::steady_clock::time_point expires_at{};
+  std::uint64_t domain_id{0};
 };
 
 struct QueuedDataFrame
@@ -204,6 +210,12 @@ bool endpoints_match(const sockaddr_in & left, const sockaddr_in & right)
   return left.sin_family == right.sin_family &&
          left.sin_addr.s_addr == right.sin_addr.s_addr &&
          left.sin_port == right.sin_port;
+}
+
+bool is_fragment_datagram(const std::string & payload)
+{
+  const std::string prefix(kFragmentPrefix);
+  return payload.rfind(prefix, 0) == 0;
 }
 
 bool parse_peer_endpoints(const std::string & peers, std::vector<sockaddr_in> * peer_addresses)
@@ -517,6 +529,21 @@ std::int64_t monotonic_timestamp_ns()
   return std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 }
 
+int parse_nonnegative_int_env(const char * name, int default_value, int max_value)
+{
+  const char * raw = std::getenv(name);
+  if (raw == nullptr || raw[0] == '\0') {
+    return default_value;
+  }
+  char * end = nullptr;
+  errno = 0;
+  const long parsed = std::strtol(raw, &end, 10);
+  if (errno != 0 || end == raw || *end != '\0' || parsed < 0) {
+    return default_value;
+  }
+  return static_cast<int>(std::min<long>(parsed, max_value));
+}
+
 std::int64_t graph_duration_ns(std::uint64_t sec, std::uint64_t nsec)
 {
   if (sec == 0 && nsec == 0) {
@@ -542,7 +569,7 @@ bool frame_exceeds_learned_lifespan(
 {
   std::int64_t effective_lifespan_ns = 0;
   for (const TopicQosLease & lease : qos_table) {
-    if (lease.topic != frame.topic) {
+    if (lease.domain_id != frame.domain_id || lease.topic != frame.topic) {
       continue;
     }
     const std::int64_t lifespan_ns =
@@ -564,11 +591,12 @@ bool frame_exceeds_learned_lifespan(
 
 std::int64_t learned_deadline_ns(
   const std::vector<TopicQosLease> & qos_table,
-  const std::string & topic)
+  const std::string & topic,
+  std::uint64_t domain_id)
 {
   std::int64_t effective_deadline_ns = 0;
   for (const TopicQosLease & lease : qos_table) {
-    if (lease.topic != topic) {
+    if (lease.domain_id != domain_id || lease.topic != topic) {
       continue;
     }
     const std::int64_t deadline_ns =
@@ -587,7 +615,8 @@ std::int64_t absolute_deadline_ns_for_frame(
   const std::vector<TopicQosLease> & qos_table,
   const rmw_fleetqox_cpp::DataFrame & frame)
 {
-  const std::int64_t deadline_ns = learned_deadline_ns(qos_table, frame.topic);
+  const std::int64_t deadline_ns = learned_deadline_ns(
+    qos_table, frame.topic, frame.domain_id);
   if (deadline_ns <= 0 || frame.source_timestamp_ns <= 0 ||
     std::numeric_limits<std::int64_t>::max() - frame.source_timestamp_ns < deadline_ns)
   {
@@ -716,7 +745,7 @@ int forward_data_frame(
 {
   std::vector<sockaddr_in> targets = peer_addresses;
   for (const TopicRoute & route : route_table) {
-    if (route.topic != frame.topic) {
+    if (route.domain_id != frame.domain_id || route.topic != frame.topic) {
       continue;
     }
     const auto already_targeted = std::any_of(
@@ -748,6 +777,48 @@ int forward_data_frame(
   }
   if (sent_count > 0 && forwarded_topics != nullptr) {
     forwarded_topics->push_back(frame.topic);
+  }
+  return sent_count;
+}
+
+int forward_passthrough_datagram(
+  int fd,
+  const std::string & payload,
+  const sockaddr_in & source_address,
+  const std::vector<sockaddr_in> & peer_addresses,
+  const std::vector<TopicRoute> & route_table,
+  const std::vector<PublisherRoute> & publisher_route_table,
+  const std::vector<ServiceRoute> & service_route_table,
+  const std::vector<ActionRoute> & action_route_table)
+{
+  std::vector<sockaddr_in> targets = peer_addresses;
+  for (const TopicRoute & route : route_table) {
+    append_unique_peer(&targets, route.address);
+  }
+  for (const PublisherRoute & route : publisher_route_table) {
+    append_unique_peer(&targets, route.address);
+  }
+  for (const ServiceRoute & route : service_route_table) {
+    append_unique_peer(&targets, route.address);
+  }
+  for (const ActionRoute & route : action_route_table) {
+    append_unique_peer(&targets, route.address);
+  }
+  int sent_count = 0;
+  for (const sockaddr_in & peer : targets) {
+    if (endpoints_match(peer, source_address)) {
+      continue;
+    }
+    const auto sent = ::sendto(
+      fd,
+      payload.data(),
+      payload.size(),
+      0,
+      reinterpret_cast<const sockaddr *>(&peer),
+      sizeof(peer));
+    if (sent >= 0 && static_cast<size_t>(sent) == payload.size()) {
+      ++sent_count;
+    }
   }
   return sent_count;
 }
@@ -1180,6 +1251,16 @@ int main(int argc, char ** argv)
     return 1;
   }
 
+  const int udp_socket_buffer_bytes = parse_nonnegative_int_env(
+    "FLEETQOX_ROUTER_UDP_SOCKET_BUFFER_BYTES",
+    4 * 1024 * 1024,
+    64 * 1024 * 1024);
+  if (udp_socket_buffer_bytes > 0) {
+    const int buffer_bytes = udp_socket_buffer_bytes;
+    (void)::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer_bytes, sizeof(buffer_bytes));
+    (void)::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer_bytes, sizeof(buffer_bytes));
+  }
+
   timeval timeout{};
   timeout.tv_sec = 0;
   timeout.tv_usec = 100000;
@@ -1334,20 +1415,40 @@ int main(int argc, char ** argv)
            graph_advertisements >= config.expected_graph_advertisements &&
            topic_source_sequence_expectations_satisfied(
              config.expected_forwarded_topic_source_sequences,
-             forwarded_topic_source_sequences) &&
+           forwarded_topic_source_sequences) &&
            queued_data_frames.empty();
+  };
+  auto activity_counter = [&]() -> std::int64_t {
+    return static_cast<std::int64_t>(received) +
+           static_cast<std::int64_t>(service_frames) +
+           static_cast<std::int64_t>(action_frames) +
+           static_cast<std::int64_t>(ack_nack_frames) +
+           static_cast<std::int64_t>(forwarded) +
+           static_cast<std::int64_t>(service_forwarded) +
+           static_cast<std::int64_t>(action_forwarded) +
+           static_cast<std::int64_t>(ack_nack_forwarded) +
+           static_cast<std::int64_t>(qos_dropped) +
+           static_cast<std::int64_t>(test_dropped) +
+           static_cast<std::int64_t>(invalid) +
+           static_cast<std::int64_t>(scheduler_queued_frames) +
+           static_cast<std::int64_t>(scheduler_forwarded_frames);
   };
   bool satisfaction_dwell_started = false;
   std::chrono::steady_clock::time_point satisfaction_dwell_start{};
+  std::int64_t satisfaction_dwell_activity_counter = -1;
   while (std::chrono::steady_clock::now() < deadline) {
     const auto now = std::chrono::steady_clock::now();
     if (expectations_satisfied()) {
       if (config.post_satisfaction_ms <= 0) {
         break;
       }
-      if (!satisfaction_dwell_started) {
+      const std::int64_t current_activity_counter = activity_counter();
+      if (!satisfaction_dwell_started ||
+        current_activity_counter != satisfaction_dwell_activity_counter)
+      {
         satisfaction_dwell_started = true;
         satisfaction_dwell_start = now;
+        satisfaction_dwell_activity_counter = current_activity_counter;
       } else if (
         now - satisfaction_dwell_start >=
         std::chrono::milliseconds(std::max(config.post_satisfaction_ms, 0)))
@@ -1356,6 +1457,7 @@ int main(int argc, char ** argv)
       }
     } else {
       satisfaction_dwell_started = false;
+      satisfaction_dwell_activity_counter = -1;
     }
     purge_expired_routes(&route_table, now);
     purge_expired_publisher_routes(&publisher_route_table, now);
@@ -1394,6 +1496,19 @@ int main(int argc, char ** argv)
     }
 
     const std::string encoded_frame(buffer.data(), static_cast<size_t>(size));
+    if (is_fragment_datagram(encoded_frame)) {
+      forwarded += forward_passthrough_datagram(
+        fd,
+        encoded_frame,
+        source_address,
+        peer_addresses,
+        route_table,
+        publisher_route_table,
+        service_route_table,
+        action_route_table);
+      continue;
+    }
+
     const auto advertisement = rmw_fleetqox_cpp::decode_route_advertisement(encoded_frame);
     if (advertisement) {
       ++route_advertisements;
@@ -1403,6 +1518,7 @@ int main(int argc, char ** argv)
           route_table.end(),
           [&](const TopicRoute & route) {
             return route.topic == advertisement->topic &&
+                   route.domain_id == advertisement->domain_id &&
                    endpoints_match(route.address, source_address);
           });
         if (already_known == route_table.end()) {
@@ -1410,7 +1526,8 @@ int main(int argc, char ** argv)
             TopicRoute{
               advertisement->topic,
               source_address,
-              now + lease_duration(advertisement->lease_ms)});
+              now + lease_duration(advertisement->lease_ms),
+              advertisement->domain_id});
         } else {
           already_known->expires_at = now + lease_duration(advertisement->lease_ms);
         }
@@ -1446,7 +1563,8 @@ int main(int argc, char ** argv)
               topic_qos_table.begin(),
               topic_qos_table.end(),
               [&](const TopicQosLease & lease) {
-                return lease.endpoint_id == graph_advertisement->endpoint_id;
+                return lease.domain_id == graph_advertisement->domain_id &&
+                       lease.endpoint_id == graph_advertisement->endpoint_id;
               }),
             topic_qos_table.end());
         } else {
@@ -1454,7 +1572,8 @@ int main(int argc, char ** argv)
             topic_qos_table.begin(),
             topic_qos_table.end(),
             [&](const TopicQosLease & lease) {
-              return lease.endpoint_id == graph_advertisement->endpoint_id;
+              return lease.domain_id == graph_advertisement->domain_id &&
+                     lease.endpoint_id == graph_advertisement->endpoint_id;
             });
           if (already_known == topic_qos_table.end()) {
             topic_qos_table.push_back(
@@ -1462,7 +1581,8 @@ int main(int argc, char ** argv)
                 graph_advertisement->endpoint_id,
                 graph_advertisement->topic,
                 graph_advertisement->qos,
-                now + lease_duration(graph_advertisement->lease_ms)});
+                now + lease_duration(graph_advertisement->lease_ms),
+                graph_advertisement->domain_id});
           } else {
             already_known->topic = graph_advertisement->topic;
             already_known->qos = graph_advertisement->qos;
@@ -1479,7 +1599,8 @@ int main(int argc, char ** argv)
               service_route_table.begin(),
               service_route_table.end(),
               [&](const ServiceRoute & route) {
-                return route.endpoint_id == graph_advertisement->endpoint_id;
+                return route.domain_id == graph_advertisement->domain_id &&
+                       route.endpoint_id == graph_advertisement->endpoint_id;
               }),
             service_route_table.end());
         } else {
@@ -1488,6 +1609,7 @@ int main(int argc, char ** argv)
             service_route_table.end(),
             [&](const ServiceRoute & route) {
               return route.endpoint_id == graph_advertisement->endpoint_id &&
+                     route.domain_id == graph_advertisement->domain_id &&
                      endpoints_match(route.address, source_address);
             });
           if (already_known == service_route_table.end()) {
@@ -1497,7 +1619,8 @@ int main(int argc, char ** argv)
                 graph_advertisement->topic,
                 graph_advertisement->endpoint_id,
                 source_address,
-                now + lease_duration(graph_advertisement->lease_ms)});
+                now + lease_duration(graph_advertisement->lease_ms),
+                graph_advertisement->domain_id});
           } else {
             already_known->role = graph_advertisement->entity_kind;
             already_known->service_name = graph_advertisement->topic;
@@ -1515,7 +1638,8 @@ int main(int argc, char ** argv)
               action_route_table.begin(),
               action_route_table.end(),
               [&](const ActionRoute & route) {
-                return route.endpoint_id == graph_advertisement->endpoint_id;
+                return route.domain_id == graph_advertisement->domain_id &&
+                       route.endpoint_id == graph_advertisement->endpoint_id;
               }),
             action_route_table.end());
         } else {
@@ -1524,6 +1648,7 @@ int main(int argc, char ** argv)
             action_route_table.end(),
             [&](const ActionRoute & route) {
               return route.endpoint_id == graph_advertisement->endpoint_id &&
+                     route.domain_id == graph_advertisement->domain_id &&
                      endpoints_match(route.address, source_address);
             });
           if (already_known == action_route_table.end()) {
@@ -1533,7 +1658,8 @@ int main(int argc, char ** argv)
                 graph_advertisement->topic,
                 graph_advertisement->endpoint_id,
                 source_address,
-                now + lease_duration(graph_advertisement->lease_ms)});
+                now + lease_duration(graph_advertisement->lease_ms),
+                graph_advertisement->domain_id});
           } else {
             already_known->role = graph_advertisement->entity_kind;
             already_known->action_name = graph_advertisement->topic;
@@ -1577,12 +1703,14 @@ int main(int argc, char ** argv)
       }
       std::vector<sockaddr_in> targets = peer_addresses;
       for (const ServiceRoute & route : service_route_table) {
-        if (service_frame->role == "request" &&
+        if (route.domain_id == service_frame->domain_id &&
+          service_frame->role == "request" &&
           route.role == "service" &&
           route.service_name == service_frame->service_name)
         {
           append_unique_peer(&targets, route.address);
-        } else if (service_frame->role == "response" &&
+        } else if (route.domain_id == service_frame->domain_id &&
+          service_frame->role == "response" &&
           route.role == "client" &&
           route.endpoint_id == service_frame->client_endpoint_id)
         {
@@ -1617,12 +1745,14 @@ int main(int argc, char ** argv)
       }
       std::vector<sockaddr_in> targets = peer_addresses;
       for (const ActionRoute & route : action_route_table) {
-        if (action_role_targets_server(action_frame->role) &&
+        if (route.domain_id == action_frame->domain_id &&
+          action_role_targets_server(action_frame->role) &&
           route.role == "action_server" &&
           route.action_name == action_frame->action_name)
         {
           append_unique_peer(&targets, route.address);
-        } else if (action_role_targets_client(action_frame->role) &&
+        } else if (route.domain_id == action_frame->domain_id &&
+          action_role_targets_client(action_frame->role) &&
           route.role == "action_client" &&
           (route.endpoint_id == action_frame->endpoint_id ||
           route.action_name == action_frame->action_name))
@@ -1653,7 +1783,9 @@ int main(int argc, char ** argv)
       ++ack_nack_frames;
       std::vector<sockaddr_in> targets = peer_addresses;
       for (const PublisherRoute & route : publisher_route_table) {
-        if (route.publisher_id == ack_nack->publisher_id) {
+        if (route.domain_id == ack_nack->domain_id &&
+          route.publisher_id == ack_nack->publisher_id)
+        {
           append_unique_peer(&targets, route.address);
         }
       }
@@ -1687,6 +1819,7 @@ int main(int argc, char ** argv)
       publisher_route_table.end(),
       [&](const PublisherRoute & route) {
         return route.publisher_id == decoded->publisher_id &&
+               route.domain_id == decoded->domain_id &&
                endpoints_match(route.address, source_address);
       });
     if (publisher_route == publisher_route_table.end()) {
@@ -1695,7 +1828,8 @@ int main(int argc, char ** argv)
           decoded->publisher_id,
           decoded->topic,
           source_address,
-          now + lease_duration(5000u)});
+          now + lease_duration(5000u),
+          decoded->domain_id});
     } else {
       publisher_route->topic = decoded->topic;
       publisher_route->expires_at = now + lease_duration(5000u);
@@ -1720,7 +1854,8 @@ int main(int argc, char ** argv)
       config.scheduler_topic_prefix.empty() ||
       decoded->topic.rfind(config.scheduler_topic_prefix, 0) == 0;
     if (config.scheduler_window_ms > 0 && scheduler_topic_matches) {
-      const std::int64_t deadline_ns = learned_deadline_ns(topic_qos_table, decoded->topic);
+      const std::int64_t deadline_ns = learned_deadline_ns(
+        topic_qos_table, decoded->topic, decoded->domain_id);
       const bool urgent_deadline =
         config.scheduler_urgent_deadline_ms > 0 &&
         deadline_ns > 0 &&
@@ -1784,6 +1919,12 @@ int main(int argc, char ** argv)
     config.expected_ack_nack_forwarded : config.expected_ack_nack_frames;
   const int expected_accounted_frames =
     config.expected_frames == 0 ? 0 : std::min(received, config.expected_frames);
+  const bool observed_router_state =
+    !peer_addresses.empty() || !graph_peer_addresses.empty() ||
+    !route_table.empty() || !publisher_route_table.empty() ||
+    !service_route_table.empty() || !action_route_table.empty() ||
+    forwarded > 0 || service_forwarded > 0 || action_forwarded > 0 ||
+    ack_nack_forwarded > 0 || graph_forwarded > 0;
   const bool ok = received >= config.expected_frames &&
                   service_frames >= config.expected_service_frames &&
                   action_frames >= config.expected_action_frames &&
@@ -1800,9 +1941,7 @@ int main(int argc, char ** argv)
                   topic_source_sequence_expectations_satisfied(
                     config.expected_forwarded_topic_source_sequences,
                     forwarded_topic_source_sequences) &&
-                  (!peer_addresses.empty() || !graph_peer_addresses.empty() ||
-                  !route_table.empty() || !publisher_route_table.empty() ||
-                  !service_route_table.empty() || !action_route_table.empty());
+                  observed_router_state;
   print_router_json(
     ok ? "ok" : "failed",
     config,

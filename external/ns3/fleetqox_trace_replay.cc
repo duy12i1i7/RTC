@@ -4,7 +4,8 @@
 //
 //   ./ns3 run "scratch/fleetqox_trace_replay --trace=/path/to/trace.csv"
 //
-// Supports CSMA, single-AP Wi-Fi, and a two-AP bridged roaming topology.
+// Supports shared CSMA, a routed point-to-point star, single-AP Wi-Fi, and a
+// two-AP bridged roaming topology.
 
 #include "ns3/applications-module.h"
 #include "ns3/bridge-module.h"
@@ -13,6 +14,7 @@
 #include "ns3/internet-module.h"
 #include "ns3/mobility-module.h"
 #include "ns3/network-module.h"
+#include "ns3/point-to-point-module.h"
 #include "ns3/wifi-module.h"
 
 #include <algorithm>
@@ -306,7 +308,8 @@ main(int argc, char* argv[])
   cmd.AddValue("trace", "FleetQoX simulator CSV trace", tracePath);
   cmd.AddValue("dataRate", "CSMA data rate", dataRate);
   cmd.AddValue("delay", "CSMA channel delay", delay);
-  cmd.AddValue("topology", "Network topology: csma, wifi, or wifi_roaming", topology);
+  cmd.AddValue(
+      "topology", "Network topology: csma, p2p_star, wifi, or wifi_roaming", topology);
   cmd.AddValue("wifiMode", "802.11g station data/control mode", wifiMode);
   cmd.AddValue("errorRate", "Independent receive packet error probability", errorRate);
   cmd.AddValue("mobilitySpeed", "Station speed in meters/second for Wi-Fi", mobilitySpeed);
@@ -326,9 +329,10 @@ main(int argc, char* argv[])
   {
     NS_FATAL_ERROR("errorRate must be in [0,1]");
   }
-  if (topology != "csma" && topology != "wifi" && topology != "wifi_roaming")
+  if (topology != "csma" && topology != "p2p_star" && topology != "wifi" &&
+      topology != "wifi_roaming")
   {
-    NS_FATAL_ERROR("topology must be csma, wifi, or wifi_roaming");
+    NS_FATAL_ERROR("topology must be csma, p2p_star, wifi, or wifi_roaming");
   }
   if (mobilitySpeed < 0.0 || stationSpacing <= 0.0 || accessPointSpacing <= 0.0 ||
       wifiRange <= 0.0 || warmupMs < 0.0)
@@ -373,6 +377,37 @@ main(int argc, char* argv[])
     Ipv4AddressHelper ipv4;
     ipv4.SetBase("10.10.0.0", "255.255.0.0");
     interfaces = ipv4.Assign(devices);
+  }
+  else if (topology == "p2p_star")
+  {
+    NodeContainer router;
+    router.Create(1);
+    InternetStackHelper internet;
+    internet.Install(nodes);
+    internet.Install(router);
+    Ipv4AddressHelper ipv4;
+    ipv4.SetBase("10.30.0.0", "255.255.255.252");
+    for (uint32_t i = 0; i < nodes.GetN(); ++i)
+    {
+      NodeContainer linkNodes;
+      linkNodes.Add(nodes.Get(i));
+      linkNodes.Add(router.Get(0));
+      PointToPointHelper link;
+      link.SetDeviceAttribute("DataRate", StringValue(dataRate));
+      link.SetChannelAttribute("Delay", StringValue(delay));
+      NetDeviceContainer devices = link.Install(linkNodes);
+      for (uint32_t deviceIndex = 0; deviceIndex < devices.GetN(); ++deviceIndex)
+      {
+        Ptr<RateErrorModel> error = CreateObject<RateErrorModel>();
+        error->SetAttribute("ErrorRate", DoubleValue(errorRate));
+        error->SetAttribute("ErrorUnit", EnumValue(RateErrorModel::ERROR_UNIT_PACKET));
+        devices.Get(deviceIndex)->SetAttribute("ReceiveErrorModel", PointerValue(error));
+      }
+      Ipv4InterfaceContainer linkInterfaces = ipv4.Assign(devices);
+      interfaces.Add(linkInterfaces.Get(0));
+      ipv4.NewNetwork();
+    }
+    Ipv4GlobalRoutingHelper::PopulateRoutingTables();
   }
   else
   {

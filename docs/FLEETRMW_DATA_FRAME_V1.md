@@ -72,6 +72,53 @@ FRMW1\n
 followed by canonical JSON.  Optional padding is supported so packet-size
 experiments can continue to model allocated wire bytes.
 
+Every RMW wire family now carries a top-level unsigned `domain_id`: data,
+ACK/NACK, route advertisement, graph advertisement, service, and action frames.
+Receivers, graph caches, reliability state, and router route tables match this
+field before delivery. For backward compatibility, a v1 frame that omits
+`domain_id` is interpreted as ROS domain `0`; newly emitted frames always write
+the field explicitly. RMW-produced data frames also carry `type_name`; a
+subscription rejects a nonempty mismatched type before queueing the payload.
+The field remains optional only so older v1 fixture frames can still decode.
+
+The C++ RMW codec also emits an optional admission/repair metadata subset while
+remaining wire-compatible with v1. `route.flow_class`,
+`delivery.deadline_ms`, `timing.age_ms`, `qox.qoe_debt`,
+`qox.task_criticality`, `repair.requested`, and `repair.prior_attempts` are
+range-validated by the stateful QUIC gateway. Frames that omit them retain the
+legacy defaults. When a policy configures `min_admission_score`, the current
+scoped score is:
+
+```text
+0.45 * task_criticality + 0.35 * qoe_debt
+  + 0.20 * min(1, age_ms / deadline_ms)
+```
+
+A repair-marked frame rejected by normal score/stream/fleet quota may be passed
+to `FleetRepairScheduler`, which consumes its frame size, remaining deadline,
+QoE debt, criticality, age, and prior attempts against a separately configured
+repair capacity and path set. This is optional metadata and does not change
+source identity or deduplication semantics.
+
+## Manual Liveliness Assertion
+
+Remote `MANUAL_BY_TOPIC` publishers reuse the
+`fleetrmw.graph_advertisement.v1` control family with
+`action="liveliness_assert"`. The frame carries the publisher's complete graph
+descriptor, endpoint ID, QoS profile, ROS domain, and graph lease so an
+out-of-order assertion can still identify the endpoint. A publisher emits this
+action for both `rmw_publisher_assert_liveliness` and every successful publish.
+
+The graph lease and liveliness lease have intentionally separate meanings.
+Periodic `action="add"` advertisements renew endpoint discovery and keep the
+publisher matched, but do not assert MANUAL_BY_TOPIC liveliness. A
+`liveliness_assert` refreshes the graph lease and the endpoint's liveliness
+timestamp, and can produce a not-alive-to-alive changed event, but it is not
+applied as a graph topology mutation when the endpoint is already known. The
+remote finite liveliness lease can therefore expire while graph queries still
+report the publisher. AUTOMATIC endpoints continue to use middleware graph
+renewal as their liveliness assertion mechanism.
+
 ## Service Frame
 
 `rmw_fleetqox_cpp` uses a sibling frame, `fleetrmw.service_frame.v1`, for ROS 2
@@ -82,6 +129,7 @@ samples while reusing the same `FRMW1\n` magic prefix and hex payload convention
 {
   "schema_version": "fleetrmw.service_frame.v1",
   "kind": "service_frame",
+  "domain_id": 31,
   "role": "request",
   "service_name": "/fleetqox/set_bool",
   "type_name": "std_srvs/srv/SetBool",
@@ -106,7 +154,9 @@ without relying on DDS service topics.
 `fleetrmw.ack_nack.v1` records receiver-side source sequence state for a data
 frame stream. In `rmw_fleetqox_cpp`, subscriptions emit this feedback after
 observing each data frame; publishers use missing ranges to retransmit retained
-encoded frames from their source-sequence ledger.
+encoded frames from their source-sequence ledger. The optional `subscriber_id`
+keeps older v1 decoders valid while allowing a reliable publisher to distinguish
+ACKs from every matched subscription for `rmw_publisher_wait_for_all_acked`.
 
 ```json
 {
@@ -114,6 +164,7 @@ encoded frames from their source-sequence ledger.
   "kind": "source_sequence_ack_nack",
   "robot_id": "local",
   "source_topic": "/fleetqox/reliability_probe",
+  "subscriber_id": "127.0.0.1:7447|fsubcpp-127.0.0.1:7447-1",
   "stream_key": [
     "source_stream",
     "local",
@@ -133,6 +184,35 @@ encoded frames from their source-sequence ledger.
     "duplicate": false,
     "out_of_order": false
   }
+}
+```
+
+## Unrecoverable Loss Notice
+
+`fleetrmw.unrecoverable_loss_notice.v1` closes a reliable gap when the requested
+sample is no longer present in writer history, or a configured fleet repair
+policy has reached a terminal admission, budget, or attempt limit. The notice
+is addressed to the `subscriber_id` that issued the NACK; other readers ignore
+it. A reader merges ranges idempotently, advances its contiguous source state,
+and produces `RMW_EVENT_MESSAGE_LOST` once per newly confirmed sample.
+The two-container Docker/netem probe repeats writer-history exhaustion `20/20`;
+two notices triggered by immediate and idle NACKs are received but collapse to
+one reported lost sample and one event. A separate artifact retains the sample
+in writer history and repeats terminal budget exhaustion, max-attempt exhaustion,
+and admission rejection `5/5` each; every path produces one targeted event and
+clean process teardown.
+
+```json
+{
+  "schema_version": "fleetrmw.unrecoverable_loss_notice.v1",
+  "kind": "source_sequence_unrecoverable",
+  "domain_id": 0,
+  "robot_id": "local",
+  "source_topic": "/fleetqox/reliability_probe",
+  "publisher_id": "fpubcpp-1",
+  "subscriber_id": "127.0.0.1:7447|fsubcpp-127.0.0.1:7447-1",
+  "source_timestamp_ns": 124000,
+  "lost_sequence_ranges": [[2, 2]]
 }
 ```
 

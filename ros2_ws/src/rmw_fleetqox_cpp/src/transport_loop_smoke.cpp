@@ -135,6 +135,8 @@ DataFrame sample_frame(const std::string & robot_id, std::uint64_t sequence)
     "fpub1-cpp-" + robot_id,
     sequence,
     static_cast<std::int64_t>(sequence * 1000000),
+    {},
+    0,
     {}};
 }
 

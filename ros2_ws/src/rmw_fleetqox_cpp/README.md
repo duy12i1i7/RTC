@@ -55,24 +55,94 @@ surfaces; prose and benchmark claims must not exceed that manifest.
   fields, nested messages, fixed arrays, dynamic primitive sequences, dynamic
   sequences of nested messages, binary blobs, and FleetRMW quality metadata
   through the introspection-C serializer;
-- export explicit ABI stubs for optional or not-yet-supported RMW surfaces
-  such as loaned messages, QoS events, and dynamic messages, so `rcl` loader
-  resolution is clean while unsupported features fail with controlled
-  `RMW_RET_UNSUPPORTED`;
+- export controlled failures for remaining optional RMW surfaces while the
+  implemented loaned-message, QoS-event, dynamic-message, allocation,
+  `rmw_take_sequence`, and all-acknowledged slices execute real behavior;
 - expose UDP/IPv4 network-flow metadata and invoke on-new-message/request/
   response callbacks outside internal transport locks;
+- produce publication/subscription matched,
+  reliability/durability/deadline-incompatible QoS, exact type-incompatible,
+  and finite-liveliness changed events from both local
+  endpoints and UDP-learned remote graph endpoints; remote `add` renewals are
+  deduplicated, explicit `remove` updates current counts immediately, and a
+  killed peer disconnects through graph-lease expiry, proven by a `5/5`
+  two-container Docker artifact;
+- produce offered and requested deadline-missed events across two UDP/netem
+  containers after a real serialized sample establishes each deadline anchor;
+  wait/take/callback and cleared-readiness controls pass `5/5`;
+- produce publisher-side `RMW_EVENT_LIVELINESS_LOST` twice per remote
+  MANUAL_BY_TOPIC run and aggregate the remote graph, deadline, liveliness,
+  and message-lost artifacts into repeated callback/wait/take coverage for all
+  `11` non-invalid Jazzy RMW event types;
+- keep local AUTOMATIC publishers alive while they exist even when application
+  traffic is idle, with a `5/5` Docker control spanning six finite lease
+  intervals and observing no false lost event;
+- carry remote MANUAL_BY_TOPIC assertion state over graph-control
+  `liveliness_assert` frames sent by both explicit assertion and publish; a
+  two-container UDP/netem artifact passes `5/5`, including idle timeout while
+  the endpoint remains matched and independence from periodic graph renewal;
+- isolate remote liveliness by endpoint across simultaneous publishers, with a
+  second `5/5` Docker/netem artifact covering kept-alive versus expired state,
+  removal from alive/not-alive state, exact aggregate counts, and endpoint
+  remove/recreate churn;
+- exercise local liveliness at scale with 64 MANUAL_BY_TOPIC publishers and
+  exact half-expiry/reassert/full-expiry/removal aggregate transitions, plus a
+  16-publisher SYSTEM_DEFAULT idle-renewal control, repeated `5/5` in Docker;
+- repeat the 64-publisher MANUAL_BY_TOPIC transition matrix across two real UDP
+  containers with netem; all `5/5` runs preserve matching during expiry and
+  record exact aggregate match/liveliness deltas, 96 expiries, and 32
+  reassertions;
+- preserve alive/remove events for default, non-expiring leases across
+  SYSTEM_DEFAULT, AUTOMATIC, MANUAL_BY_TOPIC, and BEST_AVAILABLE while rejecting
+  UNKNOWN and deprecated MANUAL_BY_NODE endpoint policies; six scenarios pass
+  `5/5` in Docker;
+- produce local offered/requested incompatible-QoS events for liveliness kind,
+  slower offered lease, and missing offered lease while suppressing matching;
+  seven incompatible/compatible scenarios repeat `5/5` in Docker;
+- produce local offered/requested deadline-incompatible events for both a
+  slower offered deadline and an absent offered deadline; all four directions
+  suppress matching and repeat `5/5` in Docker;
+- resolve BEST_AVAILABLE policies at endpoint creation with the Jazzy
+  `rmw_dds_common` selector and FleetRMW graph queries; a `5/5` Docker artifact
+  covers publisher/subscription selection, zero/mixed endpoint sets,
+  `rmw_*_get_actual_qos`, and frozen policy after churn;
+- parse and enforce a fail-closed SQL-like content-filter subset with
+  `AND/OR/NOT`, parentheses, comparisons, `LIKE`, `BETWEEN`, `IN/NOT IN`, and
+  `IS NULL`/`IS NOT NULL`; missing fields remain SQL `unknown` under negation,
+  and parameterized data-plane plus invalid-expression controls repeat `5/5`
+  in Docker while the full DDS dialect remains scoped;
+- expose waitable unread status for every non-invalid Jazzy `rmw_event_type_t`,
+  proven by a `5/5` aggregate Docker matrix over seven production probes and
+  `35/35` component executions;
 - export service/client handle lifecycle, service/client graph registration,
   service/client graph advertisements, by-node service/client graph queries, and
   service availability from graph state;
+- carry `ROS_DOMAIN_ID` in data, ACK/NACK, route, graph, service, and action
+  frames; isolate local/leased graph queries, pub/sub delivery, service
+  availability/request delivery, QoS matching, reliability feedback, and router
+  routes by domain, and reject nonempty data-frame type mismatches before the
+  subscription queue;
+- automatically trigger graph guards only for live nodes in the affected domain
+  on local/remote endpoint add, remove, descriptor/QoS change, and remote lease
+  expiry while suppressing unchanged advertisement renewals;
+- enforce the Jazzy wait-set contract for native-entity `max_conditions`,
+  zero-as-unbounded, and externally polled timer guards (which Jazzy omits from
+  the capacity supplied to RMW),
+  non-null entries, active/same-context waitables, and shutdown detection;
+- reject publisher/subscription/service/client destruction by any node other
+  than the exact node that created the entity, and apply the same owner check
+  to service-server availability queries;
 - pass the first ROS CLI service call smoke where `ros2 service call` sends a
   `std_srvs/srv/SetBool` request and receives the response through
   `fleetrmw.service_frame.v1` over `rmw_fleetqox_cpp`;
 - carry service request/response lifespan metadata in
   `fleetrmw.service_frame.v1` and drop stale RPC frames before service/client
   delivery;
-- pass a deterministic service QoS probe where a stale request and a stale
+- pass a deterministic service QoS/GID probe where a stale request and a stale
   response are counted as expired and are not delivered by `rmw_take_request`
-  or `rmw_take_response`;
+  or `rmw_take_response`; it also proves stable request identity and type/QoS-
+  aware `rmw_service_server_is_available` matching plus data-plane rejection
+  when an incompatible client sends without waiting for availability;
 - pass a service error probe where empty response queues report `taken=false`,
   malformed response payloads return a controlled error without delivery, and
   invalid service frames are rejected;
@@ -181,8 +251,11 @@ surfaces; prose and benchmark claims must not exceed that manifest.
   late-joining CLI/observer processes can discover active publishers;
 - refresh and expire learned router routes plus remote graph endpoints by
   advertisement lease;
-- export graph guard condition and wait-set readiness for local serialized
-  subscriptions;
+- export automatically notified graph guard conditions and wait-set readiness
+  for local serialized subscriptions and remote graph add/remove/lease-expiry;
+- pass a two-context Docker probe over domains `31` and `32` proving graph-count,
+  graph-guard, data-plane, service-availability/request, and leased remote-graph
+  isolation with a positive same-domain control;
 - export a minimal in-process graph cache for node names, topic names/types,
   publisher counts, and subscriber counts.
 - pass a matched four-robot Docker netem matrix over Wi-Fi, WAN, and roaming
@@ -209,7 +282,7 @@ Expected smoke behavior:
 
 Current verification:
 
-- local unit suite: `python3 -m unittest discover tests` -> `439` tests pass;
+- local unit suite: `python3 -m unittest discover tests` -> `513` tests pass;
 - Docker ROS Jazzy build:
   `colcon build --base-paths ros2_ws/src --packages-select fleetrmw_interfaces rmw_fleetqox_cpp`;
 - Docker artifacts:
@@ -219,10 +292,22 @@ Current verification:
   `results_rmw_socket/docker_rmw_lifecycle_probe_summary.json`;
 - serialized pub/sub ABI artifact:
   `results_rmw_socket/docker_rmw_serialized_pubsub_probe_summary.json`;
-- QoS ABI artifact:
+- QoS depth/lifespan plus full profile-compatibility ABI artifact (schema v2):
   `results_rmw_socket/docker_rmw_qos_probe_summary.json`;
+- ordered/partial/concurrent `rmw_take_sequence` plus Fast DDS Jazzy exported
+  symbol audit (`5/5`):
+  `results_rmw_socket/docker_rmw_take_sequence_probe_summary.json`;
+- subscriber-identified, multi-reader `rmw_publisher_wait_for_all_acked`
+  timeout/completion artifact (`5/5`):
+  `results_rmw_socket/docker_rmw_wait_for_all_acked_probe_summary.json`;
+- four-container remote UDP/router/netem `rmw_publisher_wait_for_all_acked`
+  timeout/completion artifact (`5/5`):
+  `results_rmw_socket/docker_remote_wait_for_all_acked_probe_summary.json`;
 - service QoS ABI artifact:
   `results_rmw_socket/docker_rmw_service_qos_probe_summary.json`;
+  the same artifact verifies stable, distinct client endpoint GIDs and exact
+  equality between the sending client's GID and the request writer GUID, then
+  accepts a matching service while rejecting same-name type/QoS mismatches;
 - service error ABI artifact:
   `results_rmw_socket/docker_rmw_service_error_probe_summary.json`;
 - ROS CLI service-timeout artifact:
@@ -329,9 +414,37 @@ Current verification:
   `results_rmw_socket/docker_router_upstream_nav2_rmf_workload_v5_lifecycle_manager_concurrency4_summary.json`;
 - `8/16/32` repair capacity-frontier artifact:
   `results_rmw_socket/docker_fleet_repair_capacity_frontier_8_16_32_seed7_summary.json`;
-- large-scale RMW comparison artifact:
-  `results_rmw_socket/large_scale_rmw_comparison_8_16_32_seed7_summary.json`;
-- wait/guard ABI artifact:
+- current three-seed large-scale split-scope RMW comparison artifact:
+  `results_rmw_socket/large_scale_rmw_comparison_8_16_32_3seed_20260713_summary.json`;
+- matched-hop RMW comparison artifact, with delivery/reliability-only claim
+  scope:
+  `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v1_summary.json`;
+- in-process QUIC RMW bidirectional, independent-thread publish/take,
+  concurrent POST/GET stream-pair, and native client-qlog artifact:
+  `results_rmw_socket/docker_quic_inprocess_rmw_bidirectional_probe_summary.json`;
+- stateful FleetQoX QUIC v1/H3 gateway, bounded history, publisher-sequence
+  deduplication, independent consumer replay, HTTP-status fail-closed, and
+  two-container netem `5/5` artifact:
+  `results_rmw_socket/docker_quic_stateful_gateway_probe_summary.json`;
+- three-container stateful gateway public `rmw_publish` to separate-process
+  public `rmw_take`, ordered typed payload, persistent endpoint-session, and
+  netem `5/5` artifact:
+  `results_rmw_socket/docker_quic_stateful_rmw_probe_summary.json`;
+- six-container stateful gateway mutual-TLS client authentication, trusted
+  client positive path, missing-certificate and unrelated-client-CA
+  fail-closed controls, trusted-CA/wrong-publisher-URI-SAN HTTP/3 403 control,
+  signed-CRL revoked-client TLS control, unauthorized state isolation, qlogs,
+  and netem `5/5` artifact:
+  `results_rmw_socket/docker_quic_mtls_probe_summary.json`;
+- stateful QUIC gateway JSON admission policy, per-stream traffic-class quota,
+  shared fleet quota, publisher allowlist, rejected-frame state isolation,
+  monotonic epoch replenishment, qlogs, and two-container netem `5/5` artifact:
+  `results_rmw_socket/docker_quic_admission_probe_summary.json`;
+- C++ FleetRMW frame QoS/QoE/repair metadata, admission score, quota-overflow
+  fleet repair-scheduler coupling, repair-capacity defer control, H3 replay,
+  qlogs, and two-container netem `5/5` artifact:
+  `results_rmw_socket/docker_quic_qox_repair_probe_summary.json`;
+- wait/guard plus capacity/context/owner negative-control ABI artifact:
   `results_rmw_socket/docker_rmw_wait_probe_summary.json`;
 - graph ABI artifact:
   `results_rmw_socket/docker_rmw_graph_probe_summary.json`.
