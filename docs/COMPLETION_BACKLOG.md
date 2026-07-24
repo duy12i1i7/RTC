@@ -532,8 +532,16 @@ and its CI assertion.
   HTTP 200 only when `ngtcp2_public_api` observations are enabled, with zero
   external observation-API requests. The loss count is deliberately not
   treated as a ratio because the public API provides no denominator.
-  Asynchronous backend I/O, broader fleet identity policy, and online rotation
-  remain production work. The
+  A third public-edge `5/5` Docker/netem gate moves backend Unix-socket I/O off
+  the libev thread into a configurable bounded worker pool and queue.
+  Completions return through `ev_async`; saturation returns HTTP 503. Each
+  round proves a fast mTLS/H3 request completes while a delayed request is
+  still in flight, proves `1 worker + queue 1` overload behavior, and forces
+  one handler to expire before its backend completion. The stale result is
+  generation-fenced and dropped, after which a fresh connection remains
+  healthy. The delay proxy is test-only and forwards to the real state engine.
+  Broader fleet identity policy, online rotation, cross-tenant overload
+  fairness, clustered state, and production operations remain work. The
   gateway's first scoped fleet-admission slice is now complete as a separate
   `5/5` two-container netem artifact. A startup-validated JSON policy assigns
   control/bulk/state traffic classes, publisher allowlists, per-stream frame

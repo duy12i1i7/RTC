@@ -242,6 +242,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker public-API ngtcp2/GnuTLS mTLS server 5-run netem | `results_rmw_socket/docker_ngtcp2_public_mtls_server_summary.json` |
 | Docker public-API ngtcp2 stateful FleetQoX gateway 5-run netem | `results_rmw_socket/docker_ngtcp2_public_stateful_gateway_summary.json` |
 | Docker public-API ngtcp2 path-metric admission contrast 5-run netem | `results_rmw_socket/docker_ngtcp2_public_path_admission_summary.json` |
+| Docker public-API ngtcp2 bounded async backend 5-run netem | `results_rmw_socket/docker_ngtcp2_public_async_backend_summary.json` |
 | Docker stateful FleetQoX QUIC fleet-admission policy 5-run netem | `results_rmw_socket/docker_quic_admission_probe_summary.json` |
 | Docker stateful FleetQoX QUIC QoS/QoE admission-repair coupling 5-run netem | `results_rmw_socket/docker_quic_qox_repair_probe_summary.json` |
 | Docker stateful FleetQoX QUIC observation-fed competing batch 5-run netem | `results_rmw_socket/docker_quic_feedback_batch_probe_summary.json` |
@@ -983,9 +984,26 @@ observation-API request, admits the identical policy/frame with HTTP 200, and
 serves it on take. The raw stream-loss count is retained as telemetry and is
 not mislabeled as a loss ratio because ngtcp2 exposes no corresponding
 sent-packet denominator. `production_quic_backend_claim=false` remains because
-backend dispatch is synchronous/blocking and broad multi-publisher identity
-selection, online rotation, clustered state, and production operations are
-not closed.
+the remaining broad multi-publisher identity selection, online rotation,
+clustered state, and production operations are not closed.
+`results_rmw_socket/docker_ngtcp2_public_async_backend_summary.json` closes
+the synchronous-dispatch boundary without adding test delays to the edge or
+state engine. The public ngtcp2 server now copies each bounded request into a
+configurable worker pool and bounded queue, performs Unix-socket I/O outside
+the libev thread, and submits the H3 response only after `ev_async` returns the
+completion to that thread. Across `5/5` Docker/netem rounds, a test-only
+concurrent proxy delays one request before forwarding it to the real
+`FleetQoxGatewayState`; an independent fast request receives HTTP 204 while the
+slow request is still in flight. A separate `1 worker + queue 1` phase returns
+HTTP 503 for the third concurrent request while the first two later receive
+204. A short server idle timeout then removes a slow request's handler before
+its backend result returns; generation fencing drops exactly one stale
+completion and a subsequent connection still receives 204. Every phase uses
+verified mTLS, non-empty qlogs, netem at both endpoints, bounded proxy
+concurrency, clean backend/proxy/server teardown, and zero completion failures.
+This proves bounded off-thread dispatch and event-loop survival, not clustered
+state, cross-tenant scheduler fairness, online PKI rotation, or production
+operations; `production_quic_backend_claim=false` remains explicit.
 `results_rmw_socket/docker_quic_admission_probe_summary.json` adds scoped
 fleet-level admission to the same stateful service. A fail-closed JSON policy
 maps three domain/topic streams to control, bulk, and state classes, applies

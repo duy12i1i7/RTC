@@ -6,7 +6,6 @@ from pathlib import Path
 import socket
 import tempfile
 import threading
-import time
 import unittest
 from urllib.parse import quote
 
@@ -229,9 +228,7 @@ class PublicQuicGatewayBackendTest(unittest.TestCase):
             server = PublicQuicGatewayBackendServer(socket_path, self.backend)
             thread = threading.Thread(target=server.serve_forever)
             thread.start()
-            deadline = time.monotonic() + 2.0
-            while not socket_path.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
+            self.assertTrue(server.wait_until_ready(2.0))
             try:
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                     client.connect(str(socket_path))

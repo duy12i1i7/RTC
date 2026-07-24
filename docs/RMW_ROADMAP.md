@@ -1136,6 +1136,16 @@ Add:
   before authentication, and fails closed on drift; stable upstream client-auth
   integration, broader fleet identity policy,
   online revocation and rotation remain open.
+  A separate pinned official ngtcp2/GnuTLS public-API server now carries the
+  shared state engine and public path telemetry. Its backend protocol v2
+  forwards authenticated identity, method/path/body, smoothed RTT, RTT
+  variation, congestion state, PTO count, and raw stream-loss count. The
+  stateful and path-admission artifacts each pass `5/5` Docker/netem rounds.
+  A further `5/5` gate removes blocking Unix-socket work from the libev thread:
+  a bounded configurable worker pool returns completions through `ev_async`,
+  queue saturation returns HTTP 503, and generation fencing drops stale
+  handler completions. Slow/fast, overload, and expired-handler phases all
+  continue through the real state engine behind a test-only delay proxy.
   Active/active replicated durability, standardized task-result
   instrumentation, a stable public QUIC path-metrics API, accepted
   0-RTT/resumption,

@@ -415,7 +415,12 @@ class PublicQuicGatewayBackendServer:
         self.backend = backend
         self.max_body_bytes = max_body_bytes
         self._stop = threading.Event()
+        self._ready = threading.Event()
         self._listener: socket.socket | None = None
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """Wait until bind, permissions, listen, and timeout setup are complete."""
+        return self._ready.wait(timeout)
 
     def stop(self) -> None:
         self._stop.set()
@@ -436,6 +441,7 @@ class PublicQuicGatewayBackendServer:
             os.chmod(self.socket_path, 0o600)
             listener.listen(128)
             listener.settimeout(0.2)
+            self._ready.set()
             print(
                 json.dumps(
                     {
@@ -472,6 +478,7 @@ class PublicQuicGatewayBackendServer:
                         )
                     stream.write(encode_backend_response(response))
         finally:
+            self._ready.clear()
             self._listener = None
             listener.close()
             self.socket_path.unlink(missing_ok=True)

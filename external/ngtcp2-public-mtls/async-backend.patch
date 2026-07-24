@@ -1,0 +1,399 @@
+--- a/examples/server.h
++++ b/examples/server.h
+@@ -35,6 +35,9 @@
+ #include <deque>
+ #include <string_view>
+ #include <memory>
++#include <condition_variable>
++#include <mutex>
++#include <thread>
+ 
+ #include <ngtcp2/ngtcp2.h>
+ #include <ngtcp2/ngtcp2_crypto.h>
+@@ -60,6 +63,25 @@
+ class Handler;
+ struct FileEntry;
+ 
++struct FleetQoxPathTelemetry {
++  bool rtt_initialized;
++  uint64_t smoothed_rtt_us;
++  uint64_t rttvar_us;
++  uint64_t stream_loss_count;
++  uint64_t cwnd_bytes;
++  uint64_t bytes_in_flight;
++  uint64_t pto_count;
++};
++
++struct FleetQoxBackendDispatch {
++  int64_t stream_id;
++  std::string method;
++  std::string path;
++  std::string client_identity;
++  std::vector<uint8_t> body;
++  FleetQoxPathTelemetry path_telemetry;
++};
++
+ struct Stream {
+   Stream(int64_t stream_id, Handler *handler);
+ 
+@@ -171,6 +193,10 @@
+ 
+   void write_qlog(const void *data, size_t datalen);
+   const std::string &client_identity() const;
++  uint64_t backend_generation() const;
++  int complete_backend_response(int64_t stream_id, bool available,
++                                unsigned int status,
++                                std::string content_type, std::string body);
+ 
+   void on_send_blocked(Endpoint &ep, const ngtcp2_addr &local_addr,
+                        const ngtcp2_addr &remote_addr, unsigned int ecn,
+@@ -188,6 +214,7 @@
+   nghttp3_conn *httpconn_;
+   std::unordered_map<int64_t, std::unique_ptr<Stream>> streams_;
+   std::string client_identity_;
++  uint64_t backend_generation_;
+   // conn_closebuf_ contains a packet which contains CONNECTION_CLOSE.
+   // This packet is repeatedly sent as a response to the incoming
+   // packet in draining period.
+@@ -251,13 +278,44 @@
+ 
+   void associate_cid(const ngtcp2_cid *cid, Handler *h);
+   void dissociate_cid(const ngtcp2_cid *cid);
++  bool submit_backend_request(Handler *handler,
++                              FleetQoxBackendDispatch request);
++  void drain_backend_completions();
+ 
+ private:
++  struct BackendTask {
++    Handler *handler;
++    uint64_t handler_generation;
++    FleetQoxBackendDispatch request;
++  };
++  struct BackendCompletion {
++    Handler *handler;
++    uint64_t handler_generation;
++    int64_t stream_id;
++    bool available;
++    unsigned int status;
++    std::string content_type;
++    std::string body;
++  };
++
++  void backend_worker_loop();
++  void stop_backend_dispatcher();
++
+   std::unordered_map<std::string, Handler *> handlers_;
+   struct ev_loop *loop_;
+   std::vector<Endpoint> endpoints_;
+   TLSServerContext &tls_ctx_;
+   ev_signal sigintev_;
++  ev_async backend_async_;
++  std::mutex backend_mutex_;
++  std::condition_variable backend_cv_;
++  std::deque<BackendTask> backend_tasks_;
++  std::deque<BackendCompletion> backend_completions_;
++  std::vector<std::thread> backend_workers_;
++  std::string backend_socket_;
++  size_t backend_queue_capacity_;
++  bool backend_stopping_;
++  bool backend_async_started_;
+ };
+ 
+ #endif // SERVER_H
+--- a/examples/server.cc
++++ b/examples/server.cc
+@@ -33,6 +33,7 @@
+ #include <fstream>
+ #include <iomanip>
+ #include <optional>
++#include <atomic>
+ 
+ #include <unistd.h>
+ #include <getopt.h>
+@@ -99,23 +100,19 @@
+ constexpr size_t FLEETQOX_BACKEND_REQUEST_HEADER_SIZE = 76;
+ constexpr size_t FLEETQOX_BACKEND_RESPONSE_HEADER_SIZE = 20;
+ constexpr size_t FLEETQOX_BACKEND_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
++constexpr size_t FLEETQOX_BACKEND_DEFAULT_WORKERS = 4;
++constexpr size_t FLEETQOX_BACKEND_MAX_WORKERS = 32;
++constexpr size_t FLEETQOX_BACKEND_DEFAULT_QUEUE_CAPACITY = 64;
++constexpr size_t FLEETQOX_BACKEND_MAX_QUEUE_CAPACITY = 4096;
+ 
++std::atomic<uint64_t> fleetqox_backend_generation_counter{0};
++
+ struct FleetQoxBackendResponse {
+   unsigned int status;
+   std::string content_type;
+   std::string body;
+ };
+ 
+-struct FleetQoxPathTelemetry {
+-  bool rtt_initialized;
+-  uint64_t smoothed_rtt_us;
+-  uint64_t rttvar_us;
+-  uint64_t stream_loss_count;
+-  uint64_t cwnd_bytes;
+-  uint64_t bytes_in_flight;
+-  uint64_t pto_count;
+-};
+-
+ void store_u32(uint8_t *dest, uint32_t value) {
+   dest[0] = static_cast<uint8_t>(value >> 24);
+   dest[1] = static_cast<uint8_t>(value >> 16);
+@@ -178,6 +175,22 @@
+   if (errno != 0 || end == value || *end != '\0' || parsed == 0 ||
+       parsed > DEFAULT_MAX) {
+     return DEFAULT_MAX;
++  }
++  return static_cast<size_t>(parsed);
++}
++
++size_t fleetqox_bounded_size_env(const char *name, size_t default_value,
++                                 size_t maximum) {
++  auto value = std::getenv(name);
++  if (value == nullptr || value[0] == '\0') {
++    return default_value;
++  }
++  char *end = nullptr;
++  errno = 0;
++  auto parsed = std::strtoull(value, &end, 10);
++  if (errno != 0 || end == value || *end != '\0' || parsed == 0 ||
++      parsed > maximum) {
++    return default_value;
+   }
+   return static_cast<size_t>(parsed);
+ }
+@@ -672,13 +685,6 @@
+         cstat.bytes_in_flight,
+         static_cast<uint64_t>(cstat.pto_count),
+     };
+-    auto response = fleetqox_backend_request(
+-        backend_socket, method, uri, handler->client_identity(), request_body,
+-        path_telemetry);
+-    if (!response) {
+-      std::cerr << "FLEETQOX_STATE_BACKEND_UNAVAILABLE" << std::endl;
+-      return send_status_response(httpconn, 502);
+-    }
+     std::cerr << "FLEETQOX_PUBLIC_PATH_TELEMETRY rtt_initialized="
+               << path_telemetry.rtt_initialized
+               << " smoothed_rtt_us=" << path_telemetry.smoothed_rtt_us
+@@ -687,11 +693,15 @@
+               << " cwnd_bytes=" << path_telemetry.cwnd_bytes
+               << " bytes_in_flight=" << path_telemetry.bytes_in_flight
+               << " pto_count=" << path_telemetry.pto_count << std::endl;
+-    std::cerr << "FLEETQOX_STATE_BACKEND_RESPONSE status=" << response->status
+-              << " body_bytes=" << response->body.size() << std::endl;
+-    return send_backend_response(httpconn, response->status,
+-                                 response->content_type,
+-                                 std::move(response->body));
++    FleetQoxBackendDispatch request{
++        stream_id, method, uri, handler->client_identity(), request_body,
++        path_telemetry};
++    if (!handler->server()->submit_backend_request(handler,
++                                                    std::move(request))) {
++      std::cerr << "FLEETQOX_STATE_BACKEND_QUEUE_FULL" << std::endl;
++      return send_status_response(httpconn, 503);
++    }
++    return 0;
+   }
+ 
+   auto req = request_path(uri, method == "CONNECT");
+@@ -910,6 +920,7 @@
+       qlog_(nullptr),
+       scid_{},
+       httpconn_{nullptr},
++      backend_generation_(++fleetqox_backend_generation_counter),
+       nkey_update_(0),
+       no_gso_{
+ #ifdef UDP_SEGMENT
+@@ -946,6 +957,29 @@
+ 
+ const std::string &Handler::client_identity() const {
+   return client_identity_;
++}
++
++uint64_t Handler::backend_generation() const { return backend_generation_; }
++
++int Handler::complete_backend_response(int64_t stream_id, bool available,
++                                       unsigned int status,
++                                       std::string content_type,
++                                       std::string body) {
++  auto stream_it = streams_.find(stream_id);
++  if (stream_it == streams_.end()) {
++    std::cerr << "FLEETQOX_STATE_BACKEND_DROPPED_STREAM stream_id=" << stream_id
++              << std::endl;
++    return 0;
++  }
++  auto stream = stream_it->second.get();
++  auto rv = available
++                ? stream->send_backend_response(httpconn_, status, content_type,
++                                                std::move(body))
++                : stream->send_status_response(httpconn_, 502);
++  if (rv == 0) {
++    signal_write();
++  }
++  return rv;
+ }
+ 
+ namespace {
+@@ -2421,18 +2455,159 @@
+ void siginthandler(struct ev_loop *loop, ev_signal *watcher, int revents) {
+   ev_break(loop, EVBREAK_ALL);
+ }
++
++void backend_async_cb(struct ev_loop *, ev_async *watcher, int) {
++  auto server = static_cast<Server *>(watcher->data);
++  server->drain_backend_completions();
++}
+ } // namespace
+ 
+ Server::Server(struct ev_loop *loop, TLSServerContext &tls_ctx)
+-    : loop_(loop), tls_ctx_(tls_ctx) {
++    : loop_(loop),
++      tls_ctx_(tls_ctx),
++      backend_queue_capacity_(fleetqox_bounded_size_env(
++          "FLEETQOX_STATE_BACKEND_QUEUE_CAPACITY",
++          FLEETQOX_BACKEND_DEFAULT_QUEUE_CAPACITY,
++          FLEETQOX_BACKEND_MAX_QUEUE_CAPACITY)),
++      backend_stopping_(false),
++      backend_async_started_(false) {
+   ev_signal_init(&sigintev_, siginthandler, SIGINT);
++  auto backend_socket = std::getenv("FLEETQOX_STATE_BACKEND_SOCKET");
++  if (backend_socket == nullptr || backend_socket[0] == '\0') {
++    return;
++  }
++  backend_socket_ = backend_socket;
++  ev_async_init(&backend_async_, backend_async_cb);
++  backend_async_.data = this;
++  ev_async_start(loop_, &backend_async_);
++  backend_async_started_ = true;
++  auto worker_count = fleetqox_bounded_size_env(
++      "FLEETQOX_STATE_BACKEND_WORKERS", FLEETQOX_BACKEND_DEFAULT_WORKERS,
++      FLEETQOX_BACKEND_MAX_WORKERS);
++  backend_workers_.reserve(worker_count);
++  for (size_t i = 0; i < worker_count; ++i) {
++    backend_workers_.emplace_back([this] { backend_worker_loop(); });
++  }
++  std::cerr << "FLEETQOX_STATE_BACKEND_ASYNC_READY workers=" << worker_count
++            << " queue_capacity=" << backend_queue_capacity_ << std::endl;
+ }
+ 
+ Server::~Server() {
++  stop_backend_dispatcher();
+   disconnect();
+   close();
+ }
+ 
++bool Server::submit_backend_request(Handler *handler,
++                                    FleetQoxBackendDispatch request) {
++  std::lock_guard<std::mutex> lock(backend_mutex_);
++  if (backend_stopping_ || backend_socket_.empty() ||
++      backend_tasks_.size() >= backend_queue_capacity_) {
++    return false;
++  }
++  backend_tasks_.push_back(
++      {handler, handler->backend_generation(), std::move(request)});
++  auto pending = backend_tasks_.size();
++  backend_cv_.notify_one();
++  std::cerr << "FLEETQOX_STATE_BACKEND_ASYNC_QUEUED pending=" << pending
++            << std::endl;
++  return true;
++}
++
++void Server::backend_worker_loop() {
++  for (;;) {
++    BackendTask task;
++    {
++      std::unique_lock<std::mutex> lock(backend_mutex_);
++      backend_cv_.wait(
++          lock, [this] { return backend_stopping_ || !backend_tasks_.empty(); });
++      if (backend_stopping_ && backend_tasks_.empty()) {
++        return;
++      }
++      task = std::move(backend_tasks_.front());
++      backend_tasks_.pop_front();
++    }
++    auto response = fleetqox_backend_request(
++        backend_socket_, task.request.method, task.request.path,
++        task.request.client_identity, task.request.body,
++        task.request.path_telemetry);
++    BackendCompletion completion{
++        task.handler,
++        task.handler_generation,
++        task.request.stream_id,
++        response.has_value(),
++        response ? response->status : 502,
++        response ? std::move(response->content_type) : std::string{},
++        response ? std::move(response->body) : std::string{},
++    };
++    std::lock_guard<std::mutex> lock(backend_mutex_);
++    if (!backend_stopping_) {
++      backend_completions_.push_back(std::move(completion));
++      ev_async_send(loop_, &backend_async_);
++    }
++  }
++}
++
++void Server::drain_backend_completions() {
++  std::deque<BackendCompletion> completions;
++  {
++    std::lock_guard<std::mutex> lock(backend_mutex_);
++    completions.swap(backend_completions_);
++  }
++  for (auto &completion : completions) {
++    Handler *handler = nullptr;
++    for (const auto &entry : handlers_) {
++      auto candidate = entry.second;
++      if (candidate == completion.handler &&
++          candidate->backend_generation() == completion.handler_generation) {
++        handler = candidate;
++        break;
++      }
++    }
++    if (handler == nullptr) {
++      std::cerr << "FLEETQOX_STATE_BACKEND_DROPPED_HANDLER stream_id="
++                << completion.stream_id << std::endl;
++      continue;
++    }
++    if (completion.available) {
++      std::cerr << "FLEETQOX_STATE_BACKEND_RESPONSE status="
++                << completion.status
++                << " body_bytes=" << completion.body.size() << std::endl;
++    } else {
++      std::cerr << "FLEETQOX_STATE_BACKEND_UNAVAILABLE" << std::endl;
++    }
++    if (handler->complete_backend_response(
++            completion.stream_id, completion.available, completion.status,
++            std::move(completion.content_type), std::move(completion.body)) !=
++        0) {
++      std::cerr << "FLEETQOX_STATE_BACKEND_COMPLETION_FAILED stream_id="
++                << completion.stream_id << std::endl;
++    }
++  }
++}
++
++void Server::stop_backend_dispatcher() {
++  {
++    std::lock_guard<std::mutex> lock(backend_mutex_);
++    backend_stopping_ = true;
++    backend_tasks_.clear();
++  }
++  backend_cv_.notify_all();
++  for (auto &worker : backend_workers_) {
++    if (worker.joinable()) {
++      worker.join();
++    }
++  }
++  backend_workers_.clear();
++  if (backend_async_started_) {
++    ev_async_stop(loop_, &backend_async_);
++    backend_async_started_ = false;
++  }
++  std::lock_guard<std::mutex> lock(backend_mutex_);
++  backend_tasks_.clear();
++  backend_completions_.clear();
++}
++
+ void Server::disconnect() {
+   config.tx_loss_prob = 0;
+ 
