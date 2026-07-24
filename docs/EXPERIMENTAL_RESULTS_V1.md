@@ -489,9 +489,17 @@ publishes ray-circle LaserScan intersections while upstream DWB controls
 `4`; lateral excursion is `0.173-0.177 m`, measured obstacle-edge clearance is
 `0.119-0.127 m`, and the robot passes the obstacle while its source remains
 enabled. This permits the scoped
-`dynamic_obstacle_detour_avoidance_claim=true`. It does not prove global
-dynamic replanning, arbitrary obstacle fields, or a production recovery policy,
-so `full_dynamic_obstacle_navigation_claim` and
+`dynamic_obstacle_detour_avoidance_claim=true`. Version 3 isolates global
+replanning in a fourth goal: it clears residual local state, disables the
+LaserScan obstacle source, inserts a persistent `0.3 x 0.9 m` occupied wall
+into the global map after motion starts, and runs `ComputePathToPose` at two Hz.
+In two final independent Docker/netem runs, the planner publishes `36`
+post-update paths, maximum path excursion is `0.826 m`, robot excursion is
+`0.545-0.547 m`, the robot passes the wall, and the same action finishes with
+status `4`. This permits
+`navigate_to_pose_global_dynamic_replanning_claim=true`. It does not prove
+arbitrary/multiple obstacle fields or a production recovery policy, so
+`full_dynamic_obstacle_navigation_claim` and
 `production_costmap_recovery_policy_claim` remain false. The direct
 recovery-behavior artifact
 `docker_nav2_behavior_spin_probe_summary.json` starts upstream

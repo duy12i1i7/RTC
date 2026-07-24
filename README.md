@@ -729,9 +729,14 @@ This repository starts with the part that should be proven first:
   Real DWB control leaves the straight global path by `17.3-17.7 cm`, preserves
   `11.9-12.7 cm` obstacle-edge clearance, passes the still-present obstacle,
   and succeeds with status `4` in two independent Docker/netem runs. This
-  closes scoped stop/clear/resume and local-controller detour claims; global
-  dynamic replanning and a production recovery policy remain unclaimed. The
-  Nav2/RMF router workload also
+  closes scoped stop/clear/resume and local-controller detour claims. Probe v3
+  disables LaserScan for a separate fourth goal, inserts a persistent occupied
+  wall into the global map after motion starts, and uses a two-Hz periodic
+  planner BT. In two final independent runs it publishes `36` changed paths,
+  reaches `0.826 m` path excursion, drives the robot `0.545-0.547 m` off the
+  original line, passes the wall, and succeeds with status `4`. This closes a
+  scoped global dynamic-map replanning claim; arbitrary obstacle fields and a
+  production recovery policy remain unclaimed. The Nav2/RMF router workload also
   passes concurrency-8/16/32/64/128/256/512/1024/2048 upstream action/service
   batches, with the concurrency-2048 run forwarding `12346` service frames.
   The larger runs exercise FleetRMW UDP large-frame fragmentation/reassembly

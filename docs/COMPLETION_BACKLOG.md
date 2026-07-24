@@ -1255,9 +1255,15 @@ forwards terminal unrecoverable-loss notices by topic/domain and records zero
 invalid frames. Its v2 world-frame circular-obstacle case then passes the
 still-present obstacle in two independent Docker/netem runs with
 `17.3-17.7 cm` lateral excursion, `11.9-12.7 cm` obstacle-edge clearance, and
-status `4`. The scoped local-controller detour gap is closed. Global dynamic
-replanning, production recovery policy, upstream request counts beyond 4096,
-and sustained 4096-robot physical navigation remain open.
+status `4`. The scoped local-controller detour gap is closed. Version 3 then
+disables LaserScan, inserts a persistent occupied wall into the global map
+after a fourth goal starts moving, and uses two-Hz periodic planning. Two final
+independent Docker/netem runs each publish `36` post-update paths; path
+excursion reaches `0.826 m`, robot excursion is `0.545-0.547 m`, the robot
+passes the wall, and the action succeeds with status `4`. The scoped global
+dynamic-map replanning gap is closed. Arbitrary obstacle fields, production
+recovery policy, upstream request counts beyond 4096, and sustained 4096-robot
+physical navigation remain open.
 The ROS CLI message
 matrix remains `13/13`.
 
@@ -1287,11 +1293,12 @@ equivalence, and broad cross-RMW superiority remain false.
 
 Next continue P0/P2 in this order:
 
-1. Extend the completed bounded moving-goal stop/clear/resume and persistent
-   local-controller detour paths into global dynamic replanning, add repeated
-   and longer-duration controls, and define the production policy boundary.
-   Then push beyond the proven unwindowed total-4096 upstream request workload
-   without presenting request completion as simultaneous physical navigation.
+1. Extend the completed moving-goal stop/clear/resume, persistent local detour,
+   and global dynamic-map replan paths with arbitrary/multiple obstacle fields,
+   repeated longer-duration controls, and an explicit production-policy
+   boundary. Then push beyond the proven unwindowed total-4096 upstream request
+   workload without presenting request completion as simultaneous physical
+   navigation.
 2. Preserve both completed comparison contracts, increase same-hop samples and
    independent repetitions, and replace the rclpy relay with semantically
    equivalent raw/serialized forwarding before any latency-superiority claim.

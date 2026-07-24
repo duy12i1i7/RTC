@@ -38,7 +38,7 @@ from scripts.run_rmw_docker_router_service_call_probe import parse_last_json  # 
 
 
 SCHEMA_VERSION = (
-    "fleetrmw.docker_nav2_dynamic_obstacle_navigation_probe.v2"
+    "fleetrmw.docker_nav2_dynamic_obstacle_navigation_probe.v3"
 )
 
 
@@ -86,12 +86,12 @@ def dynamic_nav2_params_yaml(bt_xml_path: str) -> str:
     for original, replacement in (
         ("required_movement_radius: 0.5", "required_movement_radius: 0.10"),
         ("movement_time_allowance: 10.0", "movement_time_allowance: 30.0"),
-        ("vtheta_samples: 20", "vtheta_samples: 40"),
-        ("sim_time: 1.7", "sim_time: 3.0"),
+        ("vtheta_samples: 20", "vtheta_samples: 60"),
+        ("sim_time: 1.7", "sim_time: 5.0"),
         ("BaseObstacle.scale: 0.02", "BaseObstacle.scale: 0.05"),
-        ("PathAlign.scale: 32.0", "PathAlign.scale: 4.0"),
-        ("GoalAlign.scale: 24.0", "GoalAlign.scale: 8.0"),
-        ("PathDist.scale: 32.0", "PathDist.scale: 8.0"),
+        ("PathAlign.scale: 32.0", "PathAlign.scale: 1.0"),
+        ("GoalAlign.scale: 24.0", "GoalAlign.scale: 4.0"),
+        ("PathDist.scale: 32.0", "PathDist.scale: 2.0"),
     ):
         base = base.replace(original, replacement)
     navigator = bt_navigator_params_yaml(bt_xml_path).replace(
@@ -138,6 +138,22 @@ def dynamic_nav2_params_yaml(bt_xml_path: str) -> str:
     )
 
 
+def dynamic_navigate_to_pose_bt_xml() -> str:
+    return """<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <PipelineSequence name="NavigateWithPeriodicReplanning">
+      <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+      <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+      <RateController hz="2.0">
+        <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+      </RateController>
+      <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+    </PipelineSequence>
+  </BehaviorTree>
+</root>
+"""
+
+
 def scenario_node_py() -> str:
     return r'''#!/usr/bin/env python3
 import gc
@@ -154,7 +170,7 @@ from lifecycle_msgs.srv import ChangeState
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import Costmap
 from nav2_msgs.srv import ClearEntireCostmap
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
@@ -168,6 +184,9 @@ class DynamicObstacleScenario(Node):
         super().__init__("fleetrmw_dynamic_obstacle_navigation")
         self.output = os.environ["FLEETQOX_DYNAMIC_NAV_OUTPUT"]
         self.bt_xml = os.environ["FLEETQOX_DYNAMIC_NAV_BT_XML"]
+        self.replan_bt_xml = os.environ[
+            "FLEETQOX_DYNAMIC_NAV_REPLAN_BT_XML"
+        ]
         self.goal_x = float(os.environ.get("FLEETQOX_DYNAMIC_NAV_GOAL_X", "1.2"))
         self.x = 0.0
         self.y = 0.0
@@ -189,12 +208,25 @@ class DynamicObstacleScenario(Node):
         self.detour_min_center_distance = float("inf")
         self.max_detour_lateral_excursion = 0.0
         self.max_detour_heading_excursion = 0.0
+        self.replan_reference_y = 0.0
+        self.replan_tracking = False
+        self.max_replan_lateral_excursion = 0.0
         self.path_length = 0.0
         self.scan_count = 0
         self.tf_count = 0
         self.odom_count = 0
         self.map_count = 0
         self.last_map_at = 0.0
+        self.map_obstacle_enabled = False
+        self.map_obstacle_x = 0.0
+        self.map_obstacle_y = 0.0
+        self.map_obstacle_half_width = 0.15
+        self.map_obstacle_half_height = 0.45
+        self.map_obstacle_publish_count = 0
+        self.plan_count = 0
+        self.plan_count_after_map_obstacle = 0
+        self.last_plan_max_abs_y = 0.0
+        self.max_replanned_path_abs_y = 0.0
         self.costmap_samples = 0
         self.current_costmap_max = 0
         self.max_cost_observed = 0
@@ -237,6 +269,12 @@ class DynamicObstacleScenario(Node):
             self.on_costmap,
             10,
         )
+        self.plan_subscription = self.create_subscription(
+            Path,
+            "/plan",
+            self.on_plan,
+            10,
+        )
         self.create_timer(0.05, self.tick)
 
     def on_cmd_vel(self, message):
@@ -259,6 +297,19 @@ class DynamicObstacleScenario(Node):
         if self.current_costmap_max >= 253:
             self.lethal_costmap_samples += 1
 
+    def on_plan(self, message):
+        self.plan_count += 1
+        self.last_plan_max_abs_y = max(
+            (abs(float(pose.pose.position.y)) for pose in message.poses),
+            default=0.0,
+        )
+        if self.map_obstacle_enabled:
+            self.plan_count_after_map_obstacle += 1
+            self.max_replanned_path_abs_y = max(
+                self.max_replanned_path_abs_y,
+                self.last_plan_max_abs_y,
+            )
+
     def tick(self):
         now_monotonic = time.monotonic()
         dt = max(0.0, min(now_monotonic - self.last_tick, 0.2))
@@ -269,7 +320,7 @@ class DynamicObstacleScenario(Node):
         self.x += dx
         self.y += dy
         self.path_length += math.hypot(dx, dy)
-        self.x = max(-0.25, min(self.x, 4.5))
+        self.x = max(-0.25, min(self.x, 6.25))
         self.y = max(-2.0, min(self.y, 2.0))
         if self.detour_tracking:
             self.max_detour_lateral_excursion = max(
@@ -288,6 +339,11 @@ class DynamicObstacleScenario(Node):
                         self.y - self.obstacle_y,
                     ),
                 )
+        if self.replan_tracking:
+            self.max_replan_lateral_excursion = max(
+                self.max_replan_lateral_excursion,
+                abs(self.y - self.replan_reference_y),
+            )
 
         now = self.get_clock().now().to_msg()
         odom = Odometry()
@@ -328,12 +384,37 @@ class DynamicObstacleScenario(Node):
             grid.header.frame_id = "map"
             grid.info.map_load_time = now
             grid.info.resolution = 0.1
-            grid.info.width = 60
+            grid.info.width = 80
             grid.info.height = 60
             grid.info.origin.position.x = -1.5
             grid.info.origin.position.y = -3.0
             grid.info.origin.orientation.w = 1.0
-            grid.data = [0] * 3600
+            values = [0] * (
+                grid.info.width * grid.info.height
+            )
+            if self.map_obstacle_enabled:
+                self.map_obstacle_publish_count += 1
+                for row in range(grid.info.height):
+                    world_y = (
+                        grid.info.origin.position.y
+                        + (row + 0.5) * grid.info.resolution
+                    )
+                    if (
+                        abs(world_y - self.map_obstacle_y)
+                        > self.map_obstacle_half_height
+                    ):
+                        continue
+                    for column in range(grid.info.width):
+                        world_x = (
+                            grid.info.origin.position.x
+                            + (column + 0.5) * grid.info.resolution
+                        )
+                        if (
+                            abs(world_x - self.map_obstacle_x)
+                            <= self.map_obstacle_half_width
+                        ):
+                            values[row * grid.info.width + column] = 100
+            grid.data = values
             self.map_pub.publish(grid)
             self.map_count += 1
 
@@ -399,7 +480,12 @@ class DynamicObstacleScenario(Node):
     def wait_future(self, future, timeout):
         return self.spin_until(future.done, timeout)
 
-    def send_goal(self, goal_x=None, goal_y=0.0):
+    def send_goal(
+        self,
+        goal_x=None,
+        goal_y=0.0,
+        behavior_tree=None,
+    ):
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = "map"
         goal.pose.header.stamp = self.get_clock().now().to_msg()
@@ -408,7 +494,9 @@ class DynamicObstacleScenario(Node):
         )
         goal.pose.pose.position.y = float(goal_y)
         goal.pose.pose.orientation.w = 1.0
-        goal.behavior_tree = self.bt_xml
+        goal.behavior_tree = (
+            self.bt_xml if behavior_tree is None else behavior_tree
+        )
         future = self.action.send_goal_async(goal)
         if not self.wait_future(future, 10.0):
             return None
@@ -620,7 +708,7 @@ class DynamicObstacleScenario(Node):
         self.spin_until(lambda: False, 1.0)
         detour_start_x = self.x
         detour_start_y = self.y
-        detour_goal_x = max(self.goal_x + 1.0, self.x + 1.2)
+        detour_goal_x = max(self.goal_x + 1.60, self.x + 1.80)
         detour_goal = self.send_goal(detour_goal_x, 0.0)
         detour_accepted = bool(
             detour_goal is not None and detour_goal.accepted
@@ -632,8 +720,9 @@ class DynamicObstacleScenario(Node):
             self.wait_for_advance(detour_start_x)
             if detour_accepted else False
         )
-        self.obstacle_x = self.x + 0.70
-        self.obstacle_y = detour_start_y + 0.06
+        self.obstacle_x = self.x + 0.95
+        self.obstacle_y = detour_start_y + 0.15
+        self.obstacle_radius = 0.15
         self.detour_reference_y = detour_start_y
         self.detour_min_center_distance = float("inf")
         self.max_detour_lateral_excursion = 0.0
@@ -686,6 +775,88 @@ class DynamicObstacleScenario(Node):
             detour_obstacle_persistent,
         ))
 
+        self.obstacle_enabled = False
+        self.spin_until(lambda: False, 1.0)
+        pre_replan_clear_response = self.clear_costmap()
+        pre_replan_clear_observed = self.spin_until(
+            lambda: self.current_costmap_max == 0,
+            4.0,
+        )
+        replan_start_x = self.x
+        replan_start_y = self.y
+        replan_goal_x = max(detour_goal_x + 3.30, self.x + 3.60)
+        replan_goal = self.send_goal(
+            replan_goal_x,
+            0.0,
+            self.replan_bt_xml,
+        )
+        replan_accepted = bool(
+            replan_goal is not None and replan_goal.accepted
+        )
+        replan_result_future = (
+            replan_goal.get_result_async() if replan_accepted else None
+        )
+        replan_advanced_before_map_update = (
+            self.wait_for_advance(replan_start_x)
+            if replan_accepted else False
+        )
+        initial_plan_count = self.plan_count
+        self.map_obstacle_x = self.x + 1.80
+        self.map_obstacle_y = 0.0
+        self.plan_count_after_map_obstacle = 0
+        self.max_replanned_path_abs_y = 0.0
+        self.replan_reference_y = replan_start_y
+        self.max_replan_lateral_excursion = 0.0
+        self.replan_tracking = True
+        self.map_obstacle_enabled = True
+        global_replan_observed = self.spin_until(
+            lambda: (
+                self.plan_count_after_map_obstacle >= 1
+                and self.max_replanned_path_abs_y >= 0.35
+            ),
+            15.0,
+        )
+        replan_status = None
+        if (
+            replan_result_future is not None
+            and self.wait_future(replan_result_future, 60.0)
+        ):
+            replan_status = replan_result_future.result().status
+        self.replan_tracking = False
+        replan_goal_succeeded = (
+            replan_status == GoalStatus.STATUS_SUCCEEDED
+        )
+        replan_goal_distance = math.hypot(
+            self.x - replan_goal_x,
+            self.y,
+        )
+        replan_passed_map_obstacle = (
+            self.x
+            >= (
+                self.map_obstacle_x
+                + self.map_obstacle_half_width
+                + 0.12
+            )
+        )
+        map_obstacle_persistent = self.map_obstacle_enabled
+        global_replan_ok = all((
+            replan_accepted,
+            pre_replan_clear_response,
+            pre_replan_clear_observed,
+            replan_advanced_before_map_update,
+            global_replan_observed,
+            self.plan_count > initial_plan_count,
+            self.plan_count_after_map_obstacle >= 1,
+            self.map_obstacle_publish_count >= 1,
+            self.max_replanned_path_abs_y >= 0.35,
+            self.max_replan_lateral_excursion >= 0.25,
+            replan_passed_map_obstacle,
+            replan_goal_succeeded,
+            replan_goal_distance <= 0.26,
+            map_obstacle_persistent,
+            not self.obstacle_enabled,
+        ))
+
         negative_terminal_safe = negative_status in (
             GoalStatus.STATUS_CANCELED,
             GoalStatus.STATUS_ABORTED,
@@ -716,7 +887,12 @@ class DynamicObstacleScenario(Node):
         metrics.update({
             "status": (
                 "ok"
-                if negative_control_ok and recovery_ok and detour_ok
+                if (
+                    negative_control_ok
+                    and recovery_ok
+                    and detour_ok
+                    and global_replan_ok
+                )
                 else "failed"
             ),
             "negative_control_ok": negative_control_ok,
@@ -771,6 +947,42 @@ class DynamicObstacleScenario(Node):
                 detour_min_center_distance,
             "detour_obstacle_clearance": detour_obstacle_clearance,
             "detour_goal_distance": detour_goal_distance,
+            "global_replan_case_ok": global_replan_ok,
+            "global_replan_pre_clear_response":
+                pre_replan_clear_response,
+            "global_replan_pre_clear_observed":
+                pre_replan_clear_observed,
+            "global_replan_goal_accepted": replan_accepted,
+            "global_replan_advanced_before_map_update":
+                replan_advanced_before_map_update,
+            "global_replan_observed": global_replan_observed,
+            "global_replan_result_status": replan_status,
+            "global_replan_goal_succeeded": replan_goal_succeeded,
+            "global_replan_passed_map_obstacle":
+                replan_passed_map_obstacle,
+            "global_replan_goal_distance": replan_goal_distance,
+            "global_replan_start_x": replan_start_x,
+            "global_replan_start_y": replan_start_y,
+            "global_replan_goal_x": replan_goal_x,
+            "global_replan_map_obstacle_x": self.map_obstacle_x,
+            "global_replan_map_obstacle_y": self.map_obstacle_y,
+            "global_replan_map_obstacle_half_width":
+                self.map_obstacle_half_width,
+            "global_replan_map_obstacle_half_height":
+                self.map_obstacle_half_height,
+            "global_replan_plan_count_before_map_update":
+                initial_plan_count,
+            "global_replan_plan_count_after_map_update":
+                self.plan_count_after_map_obstacle,
+            "global_replan_path_max_abs_y":
+                self.max_replanned_path_abs_y,
+            "global_replan_robot_lateral_excursion":
+                self.max_replan_lateral_excursion,
+            "map_obstacle_publish_count":
+                self.map_obstacle_publish_count,
+            "map_obstacle_persistent": map_obstacle_persistent,
+            "global_replan_laserscan_disabled":
+                not self.obstacle_enabled,
             "negative_start_x": negative_start_x,
             "recovery_start_x": recovery_start_x,
             "recovery_blocked_x": recovery_blocked_x,
@@ -876,7 +1088,47 @@ def runtime_evidence_ok(
             (int, float),
         )
         and float(scenario.get("detour_goal_distance", 1.0)) <= 0.26
-        and int(scenario.get("clear_call_count", 0)) == 3
+        and scenario.get("global_replan_case_ok") is True
+        and scenario.get("global_replan_observed") is True
+        and scenario.get("global_replan_pre_clear_response") is True
+        and scenario.get("global_replan_pre_clear_observed") is True
+        and scenario.get("global_replan_result_status") == 4
+        and scenario.get("global_replan_goal_succeeded") is True
+        and scenario.get("global_replan_passed_map_obstacle") is True
+        and scenario.get("map_obstacle_persistent") is True
+        and scenario.get("global_replan_laserscan_disabled") is True
+        and isinstance(
+            scenario.get("global_replan_plan_count_after_map_update"),
+            int,
+        )
+        and scenario.get("global_replan_plan_count_after_map_update", 0) >= 1
+        and isinstance(
+            scenario.get("map_obstacle_publish_count"),
+            int,
+        )
+        and scenario.get("map_obstacle_publish_count", 0) >= 1
+        and isinstance(
+            scenario.get("global_replan_path_max_abs_y"),
+            (int, float),
+        )
+        and float(
+            scenario.get("global_replan_path_max_abs_y", 0.0)
+        ) >= 0.35
+        and isinstance(
+            scenario.get("global_replan_robot_lateral_excursion"),
+            (int, float),
+        )
+        and float(
+            scenario.get("global_replan_robot_lateral_excursion", 0.0)
+        ) >= 0.25
+        and isinstance(
+            scenario.get("global_replan_goal_distance"),
+            (int, float),
+        )
+        and float(
+            scenario.get("global_replan_goal_distance", 1.0)
+        ) <= 0.26
+        and int(scenario.get("clear_call_count", 0)) == 4
         and int(scenario.get("max_cost_observed", 0)) >= 253
         and int(scenario.get("scan_messages_published", 0)) > 0
         and router.get("status") == "ok"
@@ -902,9 +1154,17 @@ def run_probe(
     tmp.mkdir(parents=True, exist_ok=True)
     bt_xml = tmp / "minimal_nav_to_pose.xml"
     bt_xml.write_text(minimal_navigate_to_pose_bt_xml(), encoding="utf-8")
+    replan_bt_xml = tmp / "periodic_replan_nav_to_pose.xml"
+    replan_bt_xml.write_text(
+        dynamic_navigate_to_pose_bt_xml(),
+        encoding="utf-8",
+    )
     scenario_py = tmp / "scenario.py"
     scenario_py.write_text(scenario_node_py(), encoding="utf-8")
     bt_in_container = f"/work/{bt_xml.relative_to(root)}"
+    replan_bt_in_container = (
+        f"/work/{replan_bt_xml.relative_to(root)}"
+    )
     params = tmp / "nav2_dynamic_navigation.yaml"
     params.write_text(
         dynamic_nav2_params_yaml(bt_in_container),
@@ -1003,6 +1263,7 @@ def run_probe(
             f"FLEETQOX_RMW_PEERS=127.0.0.1:{router_port} "
             f"FLEETQOX_DYNAMIC_NAV_OUTPUT=/work/{scenario_summary_path.relative_to(root)} "
             f"FLEETQOX_DYNAMIC_NAV_BT_XML={bt_in_container} "
+            f"FLEETQOX_DYNAMIC_NAV_REPLAN_BT_XML={replan_bt_in_container} "
             f"FLEETQOX_DYNAMIC_NAV_GOAL_X={goal_x} "
             f"timeout 120 python3 /work/{scenario_py.relative_to(root)} "
             f">/work/{tmp_rel}/scenario.log 2>&1 & scenario_pid=$!; ",
@@ -1053,6 +1314,7 @@ def run_probe(
             "navigate_to_pose_dynamic_obstacle_stop_claim": bool(ok),
             "navigate_to_pose_dynamic_obstacle_clear_resume_claim": bool(ok),
             "dynamic_obstacle_detour_avoidance_claim": bool(ok),
+            "navigate_to_pose_global_dynamic_replanning_claim": bool(ok),
             "production_costmap_recovery_policy_claim": False,
             "bounded_clear_attempts": 1,
             "docker_loopback_netem": "delay 2ms 1ms",
@@ -1073,6 +1335,20 @@ def run_probe(
                 scenario.get("detour_obstacle_clearance"),
             "detour_goal_distance":
                 scenario.get("detour_goal_distance"),
+            "global_replan_result_status":
+                scenario.get("global_replan_result_status"),
+            "global_replan_goal_succeeded":
+                scenario.get("global_replan_goal_succeeded"),
+            "global_replan_plan_count_after_map_update":
+                scenario.get(
+                    "global_replan_plan_count_after_map_update"
+                ),
+            "global_replan_path_max_abs_y":
+                scenario.get("global_replan_path_max_abs_y"),
+            "global_replan_robot_lateral_excursion":
+                scenario.get("global_replan_robot_lateral_excursion"),
+            "global_replan_goal_distance":
+                scenario.get("global_replan_goal_distance"),
             "persistent_progress_delta_after_clear":
                 scenario.get("persistent_progress_delta_after_clear"),
             "recovery_blocked_x": scenario.get("recovery_blocked_x"),

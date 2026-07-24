@@ -1058,10 +1058,11 @@ work is breadth and concurrency rather than first viability.
 Target:
 
 - lifecycle demos;
-- global dynamic replanning and a production recovery policy, building on the
-  completed moving `NavigateToPose` stop/clear/resume gate, its persistent
-  traversable-obstacle local-controller detour, five-second bounded failure
-  tolerance, and persistent-obstacle no-progress/cancel negative control; add
+- arbitrary/multiple dynamic obstacle fields and a production recovery policy,
+  building on the completed moving `NavigateToPose` stop/clear/resume gate,
+  persistent traversable-obstacle local-controller detour, global dynamic-map
+  periodic replan, five-second bounded failure tolerance, and
+  persistent-obstacle no-progress/cancel negative control; add
   repeated/longer-duration cases and larger upstream client counts;
 - robot state/control workloads.
 
