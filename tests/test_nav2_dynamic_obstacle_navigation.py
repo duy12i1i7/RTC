@@ -45,6 +45,14 @@ def valid_scenario() -> dict:
         "recovery_resumed_after_clear": True,
         "recovery_result_status": 4,
         "recovery_goal_succeeded": True,
+        "detour_case_ok": True,
+        "detour_obstacle_marked": True,
+        "detour_obstacle_persistent": True,
+        "detour_goal_succeeded": True,
+        "detour_passed_obstacle": True,
+        "detour_lateral_excursion": 0.25,
+        "detour_obstacle_clearance": 0.12,
+        "detour_goal_distance": 0.20,
         "clear_call_count": 3,
         "max_cost_observed": 254,
         "scan_messages_published": 100,
@@ -70,11 +78,17 @@ class Nav2DynamicObstacleNavigationTest(unittest.TestCase):
         self.assertIn("nav2_costmap_2d::ObstacleLayer", parameters)
         self.assertIn("nav2_costmap_2d::InflationLayer", parameters)
         self.assertIn("failure_tolerance: 5.0", parameters)
+        self.assertIn("movement_time_allowance: 30.0", parameters)
+        self.assertIn("sim_time: 3.0", parameters)
+        self.assertIn("inflation_radius: 0.25", parameters)
+        self.assertIn("PathAlign.scale: 4.0", parameters)
         self.assertIn("default_server_timeout: 1000", parameters)
         self.assertIn("NavigateToPose", scenario)
         self.assertIn("/local_costmap/clear_entirely_local_costmap", scenario)
         self.assertIn("persistent_obstacle_remarked_after_clear", scenario)
         self.assertIn("recovery_resumed_after_clear", scenario)
+        self.assertIn("detour_lateral_excursion", scenario)
+        self.assertIn("detour_obstacle_clearance", scenario)
 
     def test_validator_rejects_missing_negative_recovery_or_router_gate(
         self,
@@ -91,6 +105,11 @@ class Nav2DynamicObstacleNavigationTest(unittest.TestCase):
             ("recovery_clear_response", False),
             ("recovery_resumed_after_clear", False),
             ("recovery_goal_succeeded", False),
+            ("detour_case_ok", False),
+            ("detour_obstacle_marked", False),
+            ("detour_obstacle_persistent", False),
+            ("detour_goal_succeeded", False),
+            ("detour_passed_obstacle", False),
             ("clear_call_count", 4),
         ):
             mutated = copy.deepcopy(scenario)
@@ -116,6 +135,17 @@ class Nav2DynamicObstacleNavigationTest(unittest.TestCase):
                     mutated_router,
                     docker_returncode=0,
                 ),
+                key,
+            )
+        for key, value in (
+            ("detour_lateral_excursion", 0.11),
+            ("detour_obstacle_clearance", 0.09),
+            ("detour_goal_distance", 0.27),
+        ):
+            mutated = copy.deepcopy(scenario)
+            mutated[key] = value
+            self.assertFalse(
+                runtime_evidence_ok(mutated, router, docker_returncode=0),
                 key,
             )
 
@@ -151,6 +181,9 @@ class Nav2DynamicObstacleNavigationTest(unittest.TestCase):
             supported["docker_nav2_dynamic_obstacle_navigation"]
         )
         self.assertTrue(
+            supported["nav2_persistent_dynamic_obstacle_detour"]
+        )
+        self.assertTrue(
             claims["udp_router_unrecoverable_loss_notice_forwarding_claim"]
         )
         self.assertTrue(
@@ -159,7 +192,8 @@ class Nav2DynamicObstacleNavigationTest(unittest.TestCase):
         self.assertTrue(
             claims["persistent_obstacle_negative_control_claim"]
         )
-        self.assertFalse(claims["dynamic_obstacle_detour_avoidance_claim"])
+        self.assertTrue(claims["dynamic_obstacle_detour_avoidance_claim"])
+        self.assertFalse(claims["full_dynamic_obstacle_navigation_claim"])
         self.assertFalse(
             claims["production_costmap_recovery_policy_claim"]
         )
@@ -170,7 +204,7 @@ class Nav2DynamicObstacleNavigationTest(unittest.TestCase):
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         self.assertEqual(
             summary["schema_version"],
-            "fleetrmw.docker_nav2_dynamic_obstacle_navigation_probe.v1",
+            "fleetrmw.docker_nav2_dynamic_obstacle_navigation_probe.v2",
         )
         self.assertEqual(summary["status"], "ok")
         self.assertTrue(summary["persistent_obstacle_negative_control_claim"])
@@ -185,7 +219,7 @@ class Nav2DynamicObstacleNavigationTest(unittest.TestCase):
             summary["unrecoverable_loss_notice_forwarded"],
             0,
         )
-        self.assertFalse(summary["dynamic_obstacle_detour_avoidance_claim"])
+        self.assertTrue(summary["dynamic_obstacle_detour_avoidance_claim"])
         self.assertFalse(
             summary["production_costmap_recovery_policy_claim"]
         )

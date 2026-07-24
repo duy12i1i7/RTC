@@ -38,7 +38,7 @@ from scripts.run_rmw_docker_router_service_call_probe import parse_last_json  # 
 
 
 SCHEMA_VERSION = (
-    "fleetrmw.docker_nav2_dynamic_obstacle_navigation_probe.v1"
+    "fleetrmw.docker_nav2_dynamic_obstacle_navigation_probe.v2"
 )
 
 
@@ -83,6 +83,17 @@ def dynamic_nav2_params_yaml(bt_xml_path: str) -> str:
         "controller_frequency: 1.0",
         "controller_frequency: 10.0\n    failure_tolerance: 5.0",
     )
+    for original, replacement in (
+        ("required_movement_radius: 0.5", "required_movement_radius: 0.10"),
+        ("movement_time_allowance: 10.0", "movement_time_allowance: 30.0"),
+        ("vtheta_samples: 20", "vtheta_samples: 40"),
+        ("sim_time: 1.7", "sim_time: 3.0"),
+        ("BaseObstacle.scale: 0.02", "BaseObstacle.scale: 0.05"),
+        ("PathAlign.scale: 32.0", "PathAlign.scale: 4.0"),
+        ("GoalAlign.scale: 24.0", "GoalAlign.scale: 8.0"),
+        ("PathDist.scale: 32.0", "PathDist.scale: 8.0"),
+    ):
+        base = base.replace(original, replacement)
     navigator = bt_navigator_params_yaml(bt_xml_path).replace(
         "default_server_timeout: 20",
         "default_server_timeout: 1000",
@@ -121,7 +132,7 @@ def dynamic_nav2_params_yaml(bt_xml_path: str) -> str:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
-        inflation_radius: 0.40
+        inflation_radius: 0.25
         cost_scaling_factor: 3.0
 """
     )
@@ -159,6 +170,7 @@ class DynamicObstacleScenario(Node):
         self.bt_xml = os.environ["FLEETQOX_DYNAMIC_NAV_BT_XML"]
         self.goal_x = float(os.environ.get("FLEETQOX_DYNAMIC_NAV_GOAL_X", "1.2"))
         self.x = 0.0
+        self.y = 0.0
         self.theta = 0.0
         self.cmd_x = 0.0
         self.cmd_theta = 0.0
@@ -168,6 +180,16 @@ class DynamicObstacleScenario(Node):
         self.last_tick = time.monotonic()
         self.last_nonzero_cmd_at = self.last_tick
         self.obstacle_enabled = False
+        self.obstacle_mode = "wall"
+        self.obstacle_x = 0.0
+        self.obstacle_y = 0.0
+        self.obstacle_radius = 0.10
+        self.detour_reference_y = 0.0
+        self.detour_tracking = False
+        self.detour_min_center_distance = float("inf")
+        self.max_detour_lateral_excursion = 0.0
+        self.max_detour_heading_excursion = 0.0
+        self.path_length = 0.0
         self.scan_count = 0
         self.tf_count = 0
         self.odom_count = 0
@@ -242,8 +264,30 @@ class DynamicObstacleScenario(Node):
         dt = max(0.0, min(now_monotonic - self.last_tick, 0.2))
         self.last_tick = now_monotonic
         self.theta += self.cmd_theta * dt
-        self.x += math.cos(self.theta) * self.cmd_x * dt
-        self.x = max(-0.05, min(self.x, self.goal_x + 0.2))
+        dx = math.cos(self.theta) * self.cmd_x * dt
+        dy = math.sin(self.theta) * self.cmd_x * dt
+        self.x += dx
+        self.y += dy
+        self.path_length += math.hypot(dx, dy)
+        self.x = max(-0.25, min(self.x, 4.5))
+        self.y = max(-2.0, min(self.y, 2.0))
+        if self.detour_tracking:
+            self.max_detour_lateral_excursion = max(
+                self.max_detour_lateral_excursion,
+                abs(self.y - self.detour_reference_y),
+            )
+            self.max_detour_heading_excursion = max(
+                self.max_detour_heading_excursion,
+                abs(self.theta),
+            )
+            if self.obstacle_enabled and self.obstacle_mode == "circle":
+                self.detour_min_center_distance = min(
+                    self.detour_min_center_distance,
+                    math.hypot(
+                        self.x - self.obstacle_x,
+                        self.y - self.obstacle_y,
+                    ),
+                )
 
         now = self.get_clock().now().to_msg()
         odom = Odometry()
@@ -251,6 +295,7 @@ class DynamicObstacleScenario(Node):
         odom.header.frame_id = "odom"
         odom.child_frame_id = "base_link"
         odom.pose.pose.position.x = self.x
+        odom.pose.pose.position.y = self.y
         odom.pose.pose.orientation.z = math.sin(self.theta / 2.0)
         odom.pose.pose.orientation.w = math.cos(self.theta / 2.0)
         odom.twist.twist.linear.x = self.cmd_x
@@ -268,6 +313,7 @@ class DynamicObstacleScenario(Node):
         odom_to_base.header.frame_id = "odom"
         odom_to_base.child_frame_id = "base_link"
         odom_to_base.transform.translation.x = self.x
+        odom_to_base.transform.translation.y = self.y
         odom_to_base.transform.rotation.z = math.sin(self.theta / 2.0)
         odom_to_base.transform.rotation.w = math.cos(self.theta / 2.0)
         self.tf_pub.publish(TFMessage(
@@ -282,12 +328,12 @@ class DynamicObstacleScenario(Node):
             grid.header.frame_id = "map"
             grid.info.map_load_time = now
             grid.info.resolution = 0.1
-            grid.info.width = 30
-            grid.info.height = 30
+            grid.info.width = 60
+            grid.info.height = 60
             grid.info.origin.position.x = -1.5
-            grid.info.origin.position.y = -1.5
+            grid.info.origin.position.y = -3.0
             grid.info.origin.orientation.w = 1.0
-            grid.data = [0] * 900
+            grid.data = [0] * 3600
             self.map_pub.publish(grid)
             self.map_count += 1
 
@@ -300,11 +346,45 @@ class DynamicObstacleScenario(Node):
         scan.scan_time = 0.05
         scan.range_min = 0.05
         scan.range_max = 3.0
-        scan.ranges = (
-            [0.20] * 25
-            if self.obstacle_enabled
-            else [float("inf")] * 25
-        )
+        if not self.obstacle_enabled:
+            scan.ranges = [float("inf")] * 25
+        elif self.obstacle_mode == "wall":
+            scan.ranges = [0.20] * 25
+        else:
+            ranges = []
+            relative_x = self.obstacle_x - self.x
+            relative_y = self.obstacle_y - self.y
+            center_distance_sq = (
+                relative_x * relative_x + relative_y * relative_y
+            )
+            for index in range(25):
+                beam = scan.angle_min + index * scan.angle_increment
+                direction = self.theta + beam
+                projection = (
+                    relative_x * math.cos(direction)
+                    + relative_y * math.sin(direction)
+                )
+                perpendicular_sq = max(
+                    0.0,
+                    center_distance_sq - projection * projection,
+                )
+                if (
+                    projection > 0.0
+                    and perpendicular_sq <= self.obstacle_radius ** 2
+                ):
+                    near = projection - math.sqrt(
+                        max(
+                            0.0,
+                            self.obstacle_radius ** 2
+                            - perpendicular_sq,
+                        )
+                    )
+                    ranges.append(
+                        near if near >= scan.range_min else scan.range_min
+                    )
+                else:
+                    ranges.append(float("inf"))
+            scan.ranges = ranges
         self.scan_pub.publish(scan)
         self.scan_count += 1
 
@@ -319,11 +399,14 @@ class DynamicObstacleScenario(Node):
     def wait_future(self, future, timeout):
         return self.spin_until(future.done, timeout)
 
-    def send_goal(self):
+    def send_goal(self, goal_x=None, goal_y=0.0):
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = "map"
         goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = self.goal_x
+        goal.pose.pose.position.x = (
+            self.goal_x if goal_x is None else float(goal_x)
+        )
+        goal.pose.pose.position.y = float(goal_y)
         goal.pose.pose.orientation.w = 1.0
         goal.behavior_tree = self.bt_xml
         future = self.action.send_goal_async(goal)
@@ -532,6 +615,77 @@ class DynamicObstacleScenario(Node):
             recovery_status == GoalStatus.STATUS_SUCCEEDED
         )
 
+        self.obstacle_enabled = False
+        self.obstacle_mode = "circle"
+        self.spin_until(lambda: False, 1.0)
+        detour_start_x = self.x
+        detour_start_y = self.y
+        detour_goal_x = max(self.goal_x + 1.0, self.x + 1.2)
+        detour_goal = self.send_goal(detour_goal_x, 0.0)
+        detour_accepted = bool(
+            detour_goal is not None and detour_goal.accepted
+        )
+        detour_result_future = (
+            detour_goal.get_result_async() if detour_accepted else None
+        )
+        detour_advanced_before_obstacle = (
+            self.wait_for_advance(detour_start_x)
+            if detour_accepted else False
+        )
+        self.obstacle_x = self.x + 0.70
+        self.obstacle_y = detour_start_y + 0.06
+        self.detour_reference_y = detour_start_y
+        self.detour_min_center_distance = float("inf")
+        self.max_detour_lateral_excursion = 0.0
+        self.max_detour_heading_excursion = 0.0
+        self.detour_tracking = True
+        self.obstacle_enabled = True
+        detour_obstacle_marked = self.spin_until(
+            lambda: self.current_costmap_max >= 253,
+            8.0,
+        )
+        detour_status = None
+        if (
+            detour_result_future is not None
+            and self.wait_future(detour_result_future, 45.0)
+        ):
+            detour_status = detour_result_future.result().status
+        self.detour_tracking = False
+        detour_goal_succeeded = (
+            detour_status == GoalStatus.STATUS_SUCCEEDED
+        )
+        detour_lateral_excursion = self.max_detour_lateral_excursion
+        detour_min_center_distance = (
+            self.detour_min_center_distance
+            if math.isfinite(self.detour_min_center_distance)
+            else None
+        )
+        detour_obstacle_clearance = (
+            detour_min_center_distance - self.obstacle_radius
+            if detour_min_center_distance is not None
+            else None
+        )
+        detour_passed_obstacle = (
+            self.x >= self.obstacle_x + self.obstacle_radius + 0.12
+        )
+        detour_goal_distance = math.hypot(
+            self.x - detour_goal_x,
+            self.y,
+        )
+        detour_obstacle_persistent = self.obstacle_enabled
+        detour_ok = all((
+            detour_accepted,
+            detour_advanced_before_obstacle,
+            detour_obstacle_marked,
+            detour_goal_succeeded,
+            detour_passed_obstacle,
+            detour_lateral_excursion >= 0.12,
+            detour_obstacle_clearance is not None
+                and detour_obstacle_clearance >= 0.10,
+            detour_goal_distance <= 0.26,
+            detour_obstacle_persistent,
+        ))
+
         negative_terminal_safe = negative_status in (
             GoalStatus.STATUS_CANCELED,
             GoalStatus.STATUS_ABORTED,
@@ -560,7 +714,11 @@ class DynamicObstacleScenario(Node):
             recovery_succeeded,
         ))
         metrics.update({
-            "status": "ok" if negative_control_ok and recovery_ok else "failed",
+            "status": (
+                "ok"
+                if negative_control_ok and recovery_ok and detour_ok
+                else "failed"
+            ),
             "negative_control_ok": negative_control_ok,
             "negative_goal_accepted": negative_accepted,
             "negative_advanced_before_obstacle": negative_advanced,
@@ -591,11 +749,35 @@ class DynamicObstacleScenario(Node):
             "recovery_resumed_after_clear": recovery_resumed,
             "recovery_result_status": recovery_status,
             "recovery_goal_succeeded": recovery_succeeded,
+            "detour_case_ok": detour_ok,
+            "detour_goal_accepted": detour_accepted,
+            "detour_advanced_before_obstacle":
+                detour_advanced_before_obstacle,
+            "detour_obstacle_marked": detour_obstacle_marked,
+            "detour_obstacle_persistent": detour_obstacle_persistent,
+            "detour_result_status": detour_status,
+            "detour_goal_succeeded": detour_goal_succeeded,
+            "detour_passed_obstacle": detour_passed_obstacle,
+            "detour_start_x": detour_start_x,
+            "detour_start_y": detour_start_y,
+            "detour_goal_x": detour_goal_x,
+            "detour_obstacle_x": self.obstacle_x,
+            "detour_obstacle_y": self.obstacle_y,
+            "detour_obstacle_radius": self.obstacle_radius,
+            "detour_lateral_excursion": detour_lateral_excursion,
+            "detour_heading_excursion":
+                self.max_detour_heading_excursion,
+            "detour_min_center_distance":
+                detour_min_center_distance,
+            "detour_obstacle_clearance": detour_obstacle_clearance,
+            "detour_goal_distance": detour_goal_distance,
             "negative_start_x": negative_start_x,
             "recovery_start_x": recovery_start_x,
             "recovery_blocked_x": recovery_blocked_x,
             "final_x": self.x,
+            "final_y": self.y,
             "goal_x": self.goal_x,
+            "path_length": self.path_length,
             "cmd_vel_count": self.cmd_vel_count,
             "nonzero_cmd_count": self.nonzero_cmd_count,
             "max_abs_cmd_x": self.max_abs_cmd_x,
@@ -674,6 +856,26 @@ def runtime_evidence_ok(
         and scenario.get("recovery_resumed_after_clear") is True
         and scenario.get("recovery_result_status") == 4
         and scenario.get("recovery_goal_succeeded") is True
+        and scenario.get("detour_case_ok") is True
+        and scenario.get("detour_obstacle_marked") is True
+        and scenario.get("detour_obstacle_persistent") is True
+        and scenario.get("detour_goal_succeeded") is True
+        and scenario.get("detour_passed_obstacle") is True
+        and isinstance(
+            scenario.get("detour_lateral_excursion"),
+            (int, float),
+        )
+        and float(scenario.get("detour_lateral_excursion", 0.0)) >= 0.12
+        and isinstance(
+            scenario.get("detour_obstacle_clearance"),
+            (int, float),
+        )
+        and float(scenario.get("detour_obstacle_clearance", 0.0)) >= 0.10
+        and isinstance(
+            scenario.get("detour_goal_distance"),
+            (int, float),
+        )
+        and float(scenario.get("detour_goal_distance", 1.0)) <= 0.26
         and int(scenario.get("clear_call_count", 0)) == 3
         and int(scenario.get("max_cost_observed", 0)) >= 253
         and int(scenario.get("scan_messages_published", 0)) > 0
@@ -850,7 +1052,7 @@ def run_probe(
                 scenario.get("persistent_obstacle_remarked_after_clear"),
             "navigate_to_pose_dynamic_obstacle_stop_claim": bool(ok),
             "navigate_to_pose_dynamic_obstacle_clear_resume_claim": bool(ok),
-            "dynamic_obstacle_detour_avoidance_claim": False,
+            "dynamic_obstacle_detour_avoidance_claim": bool(ok),
             "production_costmap_recovery_policy_claim": False,
             "bounded_clear_attempts": 1,
             "docker_loopback_netem": "delay 2ms 1ms",
@@ -861,6 +1063,16 @@ def run_probe(
                 scenario.get("recovery_result_status"),
             "recovery_goal_succeeded":
                 scenario.get("recovery_goal_succeeded"),
+            "detour_result_status":
+                scenario.get("detour_result_status"),
+            "detour_goal_succeeded":
+                scenario.get("detour_goal_succeeded"),
+            "detour_lateral_excursion":
+                scenario.get("detour_lateral_excursion"),
+            "detour_obstacle_clearance":
+                scenario.get("detour_obstacle_clearance"),
+            "detour_goal_distance":
+                scenario.get("detour_goal_distance"),
             "persistent_progress_delta_after_clear":
                 scenario.get("persistent_progress_delta_after_clear"),
             "recovery_blocked_x": scenario.get("recovery_blocked_x"),

@@ -1249,12 +1249,15 @@ FleetRMW plus loopback netem; six service frames pass with zero invalid frames.
 The scoped dynamic mark/clear gap is closed. A follow-on moving
 `NavigateToPose` gate adds an inflation layer and bounded five-second failure
 tolerance. Its persistent-obstacle control re-marks after clear, makes no
-material progress, and cancels safely; its positive case removes the obstacle, clears
-once, resumes the same goal, and succeeds near `x=0.96 m`. The router now
+material progress, and cancels safely; its positive case removes the obstacle,
+clears once, resumes the same goal, and succeeds near `x=0.96 m`. The router now
 forwards terminal unrecoverable-loss notices by topic/domain and records zero
-invalid frames. Dynamic detour/replanning around a persistent traversable
-obstacle, production recovery policy, upstream request counts beyond 4096, and
-sustained 4096-robot physical navigation remain open.
+invalid frames. Its v2 world-frame circular-obstacle case then passes the
+still-present obstacle in two independent Docker/netem runs with
+`17.3-17.7 cm` lateral excursion, `11.9-12.7 cm` obstacle-edge clearance, and
+status `4`. The scoped local-controller detour gap is closed. Global dynamic
+replanning, production recovery policy, upstream request counts beyond 4096,
+and sustained 4096-robot physical navigation remain open.
 The ROS CLI message
 matrix remains `13/13`.
 
@@ -1284,12 +1287,11 @@ equivalence, and broad cross-RMW superiority remain false.
 
 Next continue P0/P2 in this order:
 
-1. Extend the completed bounded moving-goal stop/clear/resume path into
-   detour/replanning around a persistent but traversable dynamic obstacle, add
-   repeated and longer-duration controls, and define the production policy
-   boundary. Then push beyond the proven unwindowed total-4096 upstream request
-   workload without presenting request completion as simultaneous physical
-   navigation.
+1. Extend the completed bounded moving-goal stop/clear/resume and persistent
+   local-controller detour paths into global dynamic replanning, add repeated
+   and longer-duration controls, and define the production policy boundary.
+   Then push beyond the proven unwindowed total-4096 upstream request workload
+   without presenting request completion as simultaneous physical navigation.
 2. Preserve both completed comparison contracts, increase same-hop samples and
    independent repetitions, and replace the rclpy relay with semantically
    equivalent raw/serialized forwarding before any latency-superiority claim.

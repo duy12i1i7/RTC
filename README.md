@@ -723,10 +723,15 @@ This repository starts with the part that should be proven first:
   re-marks the obstacle after clear, records no material progress, and cancels
   safely; its positive case removes the obstacle, performs one recovery clear,
   resumes motion in the same goal, and succeeds at about `x=0.96 m`. The router
-  forwards terminal loss notices instead of classifying them as invalid and finishes
-  with zero invalid frames under the same loopback netem profile. This closes
-  a scoped stop/clear/resume claim, not dynamic detour avoidance or a
-  production recovery policy. The Nav2/RMF router workload also
+  forwards terminal loss notices instead of classifying them as invalid and
+  finishes with zero invalid frames under the same loopback netem profile.
+  Probe v2 adds a persistent world-frame circle after the third goal starts.
+  Real DWB control leaves the straight global path by `17.3-17.7 cm`, preserves
+  `11.9-12.7 cm` obstacle-edge clearance, passes the still-present obstacle,
+  and succeeds with status `4` in two independent Docker/netem runs. This
+  closes scoped stop/clear/resume and local-controller detour claims; global
+  dynamic replanning and a production recovery policy remain unclaimed. The
+  Nav2/RMF router workload also
   passes concurrency-8/16/32/64/128/256/512/1024/2048 upstream action/service
   batches, with the concurrency-2048 run forwarding `12346` service frames.
   The larger runs exercise FleetRMW UDP large-frame fragmentation/reassembly

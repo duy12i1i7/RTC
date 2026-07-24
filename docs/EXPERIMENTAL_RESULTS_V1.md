@@ -482,8 +482,17 @@ with status `4` at about `x=0.96 m`. The router recognizes terminal
 unrecoverable-loss notices, forwards them to matching topic/domain subscriber
 routes, and reports zero invalid frames. This permits the scoped
 `navigate_to_pose_dynamic_obstacle_clear_resume_claim` and persistent-obstacle
-negative-control claim. Dynamic detour avoidance and a production recovery
-policy remain false. The direct
+negative-control claim. Version 2 adds a third goal and a persistent circular
+obstacle fixed in the world after the robot begins moving. The 2D fake base
+publishes ray-circle LaserScan intersections while upstream DWB controls
+`(x,y,theta)`. Two independent Docker/netem runs both finish with action status
+`4`; lateral excursion is `0.173-0.177 m`, measured obstacle-edge clearance is
+`0.119-0.127 m`, and the robot passes the obstacle while its source remains
+enabled. This permits the scoped
+`dynamic_obstacle_detour_avoidance_claim=true`. It does not prove global
+dynamic replanning, arbitrary obstacle fields, or a production recovery policy,
+so `full_dynamic_obstacle_navigation_claim` and
+`production_costmap_recovery_policy_claim` remain false. The direct
 recovery-behavior artifact
 `docker_nav2_behavior_spin_probe_summary.json` starts upstream
 `behavior_server`, activates `nav2_behaviors::Spin` through FleetRMW lifecycle

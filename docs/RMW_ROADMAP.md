@@ -1058,11 +1058,11 @@ work is breadth and concurrency rather than first viability.
 Target:
 
 - lifecycle demos;
-- dynamic detour/replanning around a persistent but traversable obstacle and a
-  production recovery policy, building on the completed moving
-  `NavigateToPose` stop/clear/resume gate, its five-second bounded failure
-  tolerance, and its persistent-obstacle no-progress/cancel negative control;
-  add repeated/longer-duration cases and larger upstream client counts;
+- global dynamic replanning and a production recovery policy, building on the
+  completed moving `NavigateToPose` stop/clear/resume gate, its persistent
+  traversable-obstacle local-controller detour, five-second bounded failure
+  tolerance, and persistent-obstacle no-progress/cancel negative control; add
+  repeated/longer-duration cases and larger upstream client counts;
 - robot state/control workloads.
 
 ## Milestone 4: Fleet Data Plane
