@@ -175,7 +175,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker ROS RMW upstream Nav2/RMF concurrency-512 action/service workload | `results_rmw_socket/docker_router_nav2_rmf_action_workload_concurrency512_summary.json` |
 | Docker ROS RMW upstream Nav2/RMF concurrency-1024 action/service workload | `results_rmw_socket/docker_router_nav2_rmf_action_workload_concurrency1024_summary.json` |
 | Docker ROS RMW upstream Nav2/RMF concurrency-2048 action/service workload | `results_rmw_socket/docker_router_nav2_rmf_action_workload_concurrency2048_summary.json` |
-| Docker ROS RMW upstream Nav2/RMF concurrency-4096 action/service negative boundary | `results_rmw_socket/docker_router_nav2_rmf_action_workload_concurrency4096_summary.json` |
+| Docker ROS RMW upstream Nav2/RMF unwindowed concurrency-4096 action/service workload | `results_rmw_socket/docker_router_nav2_rmf_action_workload_concurrency4096_summary.json` |
 | Docker ROS RMW upstream Nav2/RMF total-4096 admission-windowed workload | `results_rmw_socket/docker_router_nav2_rmf_action_workload_total4096_goalbatch8_summary.json` |
 | Docker ROS real Nav2 planner/controller lifecycle configure | `results_rmw_socket/docker_nav2_planner_controller_lifecycle_probe_summary.json` |
 | Docker ROS real Nav2 planner/controller lifecycle activation with dynamic TF | `results_rmw_socket/docker_nav2_planner_controller_activation_probe_summary.json` |
@@ -336,16 +336,19 @@ concurrency-1024 rerun forwards `6202/6202`, and the concurrency-2048 rerun
 forwards `12346/12346` expected service frames with zero invalid router frames
 after FleetRMW UDP large-frame fragmentation/reassembly and router fragment
 passthrough for oversized action status/service bursts. The concurrency-4096
-single-batch rerun is retained as a negative boundary artifact: even with the
-extended high-concurrency timeout, its all-at-once `NavigateToPose` send-goal
-phase fails before all action futures complete. The follow-on total-4096
-admission-windowed rerun (`goal_batch_size=8`) passes in Docker: `4096/4096`
-action goals complete, `4096/4096` RMF `SubmitTask` calls return,
-lifecycle-manager transport stays green, and the router forwards `106088`
-service frames with zero invalid frames. This permits a scoped total-4096
-upstream workload claim with admission/windowing plus UDP socket-buffer,
-send-pacing, and duplicate-safe service-frame request/response repeats; the
-unwindowed 4096 action burst remains a negative boundary. The follow-on
+rerun now passes as one unwindowed `goal_batch_size=4096` workload. The client
+spins its executor during an automatic `0.5 ms` inter-send interval instead of
+enqueueing every future before processing responses. All `4096/4096`
+`NavigateToPose` goals are accepted and complete with status `4`, all
+`4096/4096` RMF `SubmitTask` calls return, lifecycle startup/reset succeeds,
+and the router forwards `98704` service frames with zero invalid frames. This
+closes an unwindowed 4096-request transport/workload boundary under executor
+spin pacing, 16 MiB UDP socket buffers, 250 us packet pacing, and three
+duplicate-safe request/response transmissions. It does not claim 4096
+simultaneously long-running navigation executions. The separate total-4096
+admission-windowed rerun (`goal_batch_size=8`) remains a positive control:
+`4096/4096` action goals and RMF calls complete, lifecycle transport stays
+green, and the router forwards `106088` service frames. The follow-on
 `docker_nav2_planner_controller_lifecycle_probe_summary.json` starts real
 upstream `planner_server` and `controller_server`, configures
 `nav2_navfn_planner::NavfnPlanner` and `dwb_core::DWBLocalPlanner` through

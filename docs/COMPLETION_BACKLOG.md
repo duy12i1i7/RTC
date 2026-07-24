@@ -1219,16 +1219,16 @@ frames, a concurrency-512 rerun passes with `3130/3130` expected service
 frames, a concurrency-1024 rerun passes with `6202/6202` expected service
 frames, and a concurrency-2048 rerun passes with `12346/12346` expected service
 frames after FleetRMW UDP large-frame fragmentation/reassembly and router
-fragment passthrough for oversized action status/service bursts. A
-concurrency-4096 single-batch Docker rerun is retained as a negative boundary
-artifact after failing its all-at-once `NavigateToPose` send-goal phase even
-with the extended high-concurrency timeout. The follow-on total-4096
-admission-controlled rerun closes the scoped fleet workload claim with an
-8-goal action window: `4096/4096` `NavigateToPose` goals complete, `4096/4096`
-RMF task submissions return, lifecycle-manager transport stays green, and the
-router forwards `106088` service frames with zero invalid frames. The remaining
-gap is not total-4096 fleet workload admission; it is unwindowed 4096 action
-burst behavior, which remains outside the claim. A
+fragment passthrough for oversized action status/service bursts. The
+concurrency-4096 single-batch Docker rerun now also passes. It retains one
+unwindowed 4096-goal batch and spins the client executor during an automatic
+`0.5 ms` inter-send interval; all `4096/4096` `NavigateToPose` goals complete,
+all `4096/4096` RMF task submissions return, lifecycle startup/reset succeeds,
+and the router forwards `98704` service frames with zero invalid frames. This
+is a transport/workload request-burst claim, not proof of 4096 long-running
+robot motions at once. The follow-on total-4096 admission-controlled rerun
+remains a positive control with an 8-goal action window and `106088` forwarded
+service frames. A
 planner-level static-obstacle repair probe now blocks
 `ComputePathToPose` with an occupancy-grid wall (`error_code=208`), then clears
 the map and replans successfully with `14` path poses, so the scoped
@@ -1243,8 +1243,8 @@ executes a real `Wait` recovery action, publishes a clear map during that same
 goal, and succeeds with `error_code=0`, `1989/72` service frames, and about
 `0.610 m` of fake-base motion; this closes the scoped same-goal external
 static-map repair claim. Dynamic obstacle avoidance, production costmap-clearing
-policy, unwindowed 4096-action bursts, and upstream client counts beyond the
-admission-controlled total-4096 boundary remain open. The ROS CLI message
+policy, upstream request counts beyond 4096, and sustained 4096-robot physical
+navigation remain open. The ROS CLI message
 matrix remains `13/13`.
 
 The repeated large-scale DDS/Zenoh comparison is complete as a gap register.
@@ -1279,7 +1279,7 @@ Next continue P0/P2 in this order:
    planner-level static-obstacle repair, full-stack retry-after-clear obstacle
    probe, and same-goal external static-map repair probe into dynamic obstacle
    avoidance / production costmap-clearing policy, then push beyond the
-   admission-controlled total-4096 upstream workload while retaining local
+   proven unwindowed total-4096 upstream workload while retaining local
    actions and the long-moving wrapper as CI-light fallbacks.
 2. Preserve both completed comparison contracts, increase same-hop samples and
    independent repetitions, and replace the rclpy relay with semantically

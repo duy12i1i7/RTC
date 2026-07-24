@@ -715,17 +715,17 @@ This repository starts with the part that should be proven first:
   batches, with the concurrency-2048 run forwarding `12346` service frames.
   The larger runs exercise FleetRMW UDP large-frame fragmentation/reassembly
   plus router fragment passthrough for oversized action status/service bursts.
-  A concurrency-4096 single-batch run is retained as a negative Docker boundary
-  artifact because its all-at-once action send-goal phase still
-  loses/backpressures a small subset of `NavigateToPose` requests. The
-  admission-controlled total-4096 rerun with an 8-goal action window now passes
-  in Docker: `4096/4096` `NavigateToPose` goals are accepted and completed,
-  `4096/4096` RMF `SubmitTask` calls return, lifecycle-manager traffic remains
-  green, and the router forwards `106088` service frames with zero invalid
-  frames. This supports a scoped total-4096 upstream workload claim only with
-  admission/windowing, UDP socket-buffer/send-pacing tuning, and duplicate-safe
-  service-frame request/response repeats; unwindowed 4096 action bursts remain
-  outside the claim. The concurrency-8 artifact also records strict v1
+  The previously negative concurrency-4096 run now passes as one unwindowed
+  `goal_batch_size=4096` Docker workload. A `0.5 ms` inter-send interval spins
+  the client executor while preserving the single batch, so all `4096/4096`
+  `NavigateToPose` goals are accepted and completed, all `4096/4096` RMF
+  `SubmitTask` calls return, lifecycle startup/reset succeeds, and the router
+  forwards `98704` service frames with zero invalid frames. This closes a
+  scoped unwindowed 4096-request workload—not 4096 long-running physical
+  navigation executions—using executor-spin pacing, UDP socket tuning, and
+  duplicate-safe service request/response repeats. The separate
+  admission-controlled total-4096 run with an 8-goal window remains a positive
+  control and forwards `106088` service frames. The concurrency-8 artifact also records strict v1
   application-outcome documents derived from real Nav2 success/cancel results
   and a real RMF submit response. A separate chained `5/5` mTLS/netem artifact
   submits those exact documents to the gateway with session reuse, while the

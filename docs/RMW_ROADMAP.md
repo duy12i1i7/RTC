@@ -857,17 +857,16 @@ Implemented first:
   `3130/3130` expected service frames, a concurrency-1024 rerun forwards
   `6202/6202` expected service frames, and a concurrency-2048 rerun forwards
   `12346/12346` expected service frames after FleetRMW UDP large-frame
-  fragmentation/reassembly and router fragment passthrough. A concurrency-4096
-  single-batch rerun is retained as a negative Docker boundary artifact: its
-  all-at-once `NavigateToPose` send-goal phase still backpressures/drops a small
-  subset of action requests. The follow-on total-4096 admission-controlled rerun
-  with an 8-goal action window passes in Docker: `4096/4096` action goals are
-  accepted and completed, `4096/4096` RMF task submissions return, lifecycle
-  traffic remains green, and the router forwards `106088` service frames with
-  zero invalid frames. The 4096 claim is therefore scoped to windowed admission
-  plus UDP socket-buffer/send-pacing tuning and duplicate-safe service-frame
-  request/response repeats; unwindowed 4096 action bursts remain a negative
-  boundary. A planner-level static-obstacle
+  fragmentation/reassembly and router fragment passthrough. The
+  concurrency-4096 Docker rerun now passes as a single unwindowed 4096-goal
+  batch after adding automatic `0.5 ms` inter-send executor-spin pacing:
+  `4096/4096` action goals and `4096/4096` RMF submissions complete, lifecycle
+  startup/reset succeeds, and the router forwards `98704` service frames with
+  zero invalid frames. The claim is scoped to an unwindowed request workload
+  with UDP socket/pacing and duplicate-safe service-frame tuning, not 4096
+  simultaneously long-running robot motions. The separate total-4096
+  admission-controlled 8-goal-window run remains a positive control with
+  `106088` forwarded service frames. A planner-level static-obstacle
   repair
   probe now blocks `ComputePathToPose` with an occupancy-grid wall, then clears
   the map and replans successfully. A full-stack `NavigateToPose`
@@ -877,8 +876,8 @@ Implemented first:
   probe then keeps one goal active, runs a real `Wait` recovery action after
   planner failure, receives a clear-map repair during that same goal, and
   succeeds while moving the fake base. Dynamic obstacle avoidance, production
-  costmap-clearing policy, unwindowed 4096-action bursts, and upstream client
-  counts beyond the admission-controlled total-4096 boundary remain future work;
+  costmap-clearing policy, upstream request counts beyond 4096, and sustained
+  4096-robot physical navigation remain future work;
 - repeated large-scale baseline gap register: `run_large_scale_rmw_comparison.py`
   compares FleetRMW router, Fast DDS, Cyclone DDS, and Zenoh at `8/16/32`
   robots over repetition IDs `7,13,29`, with data-plane-only netem, an equal

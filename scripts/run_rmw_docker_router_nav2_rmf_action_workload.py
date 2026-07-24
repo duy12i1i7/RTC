@@ -173,7 +173,10 @@ def main() -> int:
         "--goal-send-pacing-ms",
         type=float,
         default=0.0,
-        help="Optional pacing between send_goal_async calls inside each batch.",
+        help=(
+            "Pacing between send_goal_async calls inside each batch. "
+            "Zero selects 0.5 ms automatically at concurrency 4096 or higher."
+        ),
     )
     parser.add_argument(
         "--goal-batch-delay-ms",
@@ -255,6 +258,9 @@ def run_probe(
     install_base = "/work/.tmp_fleetrmw_nav_rmf_install"
     log_base = "/work/.tmp_fleetrmw_nav_rmf_log"
     expected_service_frames = 58 + upstream_concurrency * 6
+    requested_goal_send_pacing_ms = goal_send_pacing_ms
+    if goal_send_pacing_ms == 0.0 and upstream_concurrency >= 4096:
+        goal_send_pacing_ms = 0.5
     if upstream_concurrency <= 2048:
         batch_timeout_s = max(12, min(120, 12 + upstream_concurrency // 8))
     else:
@@ -1630,8 +1636,20 @@ def run_probe(
             "goal_batch_count": goal_batch_count,
             "goal_batch_timeout_s": goal_batch_timeout_s,
             "goal_send_pacing_ms": goal_send_pacing_ms,
+            "requested_goal_send_pacing_ms": requested_goal_send_pacing_ms,
             "goal_batch_delay_ms": goal_batch_delay_ms,
             "goal_recreate_client_per_batch": goal_recreate_client_per_batch,
+            "unwindowed_goal_batch": (
+                effective_goal_batch_size == upstream_concurrency
+                and goal_batch_count == 1
+            ),
+            "executor_spin_pacing_enabled": goal_send_pacing_ms > 0.0,
+            "nav2_rmf_unwindowed_4096_claim": (
+                status
+                and upstream_concurrency == 4096
+                and effective_goal_batch_size == 4096
+                and goal_batch_count == 1
+            ),
             "server_timeout_s": server_timeout_s,
             "executor_threads": executor_threads,
             "result_window_size": result_window_size,

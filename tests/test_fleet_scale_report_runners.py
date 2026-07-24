@@ -669,8 +669,9 @@ class FleetScaleReportRunnersTest(unittest.TestCase):
                             "docker_nav2_rmf_upstream_concurrency512": True,
                             "docker_nav2_rmf_upstream_concurrency1024": True,
                             "docker_nav2_rmf_upstream_concurrency2048": True,
-                            "docker_nav2_rmf_upstream_concurrency4096": False,
+                            "docker_nav2_rmf_upstream_concurrency4096": True,
                             "docker_nav2_rmf_upstream_total4096_admission_window8": True,
+                            "nav2_rmf_unwindowed_4096_claim": True,
                             "full_nav2_navigation_stack_claim": True,
                             "nav2_rmf_larger_upstream_client_count_claim": True,
                             "nav2_rmf_total4096_admission_window_claim": True,
@@ -1436,8 +1437,8 @@ class FleetScaleReportRunnersTest(unittest.TestCase):
             nav2_rmf_concurrency4096.write_text(
                 json.dumps(
                     {
-                        "schema_version": "fleetrmw.rmw_router_nav2_rmf_action_workload.v5",
-                        "status": "failed",
+                        "schema_version": "fleetrmw.rmw_router_nav2_rmf_action_workload.v6",
+                        "status": "ok",
                         "nav2_compatible": True,
                         "rmf_compatible": True,
                         "nav2_upstream": True,
@@ -1445,7 +1446,15 @@ class FleetScaleReportRunnersTest(unittest.TestCase):
                         "upstream_concurrency": 4096,
                         "expected_service_frames": 24634,
                         "batch_timeout_s": 524,
-                        "server_timeout_s": 644,
+                        "server_timeout_s": 1168,
+                        "goal_batch_size": 4096,
+                        "goal_batch_count": 1,
+                        "goal_batch_timeout_s": 720,
+                        "goal_send_pacing_ms": 0.5,
+                        "requested_goal_send_pacing_ms": 0.0,
+                        "unwindowed_goal_batch": True,
+                        "executor_spin_pacing_enabled": True,
+                        "nav2_rmf_unwindowed_4096_claim": True,
                         "goal_recreate_client_per_batch": False,
                         "executor_threads": 12,
                         "result_window_size": 512,
@@ -1458,7 +1467,7 @@ class FleetScaleReportRunnersTest(unittest.TestCase):
                         "router_expected_service_frames": 0,
                         "router_post_satisfaction_ms": 30000,
                         "router_timeout_ms": 1128000,
-                        "navigation_batch": False,
+                        "navigation_batch": True,
                         "rmf_batch": True,
                         "lifecycle_transport": True,
                         "nav2_lifecycle_manager_upstream": True,
@@ -3161,8 +3170,8 @@ class FleetScaleReportRunnersTest(unittest.TestCase):
             self.assertGreater(report["claim_boundary_true_count"], 0)
             self.assertGreater(report["claim_boundary_false_count"], 0)
             self.assertEqual(report["artifact_count"], 63)
-            self.assertEqual(report["ok_artifact_count"], 61)
-            self.assertEqual(report["failed_artifact_count"], 2)
+            self.assertEqual(report["ok_artifact_count"], 62)
+            self.assertEqual(report["failed_artifact_count"], 1)
             self.assertFalse(
                 report["claim_boundary_summary"]["production_quic_backend_claim"]
             )
@@ -3339,9 +3348,14 @@ class FleetScaleReportRunnersTest(unittest.TestCase):
                     "docker_nav2_rmf_upstream_concurrency2048"
                 ]
             )
-            self.assertFalse(
+            self.assertTrue(
                 report["claim_boundary_summary"][
                     "docker_nav2_rmf_upstream_concurrency4096"
+                ]
+            )
+            self.assertTrue(
+                report["claim_boundary_summary"][
+                    "nav2_rmf_unwindowed_4096_claim"
                 ]
             )
             self.assertTrue(
@@ -4866,7 +4880,7 @@ class FleetScaleReportRunnersTest(unittest.TestCase):
             self.assertEqual(
                 nav2_rmf_concurrency4096_artifact["category"], "workload/nav2-rmf"
             )
-            self.assertEqual(nav2_rmf_concurrency4096_artifact["status"], "failed")
+            self.assertEqual(nav2_rmf_concurrency4096_artifact["status"], "ok")
             self.assertEqual(
                 nav2_rmf_concurrency4096_artifact["metrics"]["upstream_concurrency"],
                 4096,
@@ -4875,7 +4889,7 @@ class FleetScaleReportRunnersTest(unittest.TestCase):
                 nav2_rmf_concurrency4096_artifact["metrics"]["expected_service_frames"],
                 24634,
             )
-            self.assertFalse(
+            self.assertTrue(
                 nav2_rmf_concurrency4096_artifact["metrics"]["navigation_batch"]
             )
             self.assertTrue(nav2_rmf_concurrency4096_artifact["metrics"]["rmf_batch"])
@@ -4884,7 +4898,18 @@ class FleetScaleReportRunnersTest(unittest.TestCase):
             )
             self.assertEqual(
                 nav2_rmf_concurrency4096_artifact["metrics"]["server_timeout_s"],
-                644,
+                1168,
+            )
+            self.assertEqual(
+                nav2_rmf_concurrency4096_artifact["metrics"][
+                    "goal_send_pacing_ms"
+                ],
+                0.5,
+            )
+            self.assertTrue(
+                nav2_rmf_concurrency4096_artifact["metrics"][
+                    "unwindowed_goal_batch"
+                ]
             )
             self.assertFalse(
                 nav2_rmf_concurrency4096_artifact["metrics"][
