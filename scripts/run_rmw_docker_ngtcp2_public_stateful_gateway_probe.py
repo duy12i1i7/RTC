@@ -24,7 +24,7 @@ from fleetqox.quic_gateway_state import DATA_FRAME_MAGIC
 
 SCHEMA_VERSION = "fleetrmw.docker_ngtcp2_public_stateful_gateway.v1"
 PROBE_SCHEMA_VERSION = "fleetrmw.quic_stateful_gateway_probe.v1"
-BACKEND_SCHEMA_VERSION = "fleetrmw.public_quic_gateway_backend.v1"
+BACKEND_SCHEMA_VERSION = "fleetrmw.public_quic_gateway_backend.v2"
 DEFAULT_SERVER_IMAGE = "localhost/fleetrmw/ngtcp2-public-mtls:0.12.1"
 DEFAULT_BASE_IMAGE = "localhost/fleetrmw/rmw-netem:jazzy"
 PUBLISHER_ID = "stateful-gateway-publisher"
@@ -154,6 +154,22 @@ def backend_ok(summary: dict[str, Any]) -> bool:
         and adapter.get("identity_rejections") == 1
         and adapter.get("protocol_rejections") == 0
         and adapter.get("require_client_identity") is True
+        and adapter.get("accept_public_path_observations") is False
+        and adapter.get("public_path_telemetry_requests") == 4
+        and adapter.get("public_path_observation_updates") == 0
+        and adapter.get("public_path_missing_rtt_samples") == 0
+        and adapter.get("last_public_path_telemetry", {}).get(
+            "rtt_initialized"
+        )
+        is True
+        and adapter.get("last_public_path_telemetry", {}).get(
+            "smoothed_rtt_us", 0
+        )
+        > 0
+        and adapter.get("public_path_loss_semantics")
+        == "raw_ngtcp2_stream_packet_loss_count_not_loss_ratio"
+        and adapter.get("public_path_rttvar_semantics")
+        == "ngtcp2_rttvar_mean_deviation_used_as_jitter_proxy"
         and state.get("requests_total") == 11
         and state.get("post_requests") == 5
         and state.get("get_requests") == 6
@@ -557,6 +573,7 @@ def run_probe(
         "public_api_stateful_history_dedup_cursor_claim": ok,
         "public_api_stateful_identity_binding_claim": ok,
         "public_api_stateful_session_reuse_claim": ok,
+        "public_api_path_telemetry_forwarded_claim": ok,
         "docker_netem_both_ends_claim": ok,
         "aioquic_server_runtime_used": False,
         "aioquic_private_server_hook_required": False,

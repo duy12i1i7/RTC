@@ -268,9 +268,17 @@ This repository starts with the part that should be proven first:
   publisher-impersonation HTTP 403 with no state mutation. The alpha and beta
   clients respectively reuse one connection across seven and three H3
   streams. This removes aioquic and its private hook from the tested stateful
-  server runtime. Public native path metrics, asynchronous backend I/O,
-  multi-publisher SAN selection/rotation, and production hardening remain the
-  production QUIC boundary;
+  server runtime. A third matched `5/5` Docker/netem contrast now forwards
+  public `ngtcp2_conn_get_conn_stat` RTT/RTT-variation/congestion values and
+  `ngtcp2_conn_get_stream_loss_count` through versioned backend protocol v2.
+  With the metric-to-admission switch disabled, the score-zero frame receives
+  HTTP 429; with it enabled, the same policy/frame receives HTTP 200 and the
+  frame is taken. Source accounting is `ngtcp2_public_api` and there are zero
+  external observation-API requests. The stream-loss value remains a raw
+  packet-loss count—not a fabricated ratio—because this ngtcp2 API exposes no
+  sent-packet denominator. Asynchronous backend I/O, multi-publisher SAN
+  selection/rotation, and production hardening remain the production QUIC
+  boundary;
 - a scoped fleet-admission gate inside the stateful QUIC service. A validated
   JSON policy assigns domain/topic streams to traffic classes, allowlists
   publishers, caps each stream, and caps total accepted frames across the

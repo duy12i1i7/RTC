@@ -60,6 +60,20 @@ class Ngtcp2PublicStatefulGatewayTest(unittest.TestCase):
                 "identity_rejections": 1,
                 "protocol_rejections": 0,
                 "require_client_identity": True,
+                "accept_public_path_observations": False,
+                "public_path_telemetry_requests": 4,
+                "public_path_observation_updates": 0,
+                "public_path_missing_rtt_samples": 0,
+                "public_path_loss_semantics": (
+                    "raw_ngtcp2_stream_packet_loss_count_not_loss_ratio"
+                ),
+                "public_path_rttvar_semantics": (
+                    "ngtcp2_rttvar_mean_deviation_used_as_jitter_proxy"
+                ),
+                "last_public_path_telemetry": {
+                    "rtt_initialized": True,
+                    "smoothed_rtt_us": 20_000,
+                },
                 "state": {
                     "requests_total": 11,
                     "post_requests": 5,

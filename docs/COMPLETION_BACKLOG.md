@@ -7,9 +7,10 @@ project. It is ordered by dependency and regression value.
 ## Current Baseline
 
 - The full repository suite passes in the pinned ROS 2 Jazzy Docker image:
-  `616/616` unit/contract tests. The unified report currently indexes `322`
-  retained artifacts; its overall `partial` status deliberately includes old
-  debug, negative-control, superseded, and failed runs rather than hiding them.
+  `622/622` unit/contract tests. The unified report currently indexes `323`
+  retained artifacts (`264` ok, `16` partial, `39` historical failed, and `4`
+  unknown); its overall `partial` status deliberately includes old debug,
+  negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
   evidence with source-sequence ACK/NACK, liveliness-backed retransmit horizon,
   QoE quota recovery, and typed projection feedback.
@@ -524,9 +525,15 @@ and its CI assertion.
   frames, one duplicate, six ordered two-consumer takes, invalid-frame 400,
   authenticated publisher-impersonation 403 without state mutation, and
   seven-/three-stream session reuse. The stateful server process uses neither
-  aioquic nor its private TLS hook. Public native path metrics, asynchronous
-  backend I/O, broader fleet identity policy, and online rotation remain
-  production work. The
+  aioquic nor its private TLS hook. A further matched `5/5` Docker/netem
+  contrast now carries public-ngtcp2 smoothed RTT, RTT variation, congestion,
+  PTO, and raw stream-loss-count telemetry through backend protocol v2. It
+  proves the same score-zero frame changes from HTTP 429 to accepted/taken
+  HTTP 200 only when `ngtcp2_public_api` observations are enabled, with zero
+  external observation-API requests. The loss count is deliberately not
+  treated as a ratio because the public API provides no denominator.
+  Asynchronous backend I/O, broader fleet identity policy, and online rotation
+  remain production work. The
   gateway's first scoped fleet-admission slice is now complete as a separate
   `5/5` two-container netem artifact. A startup-validated JSON policy assigns
   control/bulk/state traffic classes, publisher allowlists, per-stream frame
@@ -582,8 +589,8 @@ and its CI assertion.
   and netem runs on both client and gateway. Repeating service requests and
   responses twice repaired a reproduced RMF batch response loss; all five
   canonical rounds then completed with zero nonzero container exits. The
-  remaining gaps are stable public path metrics and nonblocking backend I/O on
-  the new stateful public-API ngtcp2 server, globally optimal joint
+  remaining gaps are nonblocking backend I/O on the new stateful public-API
+  ngtcp2 server, globally optimal joint
   multi-demand scheduling, and clustered replicated capacity state. A separate `5/5`
   active/passive gate now persists retained frames,
   dedup keys, and consumer cursors with SQLite WAL `synchronous=FULL` and

@@ -15,11 +15,18 @@ from fleetqox.public_quic_gateway_backend import (
     BackendRequest,
     PublicQuicGatewayBackend,
     PublicQuicGatewayBackendServer,
+    PublicQuicPathTelemetry,
+    REQUEST_HEADER,
     encode_backend_request,
     read_backend_request,
     read_backend_response,
 )
-from fleetqox.quic_gateway_state import DATA_FRAME_MAGIC, FleetQoxGatewayState
+from fleetqox.quic_gateway_state import (
+    ADMISSION_POLICY_SCHEMA_VERSION,
+    DATA_FRAME_MAGIC,
+    FleetQoxGatewayState,
+    GatewayAdmissionPolicy,
+)
 
 
 def frame(sequence: int, publisher_id: str = "stateful-gateway-publisher") -> bytes:
@@ -69,11 +76,43 @@ class PublicQuicGatewayBackendTest(unittest.TestCase):
             path=self.path,
             client_identity="stateful-gateway-publisher",
             body=frame(1),
+            path_telemetry=PublicQuicPathTelemetry(
+                rtt_initialized=True,
+                smoothed_rtt_us=20_000,
+                rttvar_us=2_000,
+                stream_loss_count=3,
+                cwnd_bytes=12_000,
+                bytes_in_flight=800,
+                pto_count=1,
+            ),
         )
         encoded = encode_backend_request(request)
         self.assertEqual(read_backend_request(io.BytesIO(encoded)), request)
         with self.assertRaises(BackendProtocolError):
             read_backend_request(io.BytesIO(encoded[:-1]))
+
+    def test_local_protocol_rejects_unknown_flags_and_invalid_rtt_state(self) -> None:
+        encoded = bytearray(
+            encode_backend_request(
+                BackendRequest("GET", self.path, "publisher", b"")
+            )
+        )
+        encoded[24:28] = (2).to_bytes(4, "big")
+        with self.assertRaisesRegex(
+            BackendProtocolError, "unsupported.*telemetry flags"
+        ):
+            read_backend_request(io.BytesIO(encoded))
+        self.assertEqual(REQUEST_HEADER.size, 76)
+        with self.assertRaisesRegex(BackendProtocolError, "uninitialized.*RTT"):
+            encode_backend_request(
+                BackendRequest(
+                    "GET",
+                    self.path,
+                    "publisher",
+                    b"",
+                    PublicQuicPathTelemetry(smoothed_rtt_us=1),
+                )
+            )
 
     def test_verified_identity_is_bound_before_state_mutation(self) -> None:
         accepted = self.backend.dispatch(
@@ -102,6 +141,87 @@ class PublicQuicGatewayBackendTest(unittest.TestCase):
         self.assertEqual(snapshot["accepted_frames"], 1)
         self.assertEqual(snapshot["retained_frames"], 1)
         self.assertEqual(self.backend.identity_rejections, 2)
+
+    def test_public_ngtcp2_rtt_observation_changes_admission_decision(self) -> None:
+        policy_document = {
+            "schema_version": ADMISSION_POLICY_SCHEMA_VERSION,
+            "default_action": "deny",
+            "observation_ttl_ms": 5000,
+            "rules": [
+                {
+                    "domain_id": 42,
+                    "topic": "/fleetqox/gateway",
+                    "traffic_class": "control",
+                    "max_accepted_frames": 4,
+                    "allowed_publishers": ["stateful-gateway-publisher"],
+                    "min_admission_score": 0.0001,
+                }
+            ],
+        }
+        disabled_state = FleetQoxGatewayState(
+            admission_policy=GatewayAdmissionPolicy.from_document(
+                policy_document
+            )
+        )
+        enabled_state = FleetQoxGatewayState(
+            admission_policy=GatewayAdmissionPolicy.from_document(
+                policy_document
+            )
+        )
+        telemetry = PublicQuicPathTelemetry(
+            rtt_initialized=True,
+            smoothed_rtt_us=20_000,
+            rttvar_us=2_000,
+            stream_loss_count=2,
+            cwnd_bytes=12_000,
+            bytes_in_flight=800,
+        )
+        try:
+            disabled = PublicQuicGatewayBackend(
+                disabled_state,
+                accept_public_path_observations=False,
+            )
+            enabled = PublicQuicGatewayBackend(
+                enabled_state,
+                accept_public_path_observations=True,
+            )
+            request = BackendRequest(
+                "POST",
+                self.path,
+                "stateful-gateway-publisher",
+                frame(1),
+                telemetry,
+            )
+            self.assertEqual(disabled.dispatch(request).status, 429)
+            self.assertEqual(enabled.dispatch(request).status, 200)
+            disabled_snapshot = disabled.snapshot()
+            enabled_snapshot = enabled.snapshot()
+            self.assertEqual(
+                disabled_snapshot["public_path_observation_updates"], 0
+            )
+            self.assertEqual(
+                enabled_snapshot["public_path_observation_updates"], 1
+            )
+            self.assertEqual(
+                enabled_snapshot["public_path_stream_loss_events"], 2
+            )
+            admission = enabled_snapshot["state"]["admission"]
+            self.assertEqual(
+                admission["observation_updates_by_source"],
+                {"ngtcp2_public_api": 1},
+            )
+            self.assertEqual(admission["observation_score_uses"], 1)
+            self.assertEqual(
+                enabled_snapshot["public_path_loss_semantics"],
+                "raw_ngtcp2_stream_packet_loss_count_not_loss_ratio",
+            )
+            self.assertEqual(
+                enabled_snapshot["public_path_rttvar_semantics"],
+                "ngtcp2_rttvar_mean_deviation_used_as_jitter_proxy",
+            )
+        finally:
+            disabled_state.close()
+            enabled_state.close()
 
     def test_unix_server_dispatches_shared_state_engine(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

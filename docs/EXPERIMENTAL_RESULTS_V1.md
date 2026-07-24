@@ -241,6 +241,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker stateful FleetQoX QUIC mutual-TLS client-auth 5-run netem | `results_rmw_socket/docker_quic_mtls_probe_summary.json` |
 | Docker public-API ngtcp2/GnuTLS mTLS server 5-run netem | `results_rmw_socket/docker_ngtcp2_public_mtls_server_summary.json` |
 | Docker public-API ngtcp2 stateful FleetQoX gateway 5-run netem | `results_rmw_socket/docker_ngtcp2_public_stateful_gateway_summary.json` |
+| Docker public-API ngtcp2 path-metric admission contrast 5-run netem | `results_rmw_socket/docker_ngtcp2_public_path_admission_summary.json` |
 | Docker stateful FleetQoX QUIC fleet-admission policy 5-run netem | `results_rmw_socket/docker_quic_admission_probe_summary.json` |
 | Docker stateful FleetQoX QUIC QoS/QoE admission-repair coupling 5-run netem | `results_rmw_socket/docker_quic_qox_repair_probe_summary.json` |
 | Docker stateful FleetQoX QUIC observation-fed competing batch 5-run netem | `results_rmw_socket/docker_quic_feedback_batch_probe_summary.json` |
@@ -970,10 +971,21 @@ cursors, one invalid-frame HTTP 400, and one CA-valid but publisher-mismatched
 HTTP 403. The 403 control leaves retained state at exactly three frames.
 Alpha reuses one QUIC/H3 connection for seven streams and beta reuses one for
 three; both endpoints emit four non-empty qlogs per run. The tested server
-runtime uses neither aioquic nor a private TLS hook. It remains
-`production_quic_backend_claim=false` because public native path metrics,
-nonblocking backend dispatch, broad multi-publisher identity selection and
-production operations are not yet closed.
+runtime uses neither aioquic nor a private TLS hook.
+`results_rmw_socket/docker_ngtcp2_public_path_admission_summary.json` closes
+the next public path-metric boundary. The edge reads initialized smoothed RTT,
+RTT variation, congestion window, bytes in flight, PTO count, and raw
+per-stream packet-loss count from public ngtcp2 APIs, then sends them through
+backend protocol v2. Across `5/5` matched Docker/netem rounds, the backend with
+path observations disabled rejects the score-zero frame with HTTP 429. The
+enabled backend records source `ngtcp2_public_api`, makes no external
+observation-API request, admits the identical policy/frame with HTTP 200, and
+serves it on take. The raw stream-loss count is retained as telemetry and is
+not mislabeled as a loss ratio because ngtcp2 exposes no corresponding
+sent-packet denominator. `production_quic_backend_claim=false` remains because
+backend dispatch is synchronous/blocking and broad multi-publisher identity
+selection, online rotation, clustered state, and production operations are
+not closed.
 `results_rmw_socket/docker_quic_admission_probe_summary.json` adds scoped
 fleet-level admission to the same stateful service. A fail-closed JSON policy
 maps three domain/topic streams to control, bulk, and state classes, applies

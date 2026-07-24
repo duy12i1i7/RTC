@@ -919,6 +919,7 @@ class GatewayAdmissionPolicy:
         if source not in {
             "external_api",
             "quic_session_native",
+            "ngtcp2_public_api",
             "application_outcome",
         }:
             raise ValueError("observation source is unsupported")

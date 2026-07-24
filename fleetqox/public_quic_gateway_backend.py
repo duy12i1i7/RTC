@@ -31,19 +31,46 @@ from .quic_gateway_state import (
 )
 
 
-SCHEMA_VERSION = "fleetrmw.public_quic_gateway_backend.v1"
-REQUEST_MAGIC = b"FQBE1REQ"
+SCHEMA_VERSION = "fleetrmw.public_quic_gateway_backend.v2"
+REQUEST_MAGIC = b"FQBE2REQ"
 RESPONSE_MAGIC = b"FQBE1RES"
-REQUEST_HEADER = struct.Struct("!8sIIII")
+REQUEST_HEADER = struct.Struct("!8sIIIIIQQQQQQ")
 RESPONSE_HEADER = struct.Struct("!8sIII")
 MAX_METHOD_BYTES = 16
 MAX_PATH_BYTES = 16_384
 MAX_IDENTITY_BYTES = 4096
 DEFAULT_MAX_BODY_BYTES = 1_048_576
+PATH_TELEMETRY_RTT_INITIALIZED = 1 << 0
+PATH_TELEMETRY_KNOWN_FLAGS = PATH_TELEMETRY_RTT_INITIALIZED
+MAX_UINT64 = (1 << 64) - 1
 
 
 class BackendProtocolError(ValueError):
     """Raised when the local edge/backend protocol is malformed."""
+
+
+@dataclass(frozen=True)
+class PublicQuicPathTelemetry:
+    """Raw public-ngtcp2 connection/stream statistics from the local edge."""
+
+    rtt_initialized: bool = False
+    smoothed_rtt_us: int = 0
+    rttvar_us: int = 0
+    stream_loss_count: int = 0
+    cwnd_bytes: int = 0
+    bytes_in_flight: int = 0
+    pto_count: int = 0
+
+    def as_dict(self) -> dict[str, int | bool]:
+        return {
+            "rtt_initialized": self.rtt_initialized,
+            "smoothed_rtt_us": self.smoothed_rtt_us,
+            "rttvar_us": self.rttvar_us,
+            "stream_loss_count": self.stream_loss_count,
+            "cwnd_bytes": self.cwnd_bytes,
+            "bytes_in_flight": self.bytes_in_flight,
+            "pto_count": self.pto_count,
+        }
 
 
 @dataclass(frozen=True)
@@ -52,6 +79,29 @@ class BackendRequest:
     path: str
     client_identity: str
     body: bytes
+    path_telemetry: PublicQuicPathTelemetry = PublicQuicPathTelemetry()
+
+
+def _validate_path_telemetry(telemetry: PublicQuicPathTelemetry) -> None:
+    values = (
+        telemetry.smoothed_rtt_us,
+        telemetry.rttvar_us,
+        telemetry.stream_loss_count,
+        telemetry.cwnd_bytes,
+        telemetry.bytes_in_flight,
+        telemetry.pto_count,
+    )
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= MAX_UINT64
+        for value in values
+    ):
+        raise BackendProtocolError("invalid backend path telemetry")
+    if not telemetry.rtt_initialized and (
+        telemetry.smoothed_rtt_us != 0 or telemetry.rttvar_us != 0
+    ):
+        raise BackendProtocolError("uninitialized backend RTT telemetry is nonzero")
 
 
 def _read_exact(stream: BinaryIO, length: int) -> bytes:
@@ -70,11 +120,24 @@ def read_backend_request(
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
 ) -> BackendRequest:
     header = _read_exact(stream, REQUEST_HEADER.size)
-    magic, method_length, path_length, identity_length, body_length = (
-        REQUEST_HEADER.unpack(header)
-    )
+    (
+        magic,
+        method_length,
+        path_length,
+        identity_length,
+        body_length,
+        telemetry_flags,
+        smoothed_rtt_us,
+        rttvar_us,
+        stream_loss_count,
+        cwnd_bytes,
+        bytes_in_flight,
+        pto_count,
+    ) = REQUEST_HEADER.unpack(header)
     if magic != REQUEST_MAGIC:
         raise BackendProtocolError("invalid backend request magic")
+    if telemetry_flags & ~PATH_TELEMETRY_KNOWN_FLAGS:
+        raise BackendProtocolError("unsupported backend path telemetry flags")
     if not 0 < method_length <= MAX_METHOD_BYTES:
         raise BackendProtocolError("invalid backend method length")
     if not 0 < path_length <= MAX_PATH_BYTES:
@@ -90,11 +153,24 @@ def read_backend_request(
     except UnicodeDecodeError as exc:
         raise BackendProtocolError("invalid backend request encoding") from exc
     body = _read_exact(stream, body_length)
+    telemetry = PublicQuicPathTelemetry(
+        rtt_initialized=bool(
+            telemetry_flags & PATH_TELEMETRY_RTT_INITIALIZED
+        ),
+        smoothed_rtt_us=smoothed_rtt_us,
+        rttvar_us=rttvar_us,
+        stream_loss_count=stream_loss_count,
+        cwnd_bytes=cwnd_bytes,
+        bytes_in_flight=bytes_in_flight,
+        pto_count=pto_count,
+    )
+    _validate_path_telemetry(telemetry)
     return BackendRequest(
         method=method,
         path=path,
         client_identity=identity,
         body=body,
+        path_telemetry=telemetry,
     )
 
 
@@ -110,6 +186,12 @@ def encode_backend_request(request: BackendRequest) -> bytes:
         raise BackendProtocolError("invalid backend identity length")
     if len(request.body) > 0xFFFFFFFF:
         raise BackendProtocolError("backend request body too large")
+    _validate_path_telemetry(request.path_telemetry)
+    telemetry_flags = (
+        PATH_TELEMETRY_RTT_INITIALIZED
+        if request.path_telemetry.rtt_initialized
+        else 0
+    )
     return b"".join(
         (
             REQUEST_HEADER.pack(
@@ -118,6 +200,13 @@ def encode_backend_request(request: BackendRequest) -> bytes:
                 len(path),
                 len(identity),
                 len(request.body),
+                telemetry_flags,
+                request.path_telemetry.smoothed_rtt_us,
+                request.path_telemetry.rttvar_us,
+                request.path_telemetry.stream_loss_count,
+                request.path_telemetry.cwnd_bytes,
+                request.path_telemetry.bytes_in_flight,
+                request.path_telemetry.pto_count,
             ),
             method,
             path,
@@ -174,11 +263,18 @@ class PublicQuicGatewayBackend:
         state: FleetQoxGatewayState,
         *,
         require_client_identity: bool = True,
+        accept_public_path_observations: bool = False,
     ) -> None:
         self.state = state
         self.require_client_identity = require_client_identity
+        self.accept_public_path_observations = accept_public_path_observations
         self.identity_rejections = 0
         self.protocol_rejections = 0
+        self.public_path_telemetry_requests = 0
+        self.public_path_observation_updates = 0
+        self.public_path_missing_rtt_samples = 0
+        self.public_path_stream_loss_events = 0
+        self.last_public_path_telemetry: PublicQuicPathTelemetry | None = None
 
     @staticmethod
     def _json_response(status: int, document: dict[str, object]) -> GatewayResponse:
@@ -213,6 +309,38 @@ class PublicQuicGatewayBackend:
                     return self._json_response(
                         403, {"error": "publisher_identity_mismatch"}
                     )
+                self.public_path_telemetry_requests += 1
+                self.public_path_stream_loss_events += (
+                    request.path_telemetry.stream_loss_count
+                )
+                self.last_public_path_telemetry = request.path_telemetry
+                if not request.path_telemetry.rtt_initialized:
+                    self.public_path_missing_rtt_samples += 1
+                elif (
+                    self.accept_public_path_observations
+                    and self.state.admission_policy is not None
+                ):
+                    # ngtcp2 exposes a raw STREAM-frame packet loss count, not
+                    # a sent-packet denominator. Keep that count in backend
+                    # telemetry and do not misrepresent it as a loss ratio.
+                    # Its RTT variance is a mean deviation, used here only as
+                    # an explicit jitter-pressure proxy.
+                    self.state.admission_policy.update_observation(
+                        domain_id=metadata.domain_id,
+                        topic=metadata.topic,
+                        publisher_id=metadata.publisher_id,
+                        qoe_debt=metadata.qoe_debt,
+                        measured_loss=0.0,
+                        measured_rtt_ms=(
+                            request.path_telemetry.smoothed_rtt_us / 1000.0
+                        ),
+                        measured_jitter_ms=(
+                            request.path_telemetry.rttvar_us / 1000.0
+                        ),
+                        source="ngtcp2_public_api",
+                        qoe_debt_source="publisher_metadata",
+                    )
+                    self.public_path_observation_updates += 1
 
         if request.method == "POST" and path == APPLICATION_OUTCOME_API_PATH:
             try:
@@ -245,6 +373,32 @@ class PublicQuicGatewayBackend:
             "identity_rejections": self.identity_rejections,
             "protocol_rejections": self.protocol_rejections,
             "require_client_identity": self.require_client_identity,
+            "accept_public_path_observations": (
+                self.accept_public_path_observations
+            ),
+            "public_path_telemetry_requests": (
+                self.public_path_telemetry_requests
+            ),
+            "public_path_observation_updates": (
+                self.public_path_observation_updates
+            ),
+            "public_path_missing_rtt_samples": (
+                self.public_path_missing_rtt_samples
+            ),
+            "public_path_stream_loss_events": (
+                self.public_path_stream_loss_events
+            ),
+            "public_path_loss_semantics": (
+                "raw_ngtcp2_stream_packet_loss_count_not_loss_ratio"
+            ),
+            "public_path_rttvar_semantics": (
+                "ngtcp2_rttvar_mean_deviation_used_as_jitter_proxy"
+            ),
+            "last_public_path_telemetry": (
+                self.last_public_path_telemetry.as_dict()
+                if self.last_public_path_telemetry is not None
+                else None
+            ),
             "state": self.state.snapshot(),
         }
 
@@ -339,6 +493,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--allow-missing-client-identity",
         action="store_true",
     )
+    parser.add_argument(
+        "--accept-public-path-observations",
+        action="store_true",
+        help=(
+            "use authenticated public-ngtcp2 RTT/rttvar telemetry in "
+            "fleet admission scoring"
+        ),
+    )
     return parser
 
 
@@ -363,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
     backend = PublicQuicGatewayBackend(
         state,
         require_client_identity=not args.allow_missing_client_identity,
+        accept_public_path_observations=args.accept_public_path_observations,
     )
     server = PublicQuicGatewayBackendServer(
         args.socket,
