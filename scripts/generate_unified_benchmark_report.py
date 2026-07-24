@@ -150,6 +150,14 @@ METRIC_KEYS = (
     "aioquic_private_hook_fingerprint_claim",
     "aioquic_private_adapter_fail_closed_claim",
     "aioquic_public_server_client_auth_api_claim",
+    "public_api_mtls_server_claim",
+    "public_api_client_ca_verification_claim",
+    "public_api_crl_revocation_claim",
+    "public_api_uri_san_binding_claim",
+    "single_connection_six_h3_streams_claim",
+    "docker_netem_both_ends_claim",
+    "aioquic_private_server_hook_required",
+    "stateful_gateway_backend_integrated",
     "fleet_gateway_admission_policy_claim",
     "per_stream_traffic_class_quota_claim",
     "shared_fleet_quota_claim",
@@ -1058,6 +1066,13 @@ CLAIM_BOUNDARY_KEYS = (
     "aioquic_private_hook_fingerprint_claim",
     "aioquic_private_adapter_fail_closed_claim",
     "aioquic_public_server_client_auth_api_claim",
+    "docker_ngtcp2_public_mtls_server_5run_probe",
+    "quic_public_api_mtls_transport_server_claim",
+    "quic_public_api_client_ca_verification_claim",
+    "quic_public_api_crl_revocation_claim",
+    "quic_public_api_uri_san_binding_claim",
+    "quic_public_api_single_session_six_h3_streams_claim",
+    "quic_public_api_stateful_gateway_backend_integration_claim",
     "docker_quic_gateway_admission_5run_probe",
     "quic_gateway_fleet_admission_policy_claim",
     "quic_gateway_per_stream_traffic_class_quota_claim",
@@ -1587,7 +1602,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         return "comparison/dds-cyclone-zenoh"
     if "stress_security" in text or "stress-security" in text:
         return "stress/security"
-    if "quic" in text:
+    if "quic" in text or "ngtcp2" in text:
         return "transport/quic"
     if (
         "udp_aead" in text

@@ -239,6 +239,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker stateful FleetQoX QUIC/H3 gateway 5-run netem | `results_rmw_socket/docker_quic_stateful_gateway_probe_summary.json` |
 | Docker stateful FleetQoX public-RMW publish/take 5-run netem | `results_rmw_socket/docker_quic_stateful_rmw_probe_summary.json` |
 | Docker stateful FleetQoX QUIC mutual-TLS client-auth 5-run netem | `results_rmw_socket/docker_quic_mtls_probe_summary.json` |
+| Docker public-API ngtcp2/GnuTLS mTLS server 5-run netem | `results_rmw_socket/docker_ngtcp2_public_mtls_server_summary.json` |
 | Docker stateful FleetQoX QUIC fleet-admission policy 5-run netem | `results_rmw_socket/docker_quic_admission_probe_summary.json` |
 | Docker stateful FleetQoX QUIC QoS/QoE admission-repair coupling 5-run netem | `results_rmw_socket/docker_quic_qox_repair_probe_summary.json` |
 | Docker stateful FleetQoX QUIC observation-fed competing batch 5-run netem | `results_rmw_socket/docker_quic_feedback_batch_probe_summary.json` |
@@ -945,6 +946,18 @@ successful adapter installs per run and the exact compatibility report. This is
 evidence for scoped mutual authentication and unauthenticated state isolation,
 not production PKI, broader fleet identity policy, online revocation/rotation,
 or production QUIC readiness.
+`results_rmw_socket/docker_ngtcp2_public_mtls_server_summary.json` removes the
+private-hook dependency from a standalone transport-server edge. It rebuilds
+the official ngtcp2 `v0.12.1` GnuTLS server at commit
+`a4ba3f20d70d4a4d79674cee1093c55b4c1d78ed`, using public GnuTLS APIs for
+client-CA trust, CRL revocation, client-auth EKU, exact URI SAN, and disabled
+early data. Across `5/5` Docker/netem rounds, the valid client submits and
+receives six HTTP/3 requests on one session. Missing-certificate,
+unrelated-CA, wrong-URI, and revoked controls each receive a QUIC/TLS
+`CRYPTO_ERROR` and no HTTP response. This establishes the public-API mTLS
+transport-server claim; the artifact deliberately keeps
+`stateful_gateway_backend_integrated=false` and
+`production_quic_backend_claim=false`.
 `results_rmw_socket/docker_quic_admission_probe_summary.json` adds scoped
 fleet-level admission to the same stateful service. A fail-closed JSON policy
 maps three domain/topic streams to control, bulk, and state classes, applies

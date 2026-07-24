@@ -1,0 +1,179 @@
+diff --git a/examples/server.cc b/examples/server.cc
+index d9a054c..686b7d8 100644
+--- a/examples/server.cc
++++ b/examples/server.cc
+@@ -3180,7 +3180,9 @@ Options:
+               STOP_SENDING is sent.
+   --verify-client
+-              Request a  client certificate.   At the moment,  we just
+-              request a certificate and no verification is done.
++              Require and verify a client certificate with GnuTLS public
++              APIs. FLEETQOX_GNUTLS_CLIENT_CA must name a PEM trust file;
++              optional FLEETQOX_GNUTLS_CLIENT_CRL and
++              FLEETQOX_GNUTLS_REQUIRED_CLIENT_URI_SAN tighten verification.
+   --qlog-dir=<PATH>
+               Path to  the directory where  qlog file is  stored.  The
+               file name  of each qlog  is the Source Connection  ID of
+diff --git a/examples/tls_server_context_gnutls.cc b/examples/tls_server_context_gnutls.cc
+index ee0f331..2852377 100644
+--- a/examples/tls_server_context_gnutls.cc
++++ b/examples/tls_server_context_gnutls.cc
+@@ -24,7 +24,12 @@
+ #include "tls_server_context_gnutls.h"
+ 
++#include <array>
++#include <cstdlib>
+ #include <iostream>
++#include <string>
+ 
++#include <gnutls/x509.h>
++
+ #include "server_base.h"
+ #include "template.h"
+ 
+@@ -41,6 +45,86 @@ int anti_replay_db_add_func(void *dbf, time_t exp_time,
+                             const gnutls_datum_t *data) {
+   return 0;
+ }
++
++int verify_client_certificate(gnutls_session_t session) {
++  unsigned int status = 0;
++  auto rv = gnutls_certificate_verify_peers3(session, nullptr, &status);
++  if (rv < 0 || status != 0) {
++    std::cerr << "FLEETQOX_PUBLIC_MTLS_REJECT verify_result=" << rv
++              << " verify_status=" << status << std::endl;
++    return GNUTLS_E_CERTIFICATE_ERROR;
++  }
++
++  unsigned int peer_count = 0;
++  const auto *peers = gnutls_certificate_get_peers(session, &peer_count);
++  if (peers == nullptr || peer_count == 0) {
++    std::cerr << "FLEETQOX_PUBLIC_MTLS_REJECT reason=missing_peer_certificate"
++              << std::endl;
++    return GNUTLS_E_CERTIFICATE_ERROR;
++  }
++
++  gnutls_x509_crt_t certificate;
++  rv = gnutls_x509_crt_init(&certificate);
++  if (rv < 0) {
++    return GNUTLS_E_CERTIFICATE_ERROR;
++  }
++  rv = gnutls_x509_crt_import(certificate, &peers[0], GNUTLS_X509_FMT_DER);
++  if (rv < 0) {
++    gnutls_x509_crt_deinit(certificate);
++    return GNUTLS_E_CERTIFICATE_ERROR;
++  }
++
++  if (gnutls_x509_crt_check_key_purpose(
++        certificate, GNUTLS_KP_TLS_WWW_CLIENT, 0) == 0) {
++    std::cerr << "FLEETQOX_PUBLIC_MTLS_REJECT reason=missing_client_auth_eku"
++              << std::endl;
++    gnutls_x509_crt_deinit(certificate);
++    return GNUTLS_E_CERTIFICATE_ERROR;
++  }
++
++  const char *required_uri =
++      std::getenv("FLEETQOX_GNUTLS_REQUIRED_CLIENT_URI_SAN");
++  bool uri_matched = required_uri == nullptr || required_uri[0] == '\0';
++  std::string observed_uri;
++  for (unsigned int index = 0; !uri_matched; ++index) {
++    std::array<char, 2048> value{};
++    size_t value_size = value.size();
++    unsigned int critical = 0;
++    const int san_type = gnutls_x509_crt_get_subject_alt_name(
++        certificate, index, value.data(), &value_size, &critical);
++    if (san_type == GNUTLS_E_REQUESTED_DATA_NOT_AVAILABLE) {
++      break;
++    }
++    if (san_type < 0) {
++      continue;
++    }
++    if (san_type == GNUTLS_SAN_URI) {
++      observed_uri.assign(value.data(), value_size);
++      uri_matched = observed_uri == required_uri;
++    }
++  }
++  if (!uri_matched) {
++    std::cerr << "FLEETQOX_PUBLIC_MTLS_REJECT reason=uri_san_mismatch"
++              << " required_uri=" << required_uri
++              << " observed_uri=" << observed_uri << std::endl;
++    gnutls_x509_crt_deinit(certificate);
++    return GNUTLS_E_CERTIFICATE_ERROR;
++  }
++
++  std::array<char, 1024> subject{};
++  size_t subject_size = subject.size();
++  if (gnutls_x509_crt_get_dn(
++        certificate, subject.data(), &subject_size) < 0) {
++    subject[0] = '\0';
++  }
++  std::cerr << "FLEETQOX_PUBLIC_MTLS_VERIFIED subject=" << subject.data();
++  if (required_uri != nullptr && required_uri[0] != '\0') {
++    std::cerr << " uri_san=" << required_uri;
++  }
++  std::cerr << std::endl;
++  gnutls_x509_crt_deinit(certificate);
++  return 0;
++}
+ } // namespace
+ 
+ TLSServerContext::TLSServerContext() : cred_{nullptr}, session_ticket_key_{} {
+@@ -81,6 +165,35 @@ int TLSServerContext::init(const char *private_key_file, const char *cert_file,
+     return -1;
+   }
+ 
++  if (config.verify_client) {
++    const char *client_ca = std::getenv("FLEETQOX_GNUTLS_CLIENT_CA");
++    if (client_ca == nullptr || client_ca[0] == '\0') {
++      std::cerr << "FLEETQOX_GNUTLS_CLIENT_CA is required with --verify-client"
++                << std::endl;
++      return -1;
++    }
++    auto rv = gnutls_certificate_set_x509_trust_file(
++        cred_, client_ca, GNUTLS_X509_FMT_PEM);
++    if (rv <= 0) {
++      std::cerr << "gnutls_certificate_set_x509_trust_file failed: "
++                << gnutls_strerror(rv) << std::endl;
++      return -1;
++    }
++
++    const char *client_crl = std::getenv("FLEETQOX_GNUTLS_CLIENT_CRL");
++    if (client_crl != nullptr && client_crl[0] != '\0') {
++      rv = gnutls_certificate_set_x509_crl_file(
++          cred_, client_crl, GNUTLS_X509_FMT_PEM);
++      if (rv <= 0) {
++        std::cerr << "gnutls_certificate_set_x509_crl_file failed: "
++                  << gnutls_strerror(rv) << std::endl;
++        return -1;
++      }
++    }
++
++    gnutls_certificate_set_verify_function(cred_, verify_client_certificate);
++  }
++
+   if (auto rv = gnutls_session_ticket_key_generate(&session_ticket_key_);
+       rv != 0) {
+     std::cerr << "gnutls_session_ticket_key_generate failed: "
+diff --git a/examples/tls_server_session_gnutls.cc b/examples/tls_server_session_gnutls.cc
+index df3d78a..a8b62db 100644
+--- a/examples/tls_server_session_gnutls.cc
++++ b/examples/tls_server_session_gnutls.cc
+@@ -74,8 +74,7 @@ int TLSServerSession::init(const TLSServerContext &tls_ctx,
+ int TLSServerSession::init(const TLSServerContext &tls_ctx,
+                            HandlerBase *handler) {
+   if (auto rv =
+-          gnutls_init(&session_, GNUTLS_SERVER | GNUTLS_ENABLE_EARLY_DATA |
+-                                     GNUTLS_NO_AUTO_SEND_TICKET |
++          gnutls_init(&session_, GNUTLS_SERVER | GNUTLS_NO_AUTO_SEND_TICKET |
+                                      GNUTLS_NO_END_OF_EARLY_DATA);
+       rv != 0) {
+     std::cerr << "gnutls_init failed: " << gnutls_strerror(rv) << std::endl;
+@@ -113,7 +112,7 @@ int TLSServerSession::init(const TLSServerContext &tls_ctx,
+ 
+   gnutls_anti_replay_enable(session_, tls_ctx.get_anti_replay());
+ 
+-  gnutls_record_set_max_early_data_size(session_, 0xffffffffu);
++  gnutls_record_set_max_early_data_size(session_, 0);
+ 
+   gnutls_session_set_ptr(session_, handler->conn_ref());
+ 

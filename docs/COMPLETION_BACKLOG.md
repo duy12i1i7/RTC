@@ -7,7 +7,7 @@ project. It is ordered by dependency and regression value.
 ## Current Baseline
 
 - The full repository suite passes in the pinned ROS 2 Jazzy Docker image:
-  `605/605` unit/contract tests. The unified report currently indexes `320`
+  `609/609` unit/contract tests. The unified report currently indexes `321`
   retained artifacts; its overall `partial` status deliberately includes old
   debug, negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
@@ -513,9 +513,15 @@ and its CI assertion.
   no public server client-auth switch. The adapter is now isolated, exact-pins
   runtime 0.9.25 / Debian package 0.9.25-3build2, fingerprints its private
   signatures, proves client private-key possession before authentication, and
-  fails startup on drift. Replacing that adapter with a stable upstream API plus
-  broader fleet identity policy plus online revocation and rotation is
-  still production work. The
+  fails startup on drift. A pinned build of the official ngtcp2 `v0.12.1`
+  server now closes the separate public-API mTLS transport edge: its `5/5`
+  Docker/netem artifact gets six H3 responses over one valid session and
+  rejects missing, unrelated-CA, wrong-URI, and revoked clients with TLS
+  `CRYPTO_ERROR`. It uses public GnuTLS APIs for CA, CRL, client-auth EKU, and
+  exact URI-SAN verification and disables server early data. Moving the
+  stateful FleetQoX backend and native path metrics behind that server, plus
+  broader fleet identity policy and online rotation, is still production
+  work. The
   gateway's first scoped fleet-admission slice is now complete as a separate
   `5/5` two-container netem artifact. A startup-validated JSON policy assigns
   control/bulk/state traffic classes, publisher allowlists, per-stream frame
@@ -571,8 +577,8 @@ and its CI assertion.
   and netem runs on both client and gateway. Repeating service requests and
   responses twice repaired a reproduced RMF batch response loss; all five
   canonical rounds then completed with zero nonzero container exits. The
-  remaining gaps are a stable public server mTLS/path-metrics API, globally
-  optimal joint
+  remaining gaps are stateful-backend integration and stable public path
+  metrics on the new public-API ngtcp2 server, globally optimal joint
   multi-demand scheduling, and clustered replicated capacity state. A separate `5/5`
   active/passive gate now persists retained frames,
   dedup keys, and consumer cursors with SQLite WAL `synchronous=FULL` and

@@ -253,6 +253,17 @@ This repository starts with the part that should be proven first:
   upstream aioquic still lacks a public server client-auth API, so this remains
   a guarded compatibility boundary; broader fleet identity policy, online
   revocation/rotation, clustered state, and production hardening remain open;
+- a public-API ngtcp2/GnuTLS mutual-TLS server boundary. The image rebuilds
+  the official ngtcp2 `v0.12.1` server at pinned commit
+  `a4ba3f20d70d4a4d79674cee1093c55b4c1d78ed` and uses public GnuTLS APIs for
+  client-CA chain validation, CRL revocation, client-auth EKU, exact URI SAN,
+  and disabled early data. Its Docker/netem artifact passes `5/5`: every valid
+  client receives six HTTP/3 responses over one session, while missing,
+  unrelated-CA, wrong-URI, and revoked clients receive a TLS `CRYPTO_ERROR`
+  before any HTTP response. This removes the private-hook dependency at the
+  standalone transport-server edge; connecting the stateful FleetQoX
+  admission/repair backend and native path metrics to this server remains the
+  production QUIC boundary;
 - a scoped fleet-admission gate inside the stateful QUIC service. A validated
   JSON policy assigns domain/topic streams to traffic classes, allowlists
   publishers, caps each stream, and caps total accepted frames across the

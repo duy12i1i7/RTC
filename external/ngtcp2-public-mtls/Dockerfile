@@ -1,0 +1,48 @@
+ARG BASE_IMAGE=localhost/fleetrmw/rmw-netem:jazzy
+FROM ${BASE_IMAGE}
+
+ARG NGTCP2_COMMIT=a4ba3f20d70d4a4d79674cee1093c55b4c1d78ed
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git \
+        libev-dev \
+        libhttp-parser-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone https://github.com/ngtcp2/ngtcp2.git /opt/ngtcp2-source \
+    && git -C /opt/ngtcp2-source checkout "${NGTCP2_COMMIT}"
+
+COPY external/ngtcp2-public-mtls/public-mtls.patch /tmp/public-mtls.patch
+
+RUN git -C /opt/ngtcp2-source apply /tmp/public-mtls.patch \
+    && c++ -std=c++20 -O2 -Wall -Wextra \
+        -DENABLE_EXAMPLE_GNUTLS \
+        -DWITH_EXAMPLE_GNUTLS \
+        -DHAVE_ARPA_INET_H \
+        -DHAVE_ASM_TYPES_H \
+        -DHAVE_LINUX_NETLINK_H \
+        -DHAVE_LINUX_RTNETLINK_H \
+        -DHAVE_NETINET_IN_H \
+        -DHAVE_SYS_SOCKET_H \
+        -I/opt/ngtcp2-source/examples \
+        -I/opt/ngtcp2-source/third-party \
+        /opt/ngtcp2-source/examples/server.cc \
+        /opt/ngtcp2-source/examples/server_base.cc \
+        /opt/ngtcp2-source/examples/debug.cc \
+        /opt/ngtcp2-source/examples/util.cc \
+        /opt/ngtcp2-source/examples/http.cc \
+        /opt/ngtcp2-source/examples/shared.cc \
+        /opt/ngtcp2-source/examples/tls_server_context_gnutls.cc \
+        /opt/ngtcp2-source/examples/tls_server_session_gnutls.cc \
+        /opt/ngtcp2-source/examples/tls_session_base_gnutls.cc \
+        /opt/ngtcp2-source/examples/util_gnutls.cc \
+        -o /usr/local/bin/fleetqox-public-mtls-server \
+        $(pkg-config --cflags --libs \
+          libngtcp2_crypto_gnutls libngtcp2 libnghttp3 gnutls) \
+        -lev -lhttp_parser
+
+RUN test "$(/usr/local/bin/fleetqox-public-mtls-server --help 2>&1 \
+      | grep -c 'FLEETQOX_GNUTLS_CLIENT_CA')" -eq 1
+
+WORKDIR /work
