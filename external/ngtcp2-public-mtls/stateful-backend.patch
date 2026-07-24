@@ -1,0 +1,359 @@
+diff --git a/examples/server.h b/examples/server.h
+index f476836..7d69886 100644
+--- a/examples/server.h
++++ b/examples/server.h
+@@ -56,7 +56,10 @@ struct Stream {
+   int send_status_response(nghttp3_conn *conn, unsigned int status_code,
+                            const std::vector<HTTPHeader> &extra_headers = {});
+   int send_redirect_response(nghttp3_conn *conn, unsigned int status_code,
+                              const std::string_view &path);
++  int send_backend_response(nghttp3_conn *conn, unsigned int status_code,
++                            const std::string_view &content_type,
++                            std::string body);
+   int64_t find_dyn_length(const std::string_view &path);
+   void http_acked_stream_data(uint64_t datalen);
+ 
+@@ -69,6 +72,8 @@ struct Stream {
+   std::string method;
+   std::string authority;
+   std::string status_resp_body;
++  std::vector<uint8_t> request_body;
++  bool request_body_too_large;
+   // data is a pointer to the memory which maps file denoted by fd.
+   uint8_t *data;
+   // datalen is the length of mapped file by data.
+@@ -163,6 +168,7 @@ public:
+   int http_reset_stream(int64_t stream_id, uint64_t app_error_code);
+ 
+   void write_qlog(const void *data, size_t datalen);
++  const std::string &client_identity() const;
+ 
+   void on_send_blocked(Endpoint &ep, const ngtcp2_addr &local_addr,
+                        const ngtcp2_addr &remote_addr, unsigned int ecn,
+@@ -192,6 +198,7 @@ private:
+   ngtcp2_cid scid_;
+   nghttp3_conn *httpconn_;
+   std::unordered_map<int64_t, std::unique_ptr<Stream>> streams_;
++  std::string client_identity_;
+   // conn_closebuf_ contains a packet which contains CONNECTION_CLOSE.
+   // This packet is repeatedly sent as a response to the incoming
+   // packet in draining period.
+diff --git a/examples/server.cc b/examples/server.cc
+index d9a054c..49c60ef 100644
+--- a/examples/server.cc
++++ b/examples/server.cc
+@@ -25,6 +25,7 @@
+ #include <chrono>
+ #include <cstdlib>
+ #include <cassert>
++#include <cstdint>
+ #include <cstring>
+ #include <iostream>
+ #include <algorithm>
+@@ -32,5 +33,6 @@
+ #include <fstream>
+ #include <iomanip>
++#include <optional>
+ 
+ #include <unistd.h>
+ #include <getopt.h>
+@@ -42,5 +44,6 @@
+ #include <fcntl.h>
+ #include <sys/mman.h>
++#include <sys/un.h>
+ #include <netinet/udp.h>
+ #include <net/if.h>
+ 
+@@ -80,5 +83,6 @@ Stream::Stream(int64_t stream_id, Handler *handler)
+     : stream_id(stream_id),
+       handler(handler),
++      request_body_too_large(false),
+       data(nullptr),
+       datalen(0),
+       dynresp(false),
+@@ -91,5 +95,176 @@ namespace {
+ constexpr auto NGTCP2_SERVER = "nghttp3/ngtcp2 server"sv;
+ } // namespace
+ 
++namespace {
++constexpr std::array<uint8_t, 8> FLEETQOX_BACKEND_REQUEST_MAGIC{
++    'F', 'Q', 'B', 'E', '1', 'R', 'E', 'Q'};
++constexpr std::array<uint8_t, 8> FLEETQOX_BACKEND_RESPONSE_MAGIC{
++    'F', 'Q', 'B', 'E', '1', 'R', 'E', 'S'};
++constexpr size_t FLEETQOX_BACKEND_REQUEST_HEADER_SIZE = 24;
++constexpr size_t FLEETQOX_BACKEND_RESPONSE_HEADER_SIZE = 20;
++constexpr size_t FLEETQOX_BACKEND_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
++
++struct FleetQoxBackendResponse {
++  unsigned int status;
++  std::string content_type;
++  std::string body;
++};
++
++void store_u32(uint8_t *dest, uint32_t value) {
++  dest[0] = static_cast<uint8_t>(value >> 24);
++  dest[1] = static_cast<uint8_t>(value >> 16);
++  dest[2] = static_cast<uint8_t>(value >> 8);
++  dest[3] = static_cast<uint8_t>(value);
++}
++
++uint32_t load_u32(const uint8_t *source) {
++  return static_cast<uint32_t>(source[0]) << 24 |
++         static_cast<uint32_t>(source[1]) << 16 |
++         static_cast<uint32_t>(source[2]) << 8 |
++         static_cast<uint32_t>(source[3]);
++}
++
++bool write_all(int fd, const uint8_t *data, size_t datalen) {
++  while (datalen != 0) {
++    auto written = write(fd, data, datalen);
++    if (written < 0 && errno == EINTR) {
++      continue;
++    }
++    if (written <= 0) {
++      return false;
++    }
++    data += static_cast<size_t>(written);
++    datalen -= static_cast<size_t>(written);
++  }
++  return true;
++}
++
++bool read_all(int fd, uint8_t *data, size_t datalen) {
++  while (datalen != 0) {
++    auto received = read(fd, data, datalen);
++    if (received < 0 && errno == EINTR) {
++      continue;
++    }
++    if (received <= 0) {
++      return false;
++    }
++    data += static_cast<size_t>(received);
++    datalen -= static_cast<size_t>(received);
++  }
++  return true;
++}
++
++size_t fleetqox_backend_max_body_bytes() {
++  constexpr size_t DEFAULT_MAX = 1024 * 1024;
++  auto value = std::getenv("FLEETQOX_STATE_BACKEND_MAX_BODY_BYTES");
++  if (value == nullptr || value[0] == '\0') {
++    return DEFAULT_MAX;
++  }
++  char *end = nullptr;
++  errno = 0;
++  auto parsed = std::strtoull(value, &end, 10);
++  if (errno != 0 || end == value || *end != '\0' || parsed == 0 ||
++      parsed > DEFAULT_MAX) {
++    return DEFAULT_MAX;
++  }
++  return static_cast<size_t>(parsed);
++}
++
++std::string fleetqox_configured_client_identity() {
++  auto required_uri =
++      std::getenv("FLEETQOX_GNUTLS_REQUIRED_CLIENT_URI_SAN");
++  if (required_uri == nullptr || required_uri[0] == '\0') {
++    return {};
++  }
++  std::string uri{required_uri};
++  auto prefix = std::getenv("FLEETQOX_GNUTLS_CLIENT_URI_PREFIX");
++  if (prefix != nullptr && prefix[0] != '\0') {
++    std::string_view prefix_view{prefix};
++    if (uri.starts_with(prefix_view) && uri.size() > prefix_view.size()) {
++      return uri.substr(prefix_view.size());
++    }
++    return {};
++  }
++  auto separator = uri.find_last_of('/');
++  if (separator == std::string::npos || separator + 1 == uri.size()) {
++    return {};
++  }
++  return uri.substr(separator + 1);
++}
++
++std::optional<FleetQoxBackendResponse> fleetqox_backend_request(
++    const std::string_view &socket_path, const std::string_view &method,
++    const std::string_view &path, const std::string_view &client_identity,
++    const std::vector<uint8_t> &body) {
++  if (socket_path.empty() || socket_path.size() >= sizeof(sockaddr_un::sun_path) ||
++      method.empty() || method.size() > 16 || path.empty() ||
++      path.size() > 16384 || client_identity.size() > 4096 ||
++      body.size() > fleetqox_backend_max_body_bytes()) {
++    return std::nullopt;
++  }
++  auto fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++  if (fd == -1) {
++    return std::nullopt;
++  }
++  timeval timeout{3, 0};
++  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
++  sockaddr_un address{};
++  address.sun_family = AF_UNIX;
++  std::memcpy(address.sun_path, socket_path.data(), socket_path.size());
++  address.sun_path[socket_path.size()] = '\0';
++  if (connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0) {
++    close(fd);
++    return std::nullopt;
++  }
++  std::array<uint8_t, FLEETQOX_BACKEND_REQUEST_HEADER_SIZE> request_header{};
++  std::copy(FLEETQOX_BACKEND_REQUEST_MAGIC.begin(),
++            FLEETQOX_BACKEND_REQUEST_MAGIC.end(), request_header.begin());
++  store_u32(request_header.data() + 8, static_cast<uint32_t>(method.size()));
++  store_u32(request_header.data() + 12, static_cast<uint32_t>(path.size()));
++  store_u32(request_header.data() + 16,
++            static_cast<uint32_t>(client_identity.size()));
++  store_u32(request_header.data() + 20, static_cast<uint32_t>(body.size()));
++  auto ok = write_all(fd, request_header.data(), request_header.size()) &&
++            write_all(fd, reinterpret_cast<const uint8_t *>(method.data()),
++                      method.size()) &&
++            write_all(fd, reinterpret_cast<const uint8_t *>(path.data()),
++                      path.size()) &&
++            write_all(fd,
++                      reinterpret_cast<const uint8_t *>(client_identity.data()),
++                      client_identity.size()) &&
++            write_all(fd, body.data(), body.size());
++  std::array<uint8_t, FLEETQOX_BACKEND_RESPONSE_HEADER_SIZE> response_header{};
++  ok = ok && read_all(fd, response_header.data(), response_header.size());
++  if (!ok ||
++      !std::equal(FLEETQOX_BACKEND_RESPONSE_MAGIC.begin(),
++                  FLEETQOX_BACKEND_RESPONSE_MAGIC.end(),
++                  response_header.begin())) {
++    close(fd);
++    return std::nullopt;
++  }
++  auto status = load_u32(response_header.data() + 8);
++  auto content_type_length = load_u32(response_header.data() + 12);
++  auto body_length = load_u32(response_header.data() + 16);
++  if (status < 100 || status > 599 || content_type_length > 4096 ||
++      body_length > FLEETQOX_BACKEND_MAX_RESPONSE_BYTES) {
++    close(fd);
++    return std::nullopt;
++  }
++  FleetQoxBackendResponse response{
++      status, std::string(content_type_length, '\0'),
++      std::string(body_length, '\0')};
++  ok = read_all(fd, reinterpret_cast<uint8_t *>(response.content_type.data()),
++                response.content_type.size()) &&
++       read_all(fd, reinterpret_cast<uint8_t *>(response.body.data()),
++                response.body.size());
++  close(fd);
++  if (!ok) {
++    return std::nullopt;
++  }
++  return response;
++}
++} // namespace
++
+ namespace {
+ std::string make_status_body(unsigned int status_code) {
+@@ -325,6 +493,38 @@ int Stream::send_status_response(nghttp3_conn *httpconn,
+   return 0;
+ }
+ 
++int Stream::send_backend_response(nghttp3_conn *httpconn,
++                                  unsigned int status_code,
++                                  const std::string_view &content_type,
++                                  std::string body) {
++  status_resp_body = std::move(body);
++  auto status_code_str = util::format_uint(status_code);
++  auto content_length_str = util::format_uint(status_resp_body.size());
++  auto response_content_type =
++      content_type.empty() ? "application/octet-stream"sv : content_type;
++  std::array<nghttp3_nv, 4> nva{
++      util::make_nv_nc(":status"sv, status_code_str),
++      util::make_nv_nn("server"sv, "fleetrmw-public-ngtcp2/1"sv),
++      util::make_nv_nc("content-type"sv, response_content_type),
++      util::make_nv_nc("content-length"sv, content_length_str),
++  };
++  data = reinterpret_cast<uint8_t *>(status_resp_body.data());
++  datalen = status_resp_body.size();
++  nghttp3_data_reader dr{};
++  dr.read_data = read_data;
++  if (!config.quiet) {
++    debug::print_http_response_headers(stream_id, nva.data(), nva.size());
++  }
++  if (auto rv = nghttp3_conn_submit_response(
++          httpconn, stream_id, nva.data(), nva.size(), &dr);
++      rv != 0) {
++    std::cerr << "nghttp3_conn_submit_response: " << nghttp3_strerror(rv)
++              << std::endl;
++    return -1;
++  }
++  return 0;
++}
++
+ int Stream::send_redirect_response(nghttp3_conn *httpconn,
+                                    unsigned int status_code,
+                                    const std::string_view &path) {
+@@ -334,5 +543,23 @@ int Stream::start_response(nghttp3_conn *httpconn) {
+     return send_status_response(httpconn, 400);
+   }
+ 
++  if (request_body_too_large) {
++    return send_status_response(httpconn, 413);
++  }
++  auto backend_socket = std::getenv("FLEETQOX_STATE_BACKEND_SOCKET");
++  if (backend_socket != nullptr && backend_socket[0] != '\0') {
++    auto response = fleetqox_backend_request(
++        backend_socket, method, uri, handler->client_identity(), request_body);
++    if (!response) {
++      std::cerr << "FLEETQOX_STATE_BACKEND_UNAVAILABLE" << std::endl;
++      return send_status_response(httpconn, 502);
++    }
++    std::cerr << "FLEETQOX_STATE_BACKEND_RESPONSE status=" << response->status
++              << " body_bytes=" << response->body.size() << std::endl;
++    return send_backend_response(httpconn, response->status,
++                                 response->content_type,
++                                 std::move(response->body));
++  }
++
+   auto req = request_path(uri, method == "CONNECT");
+   if (req.path.empty()) {
+@@ -603,5 +827,9 @@ Handler::~Handler() {
+   }
+ }
+ 
++const std::string &Handler::client_identity() const {
++  return client_identity_;
++}
++
+ namespace {
+ int handshake_completed(ngtcp2_conn *conn, void *user_data) {
+@@ -625,5 +853,17 @@ int Handler::handshake_completed() {
+               << std::endl;
+   }
+ 
++  if (config.verify_client) {
++    client_identity_ = fleetqox_configured_client_identity();
++    if (client_identity_.empty()) {
++      std::cerr << "FLEETQOX_PUBLIC_MTLS_REJECT "
++                   "reason=backend_client_identity_unavailable"
++                << std::endl;
++      return -1;
++    }
++    std::cerr << "FLEETQOX_PUBLIC_MTLS_IDENTITY identity="
++              << client_identity_ << std::endl;
++  }
++
+   if (tls_session_.send_session_ticket() != 0) {
+     std::cerr << "Unable to send session ticket" << std::endl;
+@@ -905,5 +1142,17 @@ int http_recv_data(nghttp3_conn *conn, int64_t stream_id, const uint8_t *data,
+   }
+   auto h = static_cast<Handler *>(user_data);
++  auto stream = static_cast<Stream *>(stream_user_data);
++  auto max_body_bytes = fleetqox_backend_max_body_bytes();
++  if (stream != nullptr && !stream->request_body_too_large) {
++    if (datalen > max_body_bytes ||
++        stream->request_body.size() > max_body_bytes - datalen) {
++      stream->request_body_too_large = true;
++      stream->request_body.clear();
++    } else {
++      stream->request_body.insert(stream->request_body.end(), data,
++                                  data + datalen);
++    }
++  }
+   h->http_consume(stream_id, datalen);
+   return 0;
+ }

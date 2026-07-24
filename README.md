@@ -260,9 +260,16 @@ This repository starts with the part that should be proven first:
   and disabled early data. Its Docker/netem artifact passes `5/5`: every valid
   client receives six HTTP/3 responses over one session, while missing,
   unrelated-CA, wrong-URI, and revoked clients receive a TLS `CRYPTO_ERROR`
-  before any HTTP response. This removes the private-hook dependency at the
-  standalone transport-server edge; connecting the stateful FleetQoX
-  admission/repair backend and native path metrics to this server remains the
+  before any HTTP response. A second `5/5` gate now connects this edge through
+  a bounded Unix-socket protocol to the same `FleetQoxGatewayState` engine.
+  Every round carries 12 stateful responses across four verified mTLS
+  connections: three unique frames plus one duplicate, six ordered takes for
+  two independent consumers, invalid-frame HTTP 400, and an authenticated
+  publisher-impersonation HTTP 403 with no state mutation. The alpha and beta
+  clients respectively reuse one connection across seven and three H3
+  streams. This removes aioquic and its private hook from the tested stateful
+  server runtime. Public native path metrics, asynchronous backend I/O,
+  multi-publisher SAN selection/rotation, and production hardening remain the
   production QUIC boundary;
 - a scoped fleet-admission gate inside the stateful QUIC service. A validated
   JSON policy assigns domain/topic streams to traffic classes, allowlists

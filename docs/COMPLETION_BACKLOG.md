@@ -7,7 +7,7 @@ project. It is ordered by dependency and regression value.
 ## Current Baseline
 
 - The full repository suite passes in the pinned ROS 2 Jazzy Docker image:
-  `609/609` unit/contract tests. The unified report currently indexes `321`
+  `616/616` unit/contract tests. The unified report currently indexes `322`
   retained artifacts; its overall `partial` status deliberately includes old
   debug, negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
@@ -518,10 +518,15 @@ and its CI assertion.
   Docker/netem artifact gets six H3 responses over one valid session and
   rejects missing, unrelated-CA, wrong-URI, and revoked clients with TLS
   `CRYPTO_ERROR`. It uses public GnuTLS APIs for CA, CRL, client-auth EKU, and
-  exact URI-SAN verification and disables server early data. Moving the
-  stateful FleetQoX backend and native path metrics behind that server, plus
-  broader fleet identity policy and online rotation, is still production
-  work. The
+  exact URI-SAN verification and disables server early data. A follow-on
+  `5/5` gate now places the shared `FleetQoxGatewayState` engine behind that
+  edge through a bounded local protocol. Each round proves three accepted
+  frames, one duplicate, six ordered two-consumer takes, invalid-frame 400,
+  authenticated publisher-impersonation 403 without state mutation, and
+  seven-/three-stream session reuse. The stateful server process uses neither
+  aioquic nor its private TLS hook. Public native path metrics, asynchronous
+  backend I/O, broader fleet identity policy, and online rotation remain
+  production work. The
   gateway's first scoped fleet-admission slice is now complete as a separate
   `5/5` two-container netem artifact. A startup-validated JSON policy assigns
   control/bulk/state traffic classes, publisher allowlists, per-stream frame
@@ -577,8 +582,8 @@ and its CI assertion.
   and netem runs on both client and gateway. Repeating service requests and
   responses twice repaired a reproduced RMF batch response loss; all five
   canonical rounds then completed with zero nonzero container exits. The
-  remaining gaps are stateful-backend integration and stable public path
-  metrics on the new public-API ngtcp2 server, globally optimal joint
+  remaining gaps are stable public path metrics and nonblocking backend I/O on
+  the new stateful public-API ngtcp2 server, globally optimal joint
   multi-demand scheduling, and clustered replicated capacity state. A separate `5/5`
   active/passive gate now persists retained frames,
   dedup keys, and consumer cursors with SQLite WAL `synchronous=FULL` and

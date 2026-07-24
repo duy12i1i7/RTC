@@ -14,8 +14,10 @@ RUN git clone https://github.com/ngtcp2/ngtcp2.git /opt/ngtcp2-source \
     && git -C /opt/ngtcp2-source checkout "${NGTCP2_COMMIT}"
 
 COPY external/ngtcp2-public-mtls/public-mtls.patch /tmp/public-mtls.patch
+COPY external/ngtcp2-public-mtls/stateful-backend.patch /tmp/stateful-backend.patch
 
 RUN git -C /opt/ngtcp2-source apply /tmp/public-mtls.patch \
+    && git -C /opt/ngtcp2-source apply /tmp/stateful-backend.patch \
     && c++ -std=c++20 -O2 -Wall -Wextra \
         -DENABLE_EXAMPLE_GNUTLS \
         -DWITH_EXAMPLE_GNUTLS \

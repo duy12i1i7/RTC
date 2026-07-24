@@ -15,10 +15,14 @@ client-certificate behavior with:
 - client-auth EKU and optional exact URI-SAN enforcement.
 - disabled TLS/QUIC early data at the server edge.
 
-All TLS and QUIC operations use public GnuTLS/ngtcp2/nghttp3 APIs. This
-closes the public-API mutual-TLS transport-server boundary. It does not by
-itself replace the FleetQoX state/admission backend; that integration remains
-a separate production-readiness boundary.
+All TLS and QUIC operations use public GnuTLS/ngtcp2/nghttp3 APIs. The optional
+`FLEETQOX_STATE_BACKEND_SOCKET` path buffers a bounded request body and passes
+method, URI, the verified certificate identity, and body to
+`fleetqox.public_quic_gateway_backend`. That service uses the same
+`FleetQoxGatewayState` engine as the aioquic compatibility gateway. The local
+protocol uses fixed magic/version bytes, network-order lengths, 1 MiB request
+and 4 MiB response limits, three-second socket timeouts, and fail-closed HTTP
+502 behavior.
 
 Build from the repository root:
 
@@ -38,3 +42,15 @@ python3 scripts/run_rmw_docker_ngtcp2_public_mtls_server_probe.py \
 
 The summary is written to
 `results_rmw_socket/docker_ngtcp2_public_mtls_server_summary.json`.
+
+Run the stateful public-server proof:
+
+```bash
+python3 scripts/run_rmw_docker_ngtcp2_public_stateful_gateway_probe.py \
+  --iterations 5
+```
+
+This second artifact proves history, deduplication, independent consumer
+cursors, publisher identity binding, invalid-frame status propagation, and
+multi-stream session reuse under Docker/netem. Native public path metrics and
+nonblocking backend I/O remain outside its claim.
