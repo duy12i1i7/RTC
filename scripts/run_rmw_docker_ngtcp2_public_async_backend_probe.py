@@ -202,6 +202,117 @@ def finish_client(
     )
 
 
+def start_warm_client_container(
+    *,
+    root: Path,
+    image: str,
+    network: str,
+    name: str,
+    certs: Path,
+) -> subprocess.CompletedProcess[str]:
+    cert_root = f"/work/{certs.relative_to(root)}"
+    command = (
+        f"cp {cert_root}/server-ca.crt "
+        "/usr/local/share/ca-certificates/fleetqox-public-ca.crt && "
+        "update-ca-certificates >/dev/null 2>&1 && "
+        "tc qdisc replace dev eth0 root netem delay 9ms 2ms && "
+        "touch /tmp/fleetqox-client-ready && exec sleep infinity"
+    )
+    return run(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--network",
+            network,
+            "--cap-add",
+            "NET_ADMIN",
+            "--entrypoint",
+            "bash",
+            "-v",
+            f"{root}:/work",
+            "-w",
+            "/work",
+            image,
+            "-lc",
+            command,
+        ],
+        timeout=30.0,
+    )
+
+
+def wait_warm_client_ready(container: str, timeout_s: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        ready = run(
+            [
+                "docker",
+                "exec",
+                container,
+                "test",
+                "-f",
+                "/tmp/fleetqox-client-ready",
+            ],
+            timeout=10.0,
+        )
+        if ready.returncode == 0:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def warm_client_exec_args(
+    *,
+    root: Path,
+    container: str,
+    certs: Path,
+    consumer_id: str,
+    qlog: Path,
+) -> list[str]:
+    cert_root = f"/work/{certs.relative_to(root)}"
+    qlog_path = f"/work/{qlog.relative_to(root)}"
+    uri = (
+        "https://fleetqox-mtls-gateway:4433/fleetrmw/v1/frames?"
+        "domain_id=42&topic=%2Ffleetqox%2Fasync&consumer_id="
+        f"{consumer_id}"
+    )
+    command = (
+        "gtlsclient fleetqox-mtls-gateway 4433 "
+        f"{shlex.quote(uri)} "
+        f"--key={cert_root}/stateful-client.key "
+        f"--cert={cert_root}/stateful-client.crt "
+        "--disable-early-data --exit-on-all-streams-close "
+        "--no-quic-dump --no-http-dump "
+        f"--qlog-file={qlog_path}"
+    )
+    return ["docker", "exec", container, "bash", "-lc", command]
+
+
+def start_warm_client(
+    *,
+    root: Path,
+    container: str,
+    certs: Path,
+    consumer_id: str,
+    qlog: Path,
+) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        warm_client_exec_args(
+            root=root,
+            container=container,
+            certs=certs,
+            consumer_id=consumer_id,
+            qlog=qlog,
+        ),
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
 def response_has_status(
     result: subprocess.CompletedProcess[str],
     status: int,
@@ -481,6 +592,7 @@ def run_queue_phase(
     suffix: str,
 ) -> dict[str, Any]:
     server_name = f"fq-public-async-queue-{suffix}"
+    client_name = f"fq-public-async-queue-client-{suffix}"
     start, backend_path, proxy_path = start_server(
         root=root,
         image=image,
@@ -499,6 +611,8 @@ def run_queue_phase(
         )
         and wait_for_log(server_name, PROXY_SCHEMA_VERSION)
     )
+    client_start = subprocess.CompletedProcess([], 1, "", "not_started")
+    client_ready = False
     first: subprocess.Popen[str] | None = None
     second: subprocess.Popen[str] | None = None
     first_result = subprocess.CompletedProcess([], 1, "", "not_started")
@@ -508,36 +622,38 @@ def run_queue_phase(
     logs = ""
     try:
         if ready:
-            qlogs = run_root / "client-qlogs"
-            qlogs.mkdir(parents=True, exist_ok=True)
-            first = start_client(
+            client_start = start_warm_client_container(
                 root=root,
                 image=image,
                 network=network,
-                name=f"fq-public-queue-first-{suffix}",
-                command=client_command(
-                    root=root,
-                    certs=certs,
-                    consumer_id="queue-first",
-                    qlog=qlogs / "first.qlog",
-                ),
+                name=client_name,
+                certs=certs,
+            )
+            client_ready = (
+                client_start.returncode == 0
+                and wait_warm_client_ready(client_name)
+            )
+        if ready and client_ready:
+            qlogs = run_root / "client-qlogs"
+            qlogs.mkdir(parents=True, exist_ok=True)
+            first = start_warm_client(
+                root=root,
+                container=client_name,
+                certs=certs,
+                consumer_id="queue-first",
+                qlog=qlogs / "first.qlog",
             )
             first_active = wait_for_log(
                 server_name,
                 "FLEETQOX_BACKEND_DELAY_PROXY_DELAYING consumer_id=queue-first",
                 timeout_s=8.0,
             )
-            second = start_client(
+            second = start_warm_client(
                 root=root,
-                image=image,
-                network=network,
-                name=f"fq-public-queue-second-{suffix}",
-                command=client_command(
-                    root=root,
-                    certs=certs,
-                    consumer_id="queue-second",
-                    qlog=qlogs / "second.qlog",
-                ),
+                container=client_name,
+                certs=certs,
+                consumer_id="queue-second",
+                qlog=qlogs / "second.qlog",
             )
             second_queued = first_active and wait_for_log(
                 server_name,
@@ -546,17 +662,12 @@ def run_queue_phase(
                 timeout_s=8.0,
             )
             rejected = run(
-                client_docker_args(
+                warm_client_exec_args(
                     root=root,
-                    image=image,
-                    network=network,
-                    name=f"fq-public-queue-rejected-{suffix}",
-                    command=client_command(
-                        root=root,
-                        certs=certs,
-                        consumer_id="queue-rejected",
-                        qlog=qlogs / "rejected.qlog",
-                    ),
+                    container=client_name,
+                    certs=certs,
+                    consumer_id="queue-rejected",
+                    qlog=qlogs / "rejected.qlog",
                 ),
                 timeout=15.0,
             )
@@ -567,12 +678,9 @@ def run_queue_phase(
         if ready:
             server_exit, logs = stop_server(server_name)
     finally:
-        for process, name in (
-            (first, f"fq-public-queue-first-{suffix}"),
-            (second, f"fq-public-queue-second-{suffix}"),
-        ):
+        run(["docker", "rm", "-f", client_name], timeout=20.0)
+        for process in (first, second):
             if process is not None and process.poll() is None:
-                run(["docker", "rm", "-f", name], timeout=15.0)
                 process.kill()
         run(["docker", "rm", "-f", server_name], timeout=20.0)
     backend = load_json(backend_path)
@@ -580,6 +688,7 @@ def run_queue_phase(
     qlogs = list((run_root / "client-qlogs").glob("*.qlog"))
     ok = (
         ready
+        and client_ready
         and second_queued
         and response_has_status(first_result, 204)
         and response_has_status(second_result, 204)
@@ -603,6 +712,7 @@ def run_queue_phase(
     return {
         "status": "ok" if ok else "failed",
         "server_ready": ready,
+        "client_ready": client_ready,
         "second_request_observed_queued": second_queued,
         "server_exit_code": server_exit,
         "first_http_204": response_has_status(first_result, 204),

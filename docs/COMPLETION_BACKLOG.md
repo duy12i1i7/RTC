@@ -540,8 +540,16 @@ and its CI assertion.
   one handler to expire before its backend completion. The stale result is
   generation-fenced and dropped, after which a fresh connection remains
   healthy. The delay proxy is test-only and forwards to the real state engine.
-  Broader fleet identity policy, online rotation, cross-tenant overload
-  fairness, clustered state, and production operations remain work. The
+  A fourth `5/5` public-edge gate now derives each connection's publisher
+  identity from its verified URI SAN, rejects an out-of-prefix CA-trusted
+  certificate before backend access, and applies a bounded per-identity
+  pending queue with round-robin identity scheduling. Publisher A receives
+  HTTP 429 after filling its two pending slots while publisher B is admitted
+  and overtakes A's remaining queued request in every round. This closes
+  scoped pending-queue cross-publisher fairness, but not active-worker
+  reservation or weighted QoS-aware classes. Online identity
+  rotation/revocation refresh, cluster-wide fairness/state, and production
+  operations remain work. The
   gateway's first scoped fleet-admission slice is now complete as a separate
   `5/5` two-container netem artifact. A startup-validated JSON policy assigns
   control/bulk/state traffic classes, publisher allowlists, per-stream frame

@@ -1,0 +1,307 @@
+--- a/examples/server.h
++++ b/examples/server.h
+@@ -80,6 +80,12 @@
+   std::string client_identity;
+   std::vector<uint8_t> body;
+   FleetQoxPathTelemetry path_telemetry;
++};
++
++enum class FleetQoxBackendSubmitResult {
++  Accepted,
++  GlobalQueueFull,
++  IdentityQueueFull,
+ };
+ 
+ struct Stream {
+@@ -278,8 +284,8 @@
+ 
+   void associate_cid(const ngtcp2_cid *cid, Handler *h);
+   void dissociate_cid(const ngtcp2_cid *cid);
+-  bool submit_backend_request(Handler *handler,
+-                              FleetQoxBackendDispatch request);
++  FleetQoxBackendSubmitResult
++  submit_backend_request(Handler *handler, FleetQoxBackendDispatch request);
+   void drain_backend_completions();
+ 
+ private:
+@@ -309,11 +315,15 @@
+   ev_async backend_async_;
+   std::mutex backend_mutex_;
+   std::condition_variable backend_cv_;
+-  std::deque<BackendTask> backend_tasks_;
++  std::unordered_map<std::string, std::deque<BackendTask>>
++      backend_identity_tasks_;
++  std::deque<std::string> backend_ready_identities_;
+   std::deque<BackendCompletion> backend_completions_;
+   std::vector<std::thread> backend_workers_;
+   std::string backend_socket_;
+   size_t backend_queue_capacity_;
++  size_t backend_per_identity_queue_capacity_;
++  size_t backend_pending_count_;
+   bool backend_stopping_;
+   bool backend_async_started_;
+ };
+--- a/examples/server.cc
++++ b/examples/server.cc
+@@ -34,6 +34,7 @@
+ #include <iomanip>
+ #include <optional>
+ #include <atomic>
++#include <cctype>
+ 
+ #include <unistd.h>
+ #include <getopt.h>
+@@ -48,6 +49,7 @@
+ #include <net/if.h>
+ 
+ #include <http-parser/http_parser.h>
++#include <gnutls/x509.h>
+ 
+ #include "server.h"
+ #include "network.h"
+@@ -104,6 +106,7 @@
+ constexpr size_t FLEETQOX_BACKEND_MAX_WORKERS = 32;
+ constexpr size_t FLEETQOX_BACKEND_DEFAULT_QUEUE_CAPACITY = 64;
+ constexpr size_t FLEETQOX_BACKEND_MAX_QUEUE_CAPACITY = 4096;
++constexpr size_t FLEETQOX_BACKEND_DEFAULT_PER_IDENTITY_QUEUE_CAPACITY = 16;
+ 
+ std::atomic<uint64_t> fleetqox_backend_generation_counter{0};
+ 
+@@ -195,26 +198,74 @@
+   return static_cast<size_t>(parsed);
+ }
+ 
+-std::string fleetqox_configured_client_identity() {
+-  auto required_uri =
+-      std::getenv("FLEETQOX_GNUTLS_REQUIRED_CLIENT_URI_SAN");
+-  if (required_uri == nullptr || required_uri[0] == '\0') {
++bool fleetqox_valid_client_identity(const std::string_view &identity) {
++  return !identity.empty() && identity.size() <= 256 &&
++         std::all_of(identity.begin(), identity.end(), [](unsigned char c) {
++           return std::isalnum(c) || c == '-' || c == '_' || c == '.' ||
++                  c == ':';
++         });
++}
++
++std::string fleetqox_verified_client_identity(gnutls_session_t session) {
++  unsigned int peer_count = 0;
++  const auto *peers = gnutls_certificate_get_peers(session, &peer_count);
++  if (peers == nullptr || peer_count == 0) {
+     return {};
+   }
+-  std::string uri{required_uri};
+-  auto prefix = std::getenv("FLEETQOX_GNUTLS_CLIENT_URI_PREFIX");
+-  if (prefix != nullptr && prefix[0] != '\0') {
+-    std::string_view prefix_view{prefix};
+-    if (uri.starts_with(prefix_view) && uri.size() > prefix_view.size()) {
+-      return uri.substr(prefix_view.size());
+-    }
++  gnutls_x509_crt_t certificate;
++  if (gnutls_x509_crt_init(&certificate) < 0) {
+     return {};
+   }
+-  auto separator = uri.find_last_of('/');
+-  if (separator == std::string::npos || separator + 1 == uri.size()) {
++  if (gnutls_x509_crt_import(certificate, &peers[0], GNUTLS_X509_FMT_DER) <
++      0) {
++    gnutls_x509_crt_deinit(certificate);
+     return {};
+   }
+-  return uri.substr(separator + 1);
++
++  auto required_uri =
++      std::getenv("FLEETQOX_GNUTLS_REQUIRED_CLIENT_URI_SAN");
++  auto prefix = std::getenv("FLEETQOX_GNUTLS_CLIENT_URI_PREFIX");
++  std::string identity;
++  for (unsigned int index = 0;; ++index) {
++    std::array<char, 4096> value{};
++    size_t value_size = value.size();
++    unsigned int critical = 0;
++    auto san_type = gnutls_x509_crt_get_subject_alt_name(
++        certificate, index, value.data(), &value_size, &critical);
++    if (san_type == GNUTLS_E_REQUESTED_DATA_NOT_AVAILABLE) {
++      break;
++    }
++    if (san_type != GNUTLS_SAN_URI) {
++      continue;
++    }
++    std::string_view uri{value.data(), value_size};
++    if (required_uri != nullptr && required_uri[0] != '\0' &&
++        uri != required_uri) {
++      continue;
++    }
++    std::string candidate;
++    if (prefix != nullptr && prefix[0] != '\0') {
++      std::string_view prefix_view{prefix};
++      if (!uri.starts_with(prefix_view) || uri.size() == prefix_view.size()) {
++        continue;
++      }
++      candidate.assign(uri.substr(prefix_view.size()));
++    } else {
++      auto separator = uri.find_last_of('/');
++      if (separator == std::string_view::npos || separator + 1 == uri.size()) {
++        continue;
++      }
++      candidate.assign(uri.substr(separator + 1));
++    }
++    if (!fleetqox_valid_client_identity(candidate) ||
++        (!identity.empty() && identity != candidate)) {
++      gnutls_x509_crt_deinit(certificate);
++      return {};
++    }
++    identity = std::move(candidate);
++  }
++  gnutls_x509_crt_deinit(certificate);
++  return identity;
+ }
+ 
+ std::optional<FleetQoxBackendResponse> fleetqox_backend_request(
+@@ -696,8 +747,15 @@
+     FleetQoxBackendDispatch request{
+         stream_id, method, uri, handler->client_identity(), request_body,
+         path_telemetry};
+-    if (!handler->server()->submit_backend_request(handler,
+-                                                    std::move(request))) {
++    auto submit_result =
++        handler->server()->submit_backend_request(handler, std::move(request));
++    if (submit_result ==
++        FleetQoxBackendSubmitResult::IdentityQueueFull) {
++      std::cerr << "FLEETQOX_STATE_BACKEND_IDENTITY_QUEUE_FULL identity="
++                << handler->client_identity() << std::endl;
++      return send_status_response(httpconn, 429);
++    }
++    if (submit_result != FleetQoxBackendSubmitResult::Accepted) {
+       std::cerr << "FLEETQOX_STATE_BACKEND_QUEUE_FULL" << std::endl;
+       return send_status_response(httpconn, 503);
+     }
+@@ -1007,7 +1065,8 @@
+   }
+ 
+   if (config.verify_client) {
+-    client_identity_ = fleetqox_configured_client_identity();
++    client_identity_ = fleetqox_verified_client_identity(
++        tls_session_.get_native_handle());
+     if (client_identity_.empty()) {
+       std::cerr << "FLEETQOX_PUBLIC_MTLS_REJECT "
+                    "reason=backend_client_identity_unavailable"
+@@ -2469,6 +2528,13 @@
+           "FLEETQOX_STATE_BACKEND_QUEUE_CAPACITY",
+           FLEETQOX_BACKEND_DEFAULT_QUEUE_CAPACITY,
+           FLEETQOX_BACKEND_MAX_QUEUE_CAPACITY)),
++      backend_per_identity_queue_capacity_(std::min(
++          fleetqox_bounded_size_env(
++              "FLEETQOX_STATE_BACKEND_PER_IDENTITY_QUEUE_CAPACITY",
++              FLEETQOX_BACKEND_DEFAULT_PER_IDENTITY_QUEUE_CAPACITY,
++              FLEETQOX_BACKEND_MAX_QUEUE_CAPACITY),
++          backend_queue_capacity_)),
++      backend_pending_count_(0),
+       backend_stopping_(false),
+       backend_async_started_(false) {
+   ev_signal_init(&sigintev_, siginthandler, SIGINT);
+@@ -2489,7 +2555,9 @@
+     backend_workers_.emplace_back([this] { backend_worker_loop(); });
+   }
+   std::cerr << "FLEETQOX_STATE_BACKEND_ASYNC_READY workers=" << worker_count
+-            << " queue_capacity=" << backend_queue_capacity_ << std::endl;
++            << " queue_capacity=" << backend_queue_capacity_
++            << " per_identity_queue_capacity="
++            << backend_per_identity_queue_capacity_ << std::endl;
+ }
+ 
+ Server::~Server() {
+@@ -2498,20 +2566,34 @@
+   close();
+ }
+ 
+-bool Server::submit_backend_request(Handler *handler,
+-                                    FleetQoxBackendDispatch request) {
++FleetQoxBackendSubmitResult
++Server::submit_backend_request(Handler *handler,
++                               FleetQoxBackendDispatch request) {
+   std::lock_guard<std::mutex> lock(backend_mutex_);
+   if (backend_stopping_ || backend_socket_.empty() ||
+-      backend_tasks_.size() >= backend_queue_capacity_) {
+-    return false;
++      backend_pending_count_ >= backend_queue_capacity_) {
++    return FleetQoxBackendSubmitResult::GlobalQueueFull;
+   }
+-  backend_tasks_.push_back(
+-      {handler, handler->backend_generation(), std::move(request)});
+-  auto pending = backend_tasks_.size();
++  auto identity = request.client_identity;
++  auto identity_it = backend_identity_tasks_.find(identity);
++  if (identity_it != backend_identity_tasks_.end() &&
++      identity_it->second.size() >= backend_per_identity_queue_capacity_) {
++    return FleetQoxBackendSubmitResult::IdentityQueueFull;
++  }
++  if (identity_it == backend_identity_tasks_.end()) {
++    identity_it =
++        backend_identity_tasks_.emplace(identity, std::deque<BackendTask>{})
++            .first;
++    backend_ready_identities_.push_back(identity);
++  }
++  identity_it->second.push_back(
++      {handler, handler->backend_generation(), std::move(request)});
++  ++backend_pending_count_;
+   backend_cv_.notify_one();
+-  std::cerr << "FLEETQOX_STATE_BACKEND_ASYNC_QUEUED pending=" << pending
+-            << std::endl;
+-  return true;
++  std::cerr << "FLEETQOX_STATE_BACKEND_ASYNC_QUEUED pending="
++            << backend_pending_count_ << " identity=" << identity
++            << " identity_pending=" << identity_it->second.size() << std::endl;
++  return FleetQoxBackendSubmitResult::Accepted;
+ }
+ 
+ void Server::backend_worker_loop() {
+@@ -2519,13 +2601,23 @@
+     BackendTask task;
+     {
+       std::unique_lock<std::mutex> lock(backend_mutex_);
+-      backend_cv_.wait(
+-          lock, [this] { return backend_stopping_ || !backend_tasks_.empty(); });
+-      if (backend_stopping_ && backend_tasks_.empty()) {
++      backend_cv_.wait(lock, [this] {
++        return backend_stopping_ || backend_pending_count_ != 0;
++      });
++      if (backend_stopping_ && backend_pending_count_ == 0) {
+         return;
+       }
+-      task = std::move(backend_tasks_.front());
+-      backend_tasks_.pop_front();
++      auto identity = std::move(backend_ready_identities_.front());
++      backend_ready_identities_.pop_front();
++      auto identity_it = backend_identity_tasks_.find(identity);
++      task = std::move(identity_it->second.front());
++      identity_it->second.pop_front();
++      --backend_pending_count_;
++      if (identity_it->second.empty()) {
++        backend_identity_tasks_.erase(identity_it);
++      } else {
++        backend_ready_identities_.push_back(std::move(identity));
++      }
+     }
+     auto response = fleetqox_backend_request(
+         backend_socket_, task.request.method, task.request.path,
+@@ -2590,7 +2682,9 @@
+   {
+     std::lock_guard<std::mutex> lock(backend_mutex_);
+     backend_stopping_ = true;
+-    backend_tasks_.clear();
++    backend_identity_tasks_.clear();
++    backend_ready_identities_.clear();
++    backend_pending_count_ = 0;
+   }
+   backend_cv_.notify_all();
+   for (auto &worker : backend_workers_) {
+@@ -2604,7 +2698,9 @@
+     backend_async_started_ = false;
+   }
+   std::lock_guard<std::mutex> lock(backend_mutex_);
+-  backend_tasks_.clear();
++  backend_identity_tasks_.clear();
++  backend_ready_identities_.clear();
++  backend_pending_count_ = 0;
+   backend_completions_.clear();
+ }
+ 

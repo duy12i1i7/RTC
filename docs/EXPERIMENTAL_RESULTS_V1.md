@@ -243,6 +243,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker public-API ngtcp2 stateful FleetQoX gateway 5-run netem | `results_rmw_socket/docker_ngtcp2_public_stateful_gateway_summary.json` |
 | Docker public-API ngtcp2 path-metric admission contrast 5-run netem | `results_rmw_socket/docker_ngtcp2_public_path_admission_summary.json` |
 | Docker public-API ngtcp2 bounded async backend 5-run netem | `results_rmw_socket/docker_ngtcp2_public_async_backend_summary.json` |
+| Docker public-API ngtcp2 certificate-identity queue fairness 5-run netem | `results_rmw_socket/docker_ngtcp2_public_identity_fairness_summary.json` |
 | Docker stateful FleetQoX QUIC fleet-admission policy 5-run netem | `results_rmw_socket/docker_quic_admission_probe_summary.json` |
 | Docker stateful FleetQoX QUIC QoS/QoE admission-repair coupling 5-run netem | `results_rmw_socket/docker_quic_qox_repair_probe_summary.json` |
 | Docker stateful FleetQoX QUIC observation-fed competing batch 5-run netem | `results_rmw_socket/docker_quic_feedback_batch_probe_summary.json` |
@@ -1002,8 +1003,24 @@ completion and a subsequent connection still receives 204. Every phase uses
 verified mTLS, non-empty qlogs, netem at both endpoints, bounded proxy
 concurrency, clean backend/proxy/server teardown, and zero completion failures.
 This proves bounded off-thread dispatch and event-loop survival, not clustered
-state, cross-tenant scheduler fairness, online PKI rotation, or production
-operations; `production_quic_backend_claim=false` remains explicit.
+state, online PKI rotation, or production operations;
+`production_quic_backend_claim=false` remains explicit.
+`results_rmw_socket/docker_ngtcp2_public_identity_fairness_summary.json`
+closes the next scoped multi-publisher queue boundary. The edge derives a
+bounded publisher identity independently for every verified connection from
+the peer certificate URI SAN, rejects a CA-trusted out-of-prefix URI before
+backend access, and schedules bounded per-identity pending queues in
+round-robin order. Across `5/5` Docker/netem rounds, publisher A fills its
+two-request pending allowance and receives HTTP 429 for the next request;
+publisher B is still admitted and its request runs before A's remaining
+queued request. All four accepted requests reach the real state engine through
+the test-only delay proxy, six client qlogs are non-empty, and backend,
+proxy, and server teardown are clean. This proves certificate-derived
+multi-publisher selection, per-identity pending limits, and round-robin
+pending-queue fairness. It does not prove active-worker reservation, weighted
+QoS-aware traffic classes, cluster-wide fairness, online certificate
+rotation/revocation refresh, or production operations, so
+`production_quic_backend_claim=false` remains explicit.
 `results_rmw_socket/docker_quic_admission_probe_summary.json` adds scoped
 fleet-level admission to the same stateful service. A fail-closed JSON policy
 maps three domain/topic streams to control, bulk, and state classes, applies

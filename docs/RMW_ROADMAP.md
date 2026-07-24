@@ -1146,6 +1146,14 @@ Add:
   queue saturation returns HTTP 503, and generation fencing drops stale
   handler completions. Slow/fast, overload, and expired-handler phases all
   continue through the real state engine behind a test-only delay proxy.
+  The next `5/5` gate derives a separate publisher identity for each verified
+  connection from its peer-certificate URI SAN, rejects an out-of-prefix
+  identity before backend access, caps each identity's pending queue, and
+  round-robins ready identities. An overloaded publisher receives HTTP 429
+  while an independent publisher is admitted and overtakes the first
+  publisher's remaining queued request. This closes scoped multi-publisher
+  pending-queue fairness; active-worker reservation and weighted QoS-aware
+  scheduling are still outside the claim.
   Active/active replicated durability, standardized task-result
   instrumentation, a stable public QUIC path-metrics API, accepted
   0-RTT/resumption,

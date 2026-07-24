@@ -66,6 +66,7 @@ class DelayProxy:
         self._failures = 0
         self._active_requests = 0
         self._max_active_requests = 0
+        self._forwarded_consumer_ids: list[str] = []
 
     def stop(self) -> None:
         self._stop.set()
@@ -142,6 +143,7 @@ class DelayProxy:
                     )
                 with self._metrics_lock:
                     self._forwarded_requests += 1
+                    self._forwarded_consumer_ids.append(consumer_id)
                 self._send_response(connection, response)
         except (BackendProtocolError, OSError, TimeoutError) as exc:
             with self._metrics_lock:
@@ -223,6 +225,9 @@ class DelayProxy:
                 "failures": self._failures,
                 "active_requests": self._active_requests,
                 "max_active_requests": self._max_active_requests,
+                "forwarded_consumer_ids": list(
+                    self._forwarded_consumer_ids
+                ),
             }
 
 

@@ -276,9 +276,16 @@ This repository starts with the part that should be proven first:
   frame is taken. Source accounting is `ngtcp2_public_api` and there are zero
   external observation-API requests. The stream-loss value remains a raw
   packet-loss count—not a fabricated ratio—because this ngtcp2 API exposes no
-  sent-packet denominator. Asynchronous backend I/O, multi-publisher SAN
-  selection/rotation, and production hardening remain the production QUIC
-  boundary;
+  sent-packet denominator. A fourth public-edge `5/5` gate keeps Unix backend
+  I/O off libev through a bounded worker pool, returns HTTP 503 on global
+  saturation, and generation-fences stale completions. A fifth gate derives
+  per-connection publisher identities from verified URI SANs, rejects a
+  CA-trusted out-of-prefix identity, returns HTTP 429 on a publisher's pending
+  limit, and round-robins identity queues so another publisher overtakes the
+  overloaded publisher's remaining request. Active-worker reservation,
+  weighted QoS scheduling, online identity rotation/revocation refresh,
+  clustered public-edge state, and production hardening remain the production
+  QUIC boundary;
 - a scoped fleet-admission gate inside the stateful QUIC service. A validated
   JSON policy assigns domain/topic streams to traffic classes, allowlists
   publishers, caps each stream, and caps total accepted frames across the
