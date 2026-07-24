@@ -717,7 +717,16 @@ This repository starts with the part that should be proven first:
   request-response frames with zero invalid frames under Docker loopback
   `netem delay 2ms 1ms`. This closes only the scoped dynamic costmap
   mark/clear claim; full `NavigateToPose` dynamic-obstacle avoidance and a
-  production costmap-recovery policy remain unclaimed. The Nav2/RMF router workload also
+  production costmap-recovery policy remain unclaimed. A follow-on moving
+  `NavigateToPose` probe adds an inflation layer and a bounded five-second
+  controller failure tolerance. Its persistent-obstacle negative control
+  re-marks the obstacle after clear, records no material progress, and cancels
+  safely; its positive case removes the obstacle, performs one recovery clear,
+  resumes motion in the same goal, and succeeds at about `x=0.96 m`. The router
+  forwards terminal loss notices instead of classifying them as invalid and finishes
+  with zero invalid frames under the same loopback netem profile. This closes
+  a scoped stop/clear/resume claim, not dynamic detour avoidance or a
+  production recovery policy. The Nav2/RMF router workload also
   passes concurrency-8/16/32/64/128/256/512/1024/2048 upstream action/service
   batches, with the concurrency-2048 run forwarding `12346` service frames.
   The larger runs exercise FleetRMW UDP large-frame fragmentation/reassembly

@@ -1246,9 +1246,15 @@ static-map repair claim. A real `nav2_costmap_2d::ObstacleLayer` probe now
 marks three lethal cells from dynamic `LaserScan` traffic, calls
 `/local_costmap/clear_entirely_costmap`, and observes an empty costmap through
 FleetRMW plus loopback netem; six service frames pass with zero invalid frames.
-The scoped dynamic mark/clear gap is closed. Moving `NavigateToPose`
-dynamic-obstacle avoidance, production recovery policy, upstream request
-counts beyond 4096, and sustained 4096-robot physical navigation remain open.
+The scoped dynamic mark/clear gap is closed. A follow-on moving
+`NavigateToPose` gate adds an inflation layer and bounded five-second failure
+tolerance. Its persistent-obstacle control re-marks after clear, makes no
+material progress, and cancels safely; its positive case removes the obstacle, clears
+once, resumes the same goal, and succeeds near `x=0.96 m`. The router now
+forwards terminal unrecoverable-loss notices by topic/domain and records zero
+invalid frames. Dynamic detour/replanning around a persistent traversable
+obstacle, production recovery policy, upstream request counts beyond 4096, and
+sustained 4096-robot physical navigation remain open.
 The ROS CLI message
 matrix remains `13/13`.
 
@@ -1278,11 +1284,12 @@ equivalence, and broad cross-RMW superiority remain false.
 
 Next continue P0/P2 in this order:
 
-1. Integrate the proven dynamic LaserScan obstacle-layer mark/clear path with a
-   moving `NavigateToPose` controller/BT scenario, define a bounded automatic
-   clear/replan policy, and add a negative control where the obstacle persists.
-   Then push beyond the proven unwindowed total-4096 upstream request workload
-   without presenting request completion as simultaneous physical navigation.
+1. Extend the completed bounded moving-goal stop/clear/resume path into
+   detour/replanning around a persistent but traversable dynamic obstacle, add
+   repeated and longer-duration controls, and define the production policy
+   boundary. Then push beyond the proven unwindowed total-4096 upstream request
+   workload without presenting request completion as simultaneous physical
+   navigation.
 2. Preserve both completed comparison contracts, increase same-hop samples and
    independent repetitions, and replace the rclpy relay with semantically
    equivalent raw/serialized forwarding before any latency-superiority claim.

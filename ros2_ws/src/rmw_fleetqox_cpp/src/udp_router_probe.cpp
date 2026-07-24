@@ -1037,7 +1037,9 @@ void print_router_json(
   const std::vector<RobotSchedulerStats> & robot_scheduler_stats =
     std::vector<RobotSchedulerStats>(),
   const std::vector<SchedulerDeadlineMiss> & scheduler_deadline_miss_frames =
-    std::vector<SchedulerDeadlineMiss>())
+    std::vector<SchedulerDeadlineMiss>(),
+  int unrecoverable_loss_notice_frames = 0,
+  int unrecoverable_loss_notice_forwarded = 0)
 {
   std::cout << "{\"schema_version\":\"fleetrmw.rmw_udp_router_probe.v1\",";
   std::cout << "\"status\":\"" << status << "\",";
@@ -1164,6 +1166,10 @@ void print_router_json(
   std::cout << "\"action_frames\":" << action_frames << ",";
   std::cout << "\"action_forwarded\":" << action_forwarded << ",";
   std::cout << "\"ack_nack_forwarded\":" << ack_nack_forwarded << ",";
+  std::cout << "\"unrecoverable_loss_notice_frames\":" <<
+    unrecoverable_loss_notice_frames << ",";
+  std::cout << "\"unrecoverable_loss_notice_forwarded\":" <<
+    unrecoverable_loss_notice_forwarded << ",";
   std::cout << "\"invalid_frames\":" << invalid << ",";
   std::cout << "\"route_advertisements\":" << route_advertisements << ",";
   std::cout << "\"learned_routes\":" << learned_routes << ",";
@@ -1285,6 +1291,8 @@ int main(int argc, char ** argv)
   int service_forwarded = 0;
   int action_forwarded = 0;
   int ack_nack_forwarded = 0;
+  int unrecoverable_loss_notice_frames = 0;
+  int unrecoverable_loss_notice_forwarded = 0;
   int invalid = 0;
   int route_advertisements = 0;
   int graph_advertisements = 0;
@@ -1427,6 +1435,8 @@ int main(int argc, char ** argv)
            static_cast<std::int64_t>(service_forwarded) +
            static_cast<std::int64_t>(action_forwarded) +
            static_cast<std::int64_t>(ack_nack_forwarded) +
+           static_cast<std::int64_t>(unrecoverable_loss_notice_frames) +
+           static_cast<std::int64_t>(unrecoverable_loss_notice_forwarded) +
            static_cast<std::int64_t>(qos_dropped) +
            static_cast<std::int64_t>(test_dropped) +
            static_cast<std::int64_t>(invalid) +
@@ -1778,6 +1788,36 @@ int main(int argc, char ** argv)
       continue;
     }
 
+    const auto loss_notice =
+      rmw_fleetqox_cpp::decode_unrecoverable_loss_notice(encoded_frame);
+    if (loss_notice) {
+      ++unrecoverable_loss_notice_frames;
+      std::vector<sockaddr_in> targets;
+      for (const TopicRoute & route : route_table) {
+        if (route.domain_id == loss_notice->domain_id &&
+          route.topic == loss_notice->topic)
+        {
+          append_unique_peer(&targets, route.address);
+        }
+      }
+      for (const sockaddr_in & peer : targets) {
+        if (endpoints_match(peer, source_address)) {
+          continue;
+        }
+        const auto sent = ::sendto(
+          fd,
+          encoded_frame.data(),
+          encoded_frame.size(),
+          0,
+          reinterpret_cast<const sockaddr *>(&peer),
+          sizeof(peer));
+        if (sent >= 0 && static_cast<size_t>(sent) == encoded_frame.size()) {
+          ++unrecoverable_loss_notice_forwarded;
+        }
+      }
+      continue;
+    }
+
     const auto ack_nack = rmw_fleetqox_cpp::decode_ack_nack(encoded_frame);
     if (ack_nack) {
       ++ack_nack_frames;
@@ -1995,6 +2035,8 @@ int main(int argc, char ** argv)
     scheduler_admission_state.bypass_decisions,
     scheduler_admission_state.holdback_enabled,
     robot_scheduler_stats,
-    scheduler_deadline_miss_frames);
+    scheduler_deadline_miss_frames,
+    unrecoverable_loss_notice_frames,
+    unrecoverable_loss_notice_forwarded);
   return ok ? 0 : 1;
 }

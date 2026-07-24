@@ -190,6 +190,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker ROS Nav2 NavigateToPose obstacle retry after clear map | `results_rmw_socket/docker_nav2_navigate_to_pose_obstacle_retry_probe_summary.json` |
 | Docker ROS Nav2 same-goal NavigateToPose obstacle recovery after clear map | `results_rmw_socket/docker_nav2_navigate_to_pose_autonomous_obstacle_recovery_probe_summary.json` |
 | Docker ROS Nav2 dynamic LaserScan obstacle mark and costmap clear | `results_rmw_socket/docker_nav2_dynamic_costmap_clear_summary.json` |
+| Docker ROS moving NavigateToPose dynamic-obstacle stop/clear/resume | `results_rmw_socket/docker_nav2_dynamic_obstacle_navigation_summary.json` |
 | Docker ROS Nav2 behavior_server Spin recovery action | `results_rmw_socket/docker_nav2_behavior_spin_probe_summary.json` |
 | Docker ROS Nav2 NavigateToPose recovery-tree fallback | `results_rmw_socket/docker_nav2_navigate_to_pose_recovery_tree_probe_summary.json` |
 | Docker ROS Nav2 NavigateToPose recovered success after Spin | `results_rmw_socket/docker_nav2_navigate_to_pose_recovered_success_probe_summary.json` |
@@ -467,9 +468,22 @@ lethal cells at cost `254`, calls the real
 frames with zero invalid frames. This permits
 `nav2_dynamic_costmap_mark_clear_claim=true`; it deliberately keeps
 `full_dynamic_obstacle_navigation_claim=false` and
-`production_costmap_recovery_policy_claim=false` because no moving
-`NavigateToPose` goal has yet encountered, avoided, or recovered from that
-dynamic obstacle. The direct
+`production_costmap_recovery_policy_claim=false` for that standalone artifact.
+The follow-on
+`docker_nav2_dynamic_obstacle_navigation_summary.json` starts planner,
+controller, BT navigator, an obstacle/inflation local costmap, and a moving
+fake base in one Docker/netem gate. A five-second controller failure tolerance
+bounds recovery. In the negative control, the persistent LaserScan obstacle is
+re-marked after a real clear response, progress remains below `0.004 m`, and
+the action cancels with status `5`. In the positive case, the same running goal
+first advances, then stops with a lethal cost `254`; after the obstacle source is
+removed and one recovery clear succeeds, motion resumes and the action finishes
+with status `4` at about `x=0.96 m`. The router recognizes terminal
+unrecoverable-loss notices, forwards them to matching topic/domain subscriber
+routes, and reports zero invalid frames. This permits the scoped
+`navigate_to_pose_dynamic_obstacle_clear_resume_claim` and persistent-obstacle
+negative-control claim. Dynamic detour avoidance and a production recovery
+policy remain false. The direct
 recovery-behavior artifact
 `docker_nav2_behavior_spin_probe_summary.json` starts upstream
 `behavior_server`, activates `nav2_behaviors::Spin` through FleetRMW lifecycle
