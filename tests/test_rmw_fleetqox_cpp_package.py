@@ -4686,6 +4686,14 @@ int main()
         )
         self.assertFalse(claims["same_hop_cross_rmw_superiority"])
         self.assertTrue(claims["same_hop_delivery_reliability_comparison_claim"])
+        self.assertTrue(
+            claims["same_hop_opaque_serialized_payload_forwarding_claim"]
+        )
+        self.assertTrue(
+            claims[
+                "same_hop_middle_payload_serialization_state_claim"
+            ]
+        )
         self.assertFalse(claims["same_hop_latency_superiority_claim"])
         self.assertFalse(claims["same_hop_middle_processing_equivalence_claim"])
         self.assertTrue(claims["docker_same_hop_rmw_comparison_8_16_32_3seed"])

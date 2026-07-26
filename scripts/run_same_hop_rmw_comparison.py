@@ -30,7 +30,7 @@ from scripts.run_rmw_docker_router_matched_multi_topic_probe import (  # noqa: E
 from scripts.run_ros2_relay_rmw_netem_probe import run_probe as run_relay  # noqa: E402
 
 
-SCHEMA_VERSION = "fleetrmw.same_hop_rmw_comparison.v1"
+SCHEMA_VERSION = "fleetrmw.same_hop_rmw_comparison.v2"
 
 
 def run_comparison(
@@ -103,6 +103,7 @@ def run_comparison(
                         publish_interval_ms=publish_interval_ms,
                         timeout_s=timeout_s,
                         publisher_linger_s=6.0,
+                        relay_mode="generic_serialized",
                     )
                     rows.append(normalize_row(baseline, system=rmw))
     finally:
@@ -124,7 +125,23 @@ def run_comparison(
     relay_payload_count = sum(
         int(result.get("relay_payload_count", 0)) for result in relay_results
     )
+    serialized_relay_result_count = sum(
+        result.get("relay_scope") == "rclcpp_generic_serialized_passthrough"
+        and result.get("middle_payload_remains_serialized") is True
+        and result.get("middle_application_deserialization") is False
+        for result in relay_results
+    )
+    expected_relay_result_count = sum(
+        row.get("system") != "rmw_fleetqox_cpp_router" for row in rows
+    )
+    serialized_relay_contract_ok = (
+        expected_relay_result_count > 0
+        and len(relay_results) == expected_relay_result_count
+        and serialized_relay_result_count == expected_relay_result_count
+    )
     status = "ok" if rows and failed_count == 0 and skipped_count == 0 else "partial"
+    if status == "ok" and not serialized_relay_contract_ok:
+        status = "partial"
     if rows and ok_count == 0:
         status = "failed"
     return {
@@ -143,9 +160,15 @@ def run_comparison(
         "source_netem_profile_matched": True,
         "reliable_qos_matched": True,
         "publisher_reliability_horizon_s": 6.0,
-        "relay_scope": "rclpy_std_msgs_string_deserialize_republish",
+        "relay_scope": "rclcpp_generic_serialized_passthrough",
         "relay_expected_count": relay_expected_count,
         "relay_payload_count": relay_payload_count,
+        "serialized_relay_result_count": serialized_relay_result_count,
+        "serialized_relay_contract_ok": serialized_relay_contract_ok,
+        "middle_payload_serialization_state_matched":
+            serialized_relay_contract_ok,
+        "middle_application_deserialization":
+            False if serialized_relay_contract_ok else None,
         "middle_hop_processing_equivalent": False,
         "direct_claim_allowed": False,
         "delivery_reliability_comparison_allowed": True,
@@ -153,10 +176,12 @@ def run_comparison(
         "topology_note": (
             "Every row uses publisher-middle-subscriber and applies the same source-side "
             "netem profile with ROS QoS RELIABLE and a six-second publisher horizon. "
-            "FleetRMW's middle is a raw FleetRMW router; DDS/Zenoh use a common rclpy "
-            "std_msgs/String deserialize-republish relay. Hop count is matched, but middle "
-            "processing is not equivalent, so delivery/reliability comparison is allowed "
-            "and broad latency or architectural superiority remains disallowed."
+            "FleetRMW's middle is a raw FleetRMW router; DDS/Zenoh use a common "
+            "rclcpp generic serialized-message relay with no application-message "
+            "deserialization. Hop count and opaque serialized payload handling are matched, "
+            "but transport-envelope termination/republish still differs from raw frame "
+            "forwarding, so delivery/reliability comparison is allowed and broad latency "
+            "or architectural superiority remains disallowed."
         ),
         "claim_scopes": {
             "matched_hop_delivery_reliability": {
@@ -165,7 +190,10 @@ def run_comparison(
             },
             "latency_superiority": {
                 "allowed": False,
-                "reason": "raw FleetRMW forwarding versus rclpy deserialize-republish",
+                "reason": (
+                    "raw FleetRMW frame forwarding versus generic serialized "
+                    "RMW termination/republish"
+                ),
             },
             "architectural_superiority": {
                 "allowed": False,
@@ -206,7 +234,7 @@ def render_markdown(summary: dict[str, Any]) -> str:
         [
             "",
             "Allowed: compare delivery and reliability under the matched one-middle-hop envelope.",
-            "Disallowed: infer latency or architectural superiority because FleetRMW forwards raw frames while baseline relays deserialize and republish ROS messages.",
+            "Disallowed: infer latency or architectural superiority because FleetRMW forwards raw frames while baseline relays terminate and republish opaque serialized ROS messages through an RMW endpoint.",
             "",
         ]
     )

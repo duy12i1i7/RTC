@@ -67,8 +67,12 @@ project. It is ordered by dependency and regression value.
   baseline application paths are direct. A separate matched-hop study now
   gives every row publisher-middle-subscriber topology: Cyclone and Zenoh pass
   `9/9`, FleetRMW `8/9`, and Fast DDS `6/9` (`32/36` overall). It permits only
-  delivery/reliability comparison; baseline rclpy deserialize-republish and
-  FleetRMW raw forwarding are not latency-equivalent middle processing.
+  delivery/reliability comparison. Its historical 36-row artifact used a
+  typed rclpy relay. The current harness instead uses a common `rclcpp` generic
+  serialized relay with no application deserialization and passes a `4/4`
+  four-system Docker/netem gate. FleetRMW raw-frame forwarding and baseline
+  RMW endpoint termination/republish are still not latency-equivalent middle
+  processing.
 - Native ns-3 3.41 now runs in the project Docker image. The first repeated
   T2S matrix passes `27/27` rows at `8/16/32` robots over Wi-Fi/WAN/roaming
   parameter envelopes and seeds `7,13,29`, using identical traces for FIFO,
@@ -1281,15 +1285,24 @@ Fleet-router scopes plus a disallowed cross-scope superiority claim;
 `direct_claim_allowed=false` is machine-readable.
 
 `run_same_hop_rmw_comparison.py` closes the hop-count gap as a separate study.
-It adds one common rclpy `std_msgs/String` deserialize-republish relay to Fast
-DDS, Cyclone DDS, and Zenoh, while FleetRMW retains its raw-frame router. Under
-the same roaming profile, loss scale `0.25`, five samples/topic, six-second
-reliability horizon, and seeds `7,13,29`, the study records `32/36` passing
-rows: Cyclone/Zenoh `9/9`, FleetRMW `8/9`, and Fast DDS `6/9`. Relay delivery is
-`5030/5040`; failures are retained as measured loss, not infrastructure reruns.
-The machine-readable contract sets hop/profile/RELIABLE matching true and
-delivery/reliability comparison true, while latency superiority, middle-hop
-equivalence, and broad cross-RMW superiority remain false.
+Its historical v1 artifact used one common typed rclpy `std_msgs/String` relay
+for Fast DDS, Cyclone DDS, and Zenoh, while FleetRMW retained its raw-frame
+router. Under the same roaming profile, loss scale `0.25`, five samples/topic,
+six-second reliability horizon, and seeds `7,13,29`, that study records `32/36`
+passing rows: Cyclone/Zenoh `9/9`, FleetRMW `8/9`, and Fast DDS `6/9`. Relay
+delivery is `5030/5040`; failures are retained as measured loss, not
+infrastructure reruns.
+
+The v2 harness replaces that typed middle with a C++ `rclcpp`
+generic-subscription/generic-publisher relay. The relay republishes
+`rclcpp::SerializedMessage` directly, reports serialized byte/count evidence,
+and explicitly reports `application_deserialization=false`. A current
+four-system Docker/netem gate passes `4/4`. The machine-readable contract now
+sets hop/profile/RELIABLE and serialized-payload state matching true. It does
+not claim byte-identical serialization across RMWs. Delivery/reliability
+comparison remains allowed, while latency superiority, full middle-hop
+equivalence, and broad cross-RMW superiority remain false because raw FleetRMW
+frame forwarding still differs from RMW endpoint termination/republish.
 
 Next continue P0/P2 in this order:
 
@@ -1299,9 +1312,10 @@ Next continue P0/P2 in this order:
    boundary. Then push beyond the proven unwindowed total-4096 upstream request
    workload without presenting request completion as simultaneous physical
    navigation.
-2. Preserve both completed comparison contracts, increase same-hop samples and
-   independent repetitions, and replace the rclpy relay with semantically
-   equivalent raw/serialized forwarding before any latency-superiority claim.
+2. Preserve both completed comparison contracts and rerun the upgraded
+   generic-serialized same-hop harness at full `8/16/32` scale with more
+   samples and independent repetitions. Match transport-envelope middle
+   semantics before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.
 4. Increase frontier repetitions so the `32`-robot latency-mean confidence

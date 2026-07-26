@@ -6,6 +6,15 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_ros2_relay_rmw_netem_probe.py"
+RELAY_SOURCE = (
+    ROOT
+    / "ros2_ws"
+    / "src"
+    / "rmw_fleetqox_cpp"
+    / "src"
+    / "generic_serialized_relay_probe.cpp"
+)
+CMAKE = ROOT / "ros2_ws" / "src" / "rmw_fleetqox_cpp" / "CMakeLists.txt"
 
 
 def load_runner():
@@ -54,9 +63,20 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
     def test_runner_declares_matched_hop_topology(self):
         source = RUNNER.read_text()
         self.assertIn('"topology": "publisher-relay-subscriber"', source)
-        self.assertIn('"relay_scope": "rclpy_std_msgs_string_deserialize_republish"', source)
+        self.assertIn('"rclcpp_generic_serialized_passthrough"', source)
+        self.assertIn('"middle_payload_remains_serialized":', source)
+        self.assertIn("generic_serialized_relay_command", source)
         self.assertIn("netem_shell_prefix", source)
         self.assertIn("publisher_linger_s", source)
+
+    def test_cpp_generic_relay_forwards_serialized_messages(self):
+        source = RELAY_SOURCE.read_text()
+        cmake = CMAKE.read_text()
+        self.assertIn("create_generic_subscription", source)
+        self.assertIn("create_generic_publisher", source)
+        self.assertIn("publisher->publish(*message)", source)
+        self.assertIn('"application_deserialization\\":false', source)
+        self.assertIn("fleetrmw_generic_serialized_relay_probe", cmake)
 
 
 if __name__ == "__main__":

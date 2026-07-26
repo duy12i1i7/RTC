@@ -419,6 +419,8 @@ Current verification:
 - matched-hop RMW comparison artifact, with delivery/reliability-only claim
   scope:
   `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v1_summary.json`;
+- current generic-serialized matched-hop four-system Docker/netem smoke:
+  `results_rmw_socket/same_hop_generic_serialized_smoke_summary.json`;
 - in-process QUIC RMW bidirectional, independent-thread publish/take,
   concurrent POST/GET stream-pair, and native client-qlog artifact:
   `results_rmw_socket/docker_quic_inprocess_rmw_bidirectional_probe_summary.json`;
@@ -466,5 +468,6 @@ fleet-wide repair admission, and the first `8/16/32` capacity-frontier plus
 RMW-comparison artifacts toward production-grade coverage. The remaining gap is
 not another per-publisher tuning pass; it is repeated multi-seed fleet
 statistics, a dedicated cross-language C/C++ matrix, real Nav2 planner/controller
-components, equivalent DDS/Zenoh topology, and reduction of the observed `32`-robot
-tail latency.
+components, a full-scale rerun of the generic-serialized DDS/Zenoh relay
+topology, tighter middle-processing semantics for any latency claim, and
+reduction of the observed `32`-robot tail latency.

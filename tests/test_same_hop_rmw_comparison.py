@@ -35,13 +35,56 @@ class SameHopRmwComparisonTest(unittest.TestCase):
         self.assertIn('"latency_superiority_claim_allowed": False', source)
         self.assertIn('"direct_claim_allowed": False', source)
         self.assertIn('"middle_hop_processing_equivalent": False', source)
-        self.assertIn("raw FleetRMW forwarding versus rclpy deserialize-republish", source)
+        self.assertIn('"serialized_relay_contract_ok": serialized_relay_contract_ok', source)
+        self.assertIn('"middle_payload_serialization_state_matched":', source)
+        self.assertIn("RMW termination/republish", source)
 
     def test_runner_uses_same_profile_and_reliability_horizon(self):
         source = RUNNER.read_text()
         self.assertIn("netem_loss_scale=netem_loss_scale", source)
         self.assertIn("publisher_linger_s=6.0", source)
         self.assertIn('"publisher_reliability_horizon_s": 6.0', source)
+
+    def test_old_resume_rows_cannot_satisfy_serialized_relay_contract(self):
+        module = load_runner()
+        module.cleanup_reusable_build = lambda **_: None
+        prior_rows = [
+            module.normalize_row(
+                {
+                    "status": "ok",
+                    "robot_count": 2,
+                    "repetition_seed": 7,
+                },
+                system="rmw_fleetqox_cpp_router",
+            ),
+            module.normalize_row(
+                {
+                    "status": "ok",
+                    "robot_count": 2,
+                    "repetition_seed": 7,
+                    "relay_scope": "rclpy_std_msgs_string_deserialize_republish",
+                },
+                system="rmw_fastrtps_cpp",
+            ),
+        ]
+
+        summary = module.run_comparison(
+            root=ROOT,
+            image="unused",
+            robot_counts=[2],
+            seeds=[7],
+            rmws=["rmw_fastrtps_cpp"],
+            profile="roaming",
+            netem_loss_scale=0.1,
+            samples=3,
+            publish_interval_ms=30,
+            timeout_s=25.0,
+            prior_rows=prior_rows,
+        )
+
+        self.assertEqual(summary["status"], "partial")
+        self.assertFalse(summary["serialized_relay_contract_ok"])
+        self.assertIsNone(summary["middle_application_deserialization"])
 
     def test_unified_report_classifies_and_preserves_same_hop_metrics(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -50,7 +93,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             artifact.write_text(
                 json.dumps(
                     {
-                        "schema_version": "fleetrmw.same_hop_rmw_comparison.v1",
+                        "schema_version": "fleetrmw.same_hop_rmw_comparison.v2",
                         "status": "partial",
                         "run_count": 36,
                         "ok_run_count": 32,
@@ -58,7 +101,10 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                         "hop_count_matched": True,
                         "source_netem_profile_matched": True,
                         "reliable_qos_matched": True,
-                        "relay_scope": "rclpy_std_msgs_string_deserialize_republish",
+                        "relay_scope": "rclcpp_generic_serialized_passthrough",
+                        "serialized_relay_contract_ok": True,
+                        "middle_payload_serialization_state_matched": True,
+                        "middle_application_deserialization": False,
                         "relay_expected_count": 5040,
                         "relay_payload_count": 5030,
                         "middle_hop_processing_equivalent": False,
@@ -77,6 +123,13 @@ class SameHopRmwComparisonTest(unittest.TestCase):
 
             self.assertEqual(summary["category"], "comparison/dds-cyclone-zenoh")
             self.assertEqual(summary["metrics"]["relay_payload_count"], 5030)
+            self.assertTrue(summary["metrics"]["serialized_relay_contract_ok"])
+            self.assertTrue(
+                summary["metrics"]["middle_payload_serialization_state_matched"]
+            )
+            self.assertFalse(
+                summary["metrics"]["middle_application_deserialization"]
+            )
             self.assertTrue(
                 summary["metrics"]["delivery_reliability_comparison_allowed"]
             )

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -43,8 +44,15 @@ from scripts.run_ros2_direct_rmw_netem_probe import (  # noqa: E402
 )
 
 
-SCHEMA_VERSION = "fleetrmw.ros2_relay_rmw_netem_probe.v1"
+SCHEMA_VERSION = "fleetrmw.ros2_relay_rmw_netem_probe.v2"
 DEFAULT_IMAGE = "localhost/fleetrmw/rmw-netem:jazzy"
+SERIALIZED_RELAY_BUILD = ".tmp_fleetrmw_matched_build"
+SERIALIZED_RELAY_INSTALL = ".tmp_fleetrmw_matched_install"
+SERIALIZED_RELAY_LOG = ".tmp_fleetrmw_matched_log"
+SERIALIZED_RELAY_EXECUTABLE = (
+    "/work/.tmp_fleetrmw_matched_install/rmw_fleetqox_cpp/lib/"
+    "rmw_fleetqox_cpp/fleetrmw_generic_serialized_relay_probe"
+)
 
 
 def ingress_specs(specs: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -99,6 +107,101 @@ def write_relay_probe_scripts(
     )
 
 
+def ensure_generic_serialized_relay(*, root: Path, image: str) -> None:
+    executable = (
+        root
+        / SERIALIZED_RELAY_INSTALL
+        / "rmw_fleetqox_cpp"
+        / "lib"
+        / "rmw_fleetqox_cpp"
+        / "fleetrmw_generic_serialized_relay_probe"
+    )
+    build_inputs = (
+        root
+        / "ros2_ws"
+        / "src"
+        / "rmw_fleetqox_cpp"
+        / "src"
+        / "generic_serialized_relay_probe.cpp",
+        root / "ros2_ws" / "src" / "rmw_fleetqox_cpp" / "CMakeLists.txt",
+    )
+    if executable.exists() and all(
+        path.exists() and path.stat().st_mtime <= executable.stat().st_mtime
+        for path in build_inputs
+    ):
+        return
+    run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "bash",
+            "-v",
+            f"{root}:/work",
+            "-w",
+            "/work",
+            image,
+            "-lc",
+            "source /opt/ros/jazzy/setup.bash && "
+            f"rm -rf /work/{SERIALIZED_RELAY_BUILD} "
+            f"/work/{SERIALIZED_RELAY_INSTALL} "
+            f"/work/{SERIALIZED_RELAY_LOG} && "
+            f"colcon --log-base /work/{SERIALIZED_RELAY_LOG} build "
+            "--base-paths ros2_ws/src "
+            "--packages-select fleetrmw_interfaces rmw_fleetqox_cpp "
+            f"--build-base /work/{SERIALIZED_RELAY_BUILD} "
+            f"--install-base /work/{SERIALIZED_RELAY_INSTALL} "
+            "--cmake-args -DCMAKE_BUILD_TYPE=Release",
+        ]
+    )
+
+
+def generic_serialized_relay_command(
+    *,
+    rmw: str,
+    domain_id: int,
+    zenoh_session_config_uri: str | None,
+    source_specs: list[dict[str, str]],
+    destination_specs: list[dict[str, str]],
+    samples: int,
+    timeout_s: float,
+    linger_s: float,
+) -> str:
+    command = (
+        "source /opt/ros/jazzy/setup.bash && "
+        f"source /work/{SERIALIZED_RELAY_INSTALL}/setup.bash && "
+        f"export RMW_IMPLEMENTATION={shlex.quote(rmw)} "
+        f"ROS_DOMAIN_ID={domain_id} && "
+    )
+    if zenoh_session_config_uri:
+        command += (
+            "export ZENOH_SESSION_CONFIG_URI="
+            f"{shlex.quote(zenoh_session_config_uri)} && "
+        )
+    arguments = [
+        SERIALIZED_RELAY_EXECUTABLE,
+        "--samples",
+        str(samples),
+        "--timeout-ms",
+        str(max(1, round(timeout_s * 1000.0))),
+        "--linger-ms",
+        str(max(0, round(linger_s * 1000.0))),
+    ]
+    for source, destination in zip(
+        source_specs,
+        destination_specs,
+        strict=True,
+    ):
+        arguments.extend(
+            [
+                "--mapping",
+                f"{source['topic']}={destination['topic']}",
+            ]
+        )
+    return command + " ".join(shlex.quote(value) for value in arguments)
+
+
 def run_probe(
     *,
     root: Path,
@@ -114,6 +217,7 @@ def run_probe(
     publish_interval_ms: int,
     timeout_s: float,
     publisher_linger_s: float = 6.0,
+    relay_mode: str = "generic_serialized",
 ) -> dict[str, Any]:
     if samples <= 0 or robot_count <= 0:
         raise ValueError("samples and robot_count must be positive")
@@ -121,6 +225,8 @@ def run_probe(
         raise ValueError("timing values are outside their valid range")
     if netem_loss_scale < 0:
         raise ValueError("netem_loss_scale must be non-negative")
+    if relay_mode not in {"generic_serialized", "rclpy_typed"}:
+        raise ValueError("unsupported relay_mode")
     destinations = topic_specs_for_robot_count(robot_count)
     sources = ingress_specs(destinations)
     expected_control = samples * robot_count
@@ -165,6 +271,8 @@ def run_probe(
     )
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
+        if relay_mode == "generic_serialized":
+            ensure_generic_serialized_relay(root=root, image=image)
         write_relay_probe_scripts(
             subscriber_script=subscriber_script,
             relay_script=relay_script,
@@ -214,7 +322,22 @@ def run_probe(
             image=image,
             name=relay_name,
             network=network,
-            command=command_for(relay_script),
+            command=(
+                generic_serialized_relay_command(
+                    rmw=rmw,
+                    domain_id=domain_id,
+                    zenoh_session_config_uri=(
+                        zenoh_config_container if use_zenoh_router else None
+                    ),
+                    source_specs=sources,
+                    destination_specs=destinations,
+                    samples=samples,
+                    timeout_s=timeout_s,
+                    linger_s=publisher_linger_s + 0.5,
+                )
+                if relay_mode == "generic_serialized"
+                else command_for(relay_script)
+            ),
         )
         time.sleep(1.0)
         start_container(
@@ -279,7 +402,16 @@ def run_probe(
             "status": "ok" if ok else "failed",
             "system": rmw,
             "topology": "publisher-relay-subscriber",
-            "relay_scope": "rclpy_std_msgs_string_deserialize_republish",
+            "relay_scope": (
+                "rclcpp_generic_serialized_passthrough"
+                if relay_mode == "generic_serialized"
+                else "rclpy_std_msgs_string_deserialize_republish"
+            ),
+            "relay_mode": relay_mode,
+            "middle_payload_remains_serialized":
+                relay_mode == "generic_serialized",
+            "middle_application_deserialization":
+                relay_mode != "generic_serialized",
             "image": image,
             "rmw": rmw,
             "profile": profile,
@@ -385,6 +517,11 @@ def main() -> int:
     parser.add_argument("--timeout-s", type=float, default=25.0)
     parser.add_argument("--publisher-linger-s", type=float, default=6.0)
     parser.add_argument(
+        "--relay-mode",
+        choices=("generic_serialized", "rclpy_typed"),
+        default="generic_serialized",
+    )
+    parser.add_argument(
         "--summary-json",
         type=Path,
         default=Path("results_rmw_socket/ros2_relay_rmw_netem_probe_summary.json"),
@@ -405,6 +542,7 @@ def main() -> int:
         publish_interval_ms=max(args.publish_interval_ms, 0),
         timeout_s=max(args.timeout_s, 1.0),
         publisher_linger_s=max(args.publisher_linger_s, 0.0),
+        relay_mode=args.relay_mode,
     )
     args.summary_json.parent.mkdir(parents=True, exist_ok=True)
     args.summary_json.write_text(

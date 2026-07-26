@@ -969,6 +969,14 @@ target_link_libraries(fleetrmw_udp_router_probe
   ${PROJECT_NAME}_transport
 )
 
+add_executable(fleetrmw_generic_serialized_relay_probe
+  src/generic_serialized_relay_probe.cpp
+)
+target_compile_features(fleetrmw_generic_serialized_relay_probe PRIVATE cxx_std_17)
+ament_target_dependencies(fleetrmw_generic_serialized_relay_probe
+  rclcpp
+)
+
 add_executable(fleetrmw_remote_graph_probe
   src/remote_graph_probe.cpp
 )
@@ -1158,6 +1166,7 @@ install(
     fleetrmw_graph_probe
     fleetrmw_interprocess_pubsub_probe
     fleetrmw_udp_router_probe
+    fleetrmw_generic_serialized_relay_probe
     fleetrmw_remote_graph_probe
     fleetrmw_remote_graph_lease_probe
     ${FLEETRMW_OPTIONAL_TARGETS}

@@ -1488,8 +1488,20 @@ payloads; the three Fast DDS failures miss `3/160`, `2/160`, and `5/320`.
 Baseline relays forward `5030/5040` ingress payloads. These are delivery
 failures with successful harness setup, so they are retained. The artifact
 allows matched-hop delivery/reliability comparison, but disallows latency and
-architectural superiority: FleetRMW forwards raw frames while a common rclpy
-relay deserializes and republishes `std_msgs/String` for the three baselines.
+architectural superiority: FleetRMW forwards raw frames while that historical
+artifact used a common typed rclpy relay for the three baselines.
+
+The current v2 harness replaces the typed relay with a C++ `rclcpp` generic
+serialized-message relay. Fast DDS, Cyclone DDS, and Zenoh each pass an
+individual `12/12` relay smoke, and a combined four-system Docker/netem gate
+passes `4/4` with delivery ratio `1.0`. All three baseline rows report opaque
+serialized forwarding and `application_deserialization=false`. This matches
+the application payload's serialized state, not byte-level cross-RMW
+serialization and not the transport-envelope semantics:
+FleetRMW forwards raw frames while the baselines terminate and republish
+serialized messages through an RMW endpoint. Therefore delivery/reliability
+comparison remains allowed, while latency and architectural superiority remain
+disallowed.
 
 The latest budgeted fleet-plan actuation closes the gap between the Python
 optimizer and the C++ RMW data plane. Four concurrent robot control topics run
