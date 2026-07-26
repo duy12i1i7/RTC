@@ -198,6 +198,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker ROS standalone C++ type-support round trip | `results_rmw_socket/docker_cpp_typesupport_probe_summary.json` |
 | Docker ROS router-mediated C++ interprocess pub/sub + service | `results_rmw_socket/docker_router_rclcpp_interprocess_probe_summary.json` |
 | Docker/netem bidirectional C++/rclpy 64-pose Path + 512-pose GetPlan service | `results_rmw_socket/docker_router_cpp_python_path_probe_summary.json` |
+| Docker/netem generated bounded-shape C++/rclpy service matrix | `results_rmw_socket/docker_router_bounded_shape_service_probe_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -579,6 +580,16 @@ after convergence, a same-sequence repeat is accepted, server deduplication
 limits callback execution, and response replay handles later duplicates. This
 is a scoped bounded discovery-repair result, not a full exactly-once service
 claim or exhaustive cross-language ROSIDL corpus.
+
+The generated bounded-shape artifact adds the complementary ROSIDL boundary
+and also passes `5/5` runs and `10/10` C++/Python direction rows under netem.
+Its FleetShape request fills `string<=32`, `uint8[16]`, `float32[<=128]`,
+`geometry_msgs/PoseStamped[<=16]`, and `builtin_interfaces/Duration` fields at
+their declared limits. The response validates `uint32[<=64]`, repaired
+`PoseStamped[<=16]`, and `string<=64`. Every server checks every request field,
+every client checks every response field, and every router reports zero invalid
+frames. This closes the scoped bounded-shape gap, not all generated ROSIDL
+types or service resource-limit semantics.
 
 The local transport artifact reports `status=ok` for a separate two-container
 POSIX shared-memory run. Publisher and subscriber have zero UDP peers and both

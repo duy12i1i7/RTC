@@ -1,0 +1,10 @@
+string<=32 robot_id
+uint8[16] session_token
+float32[<=128] ranges
+geometry_msgs/PoseStamped[<=16] waypoints
+builtin_interfaces/Duration budget
+---
+bool accepted
+uint32[<=64] admitted_indices
+geometry_msgs/PoseStamped[<=16] repaired_waypoints
+string<=64 reason

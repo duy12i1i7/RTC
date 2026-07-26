@@ -116,15 +116,20 @@ project. It is ordered by dependency and regression value.
 
 - Expand the now-working introspection-C++ path beyond the completed
   bidirectional C++/rclpy `PoseStamped`/64-pose `Path`/`SetBool`/512-pose
-  `GetPlan` router matrix into additional bounded-sequence request/response
-  service types and a broader generated C/C++ compatibility matrix.
-- Add regression coverage for bounded sequences and additional common Nav2/RMF
-  service families. Unbounded nested message sequences, headers, signed time,
-  dynamic byte/float arrays, fixed covariance arrays, and Duration are already
-  covered by the Path/CLI/Nav2 matrix, but this is not an exhaustive ROSIDL
-  shape corpus.
-- Complete service timeout, cancellation, stale request/response, and error
-  semantics instead of only proving the successful SetBool path.
+  `GetPlan` router matrix and generated bounded `FleetShape` service into
+  additional common Nav2/RMF service families and a broader generated C/C++
+  compatibility corpus.
+- The bounded-shape regression is complete for bounded strings, fixed arrays,
+  bounded primitive sequences, bounded nested PoseStamped sequences, Duration,
+  and bounded response sequences at their declared maxima. Unbounded nested
+  message sequences, headers, signed time, dynamic byte/float arrays, and fixed
+  covariance arrays are covered by the Path/CLI/Nav2 matrix. This is broad
+  shape coverage, not an exhaustive ROSIDL corpus.
+- Service no-response/timeout, stale request/response lifespan, malformed
+  response propagation, and successful SetBool/GetPlan/FleetShape paths are
+  complete. Standard ROS 2 services have no cancellation operation; action
+  cancellation is covered separately. Remaining service work is broader
+  concurrency/resource-limit and exactly-once semantics.
 - Harden action transport on top of pub/sub plus service reliability:
   goal, result, feedback, cancel, status, deadlines, and larger concurrent
   action/client counts.

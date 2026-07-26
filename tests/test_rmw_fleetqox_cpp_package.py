@@ -2209,6 +2209,8 @@ int main()
         iface_manifest = (IFACE_PKG / "package.xml").read_text()
         self.assertIn("action/NavigateFleet.action", iface_cmake)
         self.assertIn("action/DispatchFleetTask.action", iface_cmake)
+        self.assertIn("srv/FleetShape.srv", iface_cmake)
+        self.assertIn("fleetrmw_bounded_shape_service_probe", iface_cmake)
         self.assertIn("DEPENDENCIES builtin_interfaces geometry_msgs nav_msgs sensor_msgs", iface_cmake)
         self.assertIn("<depend>builtin_interfaces</depend>", iface_manifest)
         self.assertIn("<depend>geometry_msgs</depend>", iface_manifest)
@@ -2220,6 +2222,35 @@ int main()
         self.assertIn("string[] phases", dispatch_action)
         self.assertIn("builtin_interfaces/Time completion_time", dispatch_action)
         self.assertIn("float32 progress", dispatch_action)
+        bounded_service = (IFACE_PKG / "srv" / "FleetShape.srv").read_text()
+        self.assertIn("string<=32 robot_id", bounded_service)
+        self.assertIn("uint8[16] session_token", bounded_service)
+        self.assertIn("float32[<=128] ranges", bounded_service)
+        self.assertIn(
+            "geometry_msgs/PoseStamped[<=16] waypoints",
+            bounded_service,
+        )
+        self.assertIn("uint32[<=64] admitted_indices", bounded_service)
+        bounded_cpp_probe = (
+            IFACE_PKG / "src" / "bounded_shape_service_probe.cpp"
+        ).read_text()
+        self.assertIn("fleetrmw.bounded_shape_cpp_server.v1", bounded_cpp_probe)
+        self.assertIn("kRangeCount = 128", bounded_cpp_probe)
+        self.assertIn("kWaypointCount = 16", bounded_cpp_probe)
+        bounded_python_probe = (
+            ROOT / "scripts" / "rclpy_bounded_shape_service_endpoint.py"
+        ).read_text()
+        self.assertIn("fleetrmw.bounded_shape_python_endpoint.v1", bounded_python_probe)
+        self.assertIn("RANGE_COUNT = 128", bounded_python_probe)
+        bounded_runner = (
+            ROOT / "scripts" / "run_rmw_docker_router_bounded_shape_service_probe.py"
+        ).read_text()
+        self.assertIn(
+            "fleetrmw.docker_router_bounded_shape_service_probe.v1",
+            bounded_runner,
+        )
+        self.assertIn("bounded_nested_message_sequence_claim", bounded_runner)
+        self.assertIn("--iterations", bounded_runner)
 
         docker_cli_matrix_script = ROOT / "scripts" / "run_rmw_docker_ros2_cli_message_matrix.py"
         docker_cli_matrix_source = docker_cli_matrix_script.read_text()
@@ -4070,6 +4101,17 @@ int main()
             manifest["supported"]["large_service_udp_fragmentation_reassembly"]
         )
         self.assertTrue(
+            manifest["supported"]["generated_bounded_rosidl_service"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "bidirectional_rclcpp_rclpy_bounded_rosidl_service"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"]["docker_bounded_rosidl_service_5run_netem"]
+        )
+        self.assertTrue(
             manifest["supported"]["service_request_bounded_discovery_repeat_dedup"]
         )
         self.assertTrue(
@@ -4086,6 +4128,16 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "large_sequence_service_fragmentation_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "docker_router_bounded_shape_service_5run_netem"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "bounded_rosidl_nested_message_sequence_claim"
             ]
         )
         self.assertFalse(

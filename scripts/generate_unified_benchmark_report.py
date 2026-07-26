@@ -47,6 +47,16 @@ METRIC_KEYS = (
     "service_payload_exceeds_udp_datagram_all",
     "service_request_repeat_count",
     "service_request_repeat_interval_ms",
+    "token_size",
+    "range_count",
+    "waypoint_count",
+    "admitted_index_count",
+    "fixed_array_claim",
+    "bounded_primitive_sequence_claim",
+    "bounded_nested_message_sequence_claim",
+    "bounded_string_claim",
+    "duration_field_claim",
+    "bidirectional_cpp_python_bounded_service_claim",
     "bounded_service_discovery_repair_claim",
     "service_exactly_once_claim",
     "netem_applied_all",
@@ -1081,6 +1091,12 @@ METRIC_KEYS = (
 )
 
 CLAIM_BOUNDARY_KEYS = (
+    "docker_router_bounded_shape_service_5run_netem",
+    "bidirectional_cpp_python_bounded_service_claim",
+    "bounded_rosidl_fixed_array_claim",
+    "bounded_rosidl_primitive_sequence_claim",
+    "bounded_rosidl_nested_message_sequence_claim",
+    "bounded_rosidl_string_claim",
     "docker_router_cpp_python_path_5run_netem",
     "docker_router_cpp_python_get_plan_5run_netem",
     "bidirectional_cpp_python_path_claim",
@@ -1780,6 +1796,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         "cpp_python_path" in text
         or "rclcpp_interprocess" in text
         or "cpp_typesupport" in text
+        or "bounded_shape" in text
     ):
         return "rmw-abi"
     if "wait_for_all_acked" in text or "wait-for-all-acked" in text:

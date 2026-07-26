@@ -56,7 +56,10 @@ This repository starts with the part that should be proven first:
   a bidirectional `rclcpp`/`rclpy` Docker/netem matrix repeats the same
   sequence-heavy Path/GetPlan contract `5/5` in both language directions (`10/10`
   direction rows, zero invalid frames), using bounded request repeats to cover
-  asynchronous client/service graph convergence; a separate two-container POSIX
+  asynchronous client/service graph convergence; a separate ROSIDL-generated
+  `FleetShape` service passes another `5/5`/`10/10` matrix at maximum declared
+  bounds for `string<=32`, `uint8[16]`, `float32[<=128]`, nested
+  `PoseStamped[<=16]`, `Duration`, and `uint32[<=64]`; a separate two-container POSIX
   shared-memory gate transfers a 100 KB payload with no UDP peer or slot
   overwrite, reports zero network-flow endpoints in SHM mode, and proves an
   explicit UDP fallback path under injected SHM initialization failure; a
