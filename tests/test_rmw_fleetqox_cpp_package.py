@@ -1111,6 +1111,7 @@ int main()
         self.assertIn("\"one\"", reliability_probe_source)
         self.assertIn("\"two\"", reliability_probe_source)
         self.assertIn("\"three\"", reliability_probe_source)
+        self.assertIn("reliable_timeout_retransmissions", reliability_probe_source)
         reliable_interprocess_probe = PKG / "src" / "reliable_interprocess_probe.cpp"
         self.assertTrue(reliable_interprocess_probe.exists())
         reliable_interprocess_source = reliable_interprocess_probe.read_text()
@@ -1469,6 +1470,9 @@ int main()
         docker_reliability_source = docker_reliability_script.read_text()
         self.assertIn("fleetrmw.rmw_docker_reliability_probe.v1", docker_reliability_source)
         self.assertIn("FLEETQOX_RMW_DROP_SOURCE_SEQUENCES=2", docker_reliability_source)
+        self.assertIn("FLEETQOX_RMW_DROP_SOURCE_SEQUENCES=1", docker_reliability_source)
+        self.assertIn("FLEETQOX_RMW_RELIABLE_ACK_TIMEOUT_MS=100", docker_reliability_source)
+        self.assertIn("initial_sequence_probe", docker_reliability_source)
         self.assertIn("fleetrmw_reliability_probe", docker_reliability_source)
         self.assertIn("nack_retransmissions", docker_reliability_source)
         docker_router_reliability_script = ROOT / "scripts" / "run_rmw_docker_router_reliability_probe.py"
@@ -3591,6 +3595,15 @@ int main()
         self.assertIn("--reliable-ack-timeout-ms", matched_source)
         self.assertIn("FLEETQOX_RMW_RELIABLE_ACK_TIMEOUT_MS", matched_source)
         self.assertIn("ack_timeout_retransmit", matched_source)
+        self.assertIn("router_post_satisfaction_ms", matched_source)
+        data_frame_header = (
+            PKG / "include" / "rmw_fleetqox_cpp" / "data_frame.hpp"
+        ).read_text()
+        data_frame_source = (PKG / "src" / "data_frame.cpp").read_text()
+        pubsub_source = (PKG / "src" / "rmw_pubsub.cpp").read_text()
+        self.assertIn("lowest_observed_sequence", data_frame_header)
+        self.assertIn('"lowest_observed_sequence\\":', data_frame_source)
+        self.assertIn("bounded_cumulative_ack", pubsub_source)
 
         comparison_script = ROOT / "scripts" / "run_large_scale_rmw_comparison.py"
         self.assertTrue(comparison_script.exists())
@@ -4684,6 +4697,19 @@ int main()
         self.assertTrue(
             manifest["supported"]["docker_same_hop_rmw_comparison_8_16_32_3seed"]
         )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_same_hop_generic_serialized_rmw_comparison_8_16_32_3seed"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"]["initial_source_sequence_timeout_repair"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_initial_source_sequence_timeout_repair_probe"
+            ]
+        )
         self.assertFalse(claims["same_hop_cross_rmw_superiority"])
         self.assertTrue(claims["same_hop_delivery_reliability_comparison_claim"])
         self.assertTrue(
@@ -4696,6 +4722,14 @@ int main()
         )
         self.assertFalse(claims["same_hop_latency_superiority_claim"])
         self.assertFalse(claims["same_hop_middle_processing_equivalence_claim"])
+        self.assertTrue(
+            claims[
+                "docker_same_hop_generic_serialized_rmw_comparison_8_16_32_3seed"
+            ]
+        )
+        self.assertTrue(
+            claims["initial_source_sequence_timeout_repair_claim"]
+        )
         self.assertTrue(claims["docker_same_hop_rmw_comparison_8_16_32_3seed"])
         self.assertTrue(claims["docker_two_container_shared_memory_100kb"])
         self.assertTrue(claims["docker_shared_memory_udp_hybrid_dedup"])

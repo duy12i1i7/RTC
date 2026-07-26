@@ -695,12 +695,14 @@ from pathlib import Path
 import time
 
 import rclpy
+from rclpy.duration import Duration
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 
 TOPIC_SPECS = __TOPIC_SPECS_JSON__
 SAMPLES = __SAMPLES__
 PUBLISH_INTERVAL_S = __PUBLISH_INTERVAL_S__
+PUBLISHER_ACK_HORIZON_S = __PUBLISHER_LINGER_S__
 
 rclpy.init()
 node = rclpy.create_node("fleetrmw_direct_baseline_publisher")
@@ -752,7 +754,29 @@ for seq in range(1, SAMPLES + 1):
     rclpy.spin_once(node, timeout_sec=0.05)
     time.sleep(PUBLISH_INTERVAL_S)
 
-time.sleep(__PUBLISHER_LINGER_S__)
+ack_wait_started = time.monotonic()
+ack_wait_deadline = ack_wait_started + PUBLISHER_ACK_HORIZON_S
+pending_ack_topics = list(publishers)
+ack_wait_supported = True
+while pending_ack_topics and time.monotonic() < ack_wait_deadline:
+    next_pending = []
+    try:
+        for topic in pending_ack_topics:
+            if not publishers[topic].wait_for_all_acked(
+                timeout=Duration(nanoseconds=0)
+            ):
+                next_pending.append(topic)
+    except (NotImplementedError, RuntimeError):
+        ack_wait_supported = False
+        break
+    pending_ack_topics = next_pending
+    if pending_ack_topics:
+        rclpy.spin_once(node, timeout_sec=0.02)
+if not ack_wait_supported:
+    remaining = ack_wait_deadline - time.monotonic()
+    if remaining > 0.0:
+        time.sleep(remaining)
+ack_wait_elapsed_s = time.monotonic() - ack_wait_started
 subscription_counts = {
     topic: pub.get_subscription_count()
     for topic, pub in publishers.items()
@@ -770,6 +794,10 @@ result = {
         subscription_counts[spec["topic"]] for spec in TOPIC_SPECS if spec["kind"] == "state"
     ),
     "min_subscription_count": min(subscription_counts.values()) if subscription_counts else 0,
+    "ack_wait_supported": ack_wait_supported,
+    "ack_wait_complete": ack_wait_supported and not pending_ack_topics,
+    "unacked_topic_count": len(pending_ack_topics),
+    "ack_wait_elapsed_s": ack_wait_elapsed_s,
 }
 print(json.dumps(result, sort_keys=True))
 node.destroy_node()

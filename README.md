@@ -624,12 +624,15 @@ This repository starts with the part that should be proven first:
   overall). The four failures retain genuine missing-payload observations.
   Delivery/reliability comparison is allowed, but latency and architectural
   superiority remain disallowed. That historical 36-row artifact used a common
-  typed relay. The current harness replaces it with an `rclcpp` generic relay
+  typed relay. The current v2 harness replaces it with an `rclcpp` generic relay
   that forwards opaque serialized `std_msgs/String` payloads without
-  application deserialization; a four-system Docker/netem gate passes `4/4`.
-  Serialized-payload state is now matched (byte-identical cross-RMW
-  serialization is not claimed), but FleetRMW raw-frame forwarding still
-  differs from baseline RMW endpoint termination/republish;
+  application deserialization and uses bounded `wait_for_all_acked` publisher
+  horizons. Its fresh full-scale run passes `35/36`: Fast DDS, Cyclone DDS, and
+  Zenoh pass `9/9`, FleetRMW passes `8/9`, and the baseline relays forward
+  `5040/5040` payloads. The retained FleetRMW failure delivers `319/320`.
+  Serialized-payload state is matched (byte-identical cross-RMW serialization
+  is not claimed), but FleetRMW raw-frame forwarding still differs from
+  baseline RMW endpoint termination/republish;
 - a repeated `8/16/32` actuated-repair capacity frontier where all `27/27`
   rows and `9/9` robot/capacity groups pass: sequence `2` is dropped once on
   both paths for repair candidates, admitted gaps are repaired on time,

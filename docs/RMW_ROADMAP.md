@@ -885,12 +885,14 @@ Implemented first:
   infrastructure-only retries, and 95% confidence intervals. The current-image
   split-scope run passes `36/36`; its topology caveat remains. A separate
   same-hop relay study passes `32/36` and allows delivery/reliability comparison
-  only. Its historical artifact used a typed rclpy relay; the current harness
+  only. Its historical artifact used a typed rclpy relay; the current v2 harness
   forwards opaque serialized payloads through a common C++ generic relay
-  without application deserialization and passes a four-system Docker/netem
-  gate `4/4`. Raw FleetRMW forwarding and baseline RMW endpoint
-  termination/republish remain non-equivalent for latency. Both reports forbid
-  broad mixed-semantics superiority claims;
+  without application deserialization, uses bounded ACK-aware publisher
+  horizons, and passes `35/36` in a fresh full-scale matrix. Fast DDS, Cyclone
+  DDS, and Zenoh pass `9/9`; FleetRMW passes `8/9` with one retained `319/320`
+  row. Raw FleetRMW forwarding and baseline RMW endpoint termination/republish
+  remain non-equivalent for latency. Both reports forbid broad mixed-semantics
+  superiority claims;
 - router-mediated ROS CLI service timeout: separate client/server containers
   exchange request/response through FleetRMW, the caller times out cleanly
   without a fabricated response, and the router accounts for both frames;
@@ -1037,8 +1039,9 @@ Next implement:
 - sequence-heavy C++ service and cross-language type-support matrices beyond
   the proven Nav2 manager, standalone, and interprocess C++ paths;
 - preserve the completed split-scope DDS/Zenoh/FleetRMW contract and the
-  separate `32/36` same-hop study; rerun the generic-serialized relay at full
-  scale with increased samples/repetitions and make transport-envelope middle
+  separate historical `32/36` and current generic-serialized `35/36` same-hop
+  studies; increase beyond five samples/three repetitions, investigate the
+  retained FleetRMW `319/320` row, and make transport-envelope middle
   processing semantically equivalent before allowing latency superiority;
 - preserve the completed ns-3/OMNeT++ matched routed-P2P matrix (`27/27`
   runtime and bounded-parity cases, OMNeT++ 6.4.0/INET 4.7.0) while adding

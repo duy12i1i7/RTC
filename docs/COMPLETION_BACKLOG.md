@@ -69,10 +69,12 @@ project. It is ordered by dependency and regression value.
   `9/9`, FleetRMW `8/9`, and Fast DDS `6/9` (`32/36` overall). It permits only
   delivery/reliability comparison. Its historical 36-row artifact used a
   typed rclpy relay. The current harness instead uses a common `rclcpp` generic
-  serialized relay with no application deserialization and passes a `4/4`
-  four-system Docker/netem gate. FleetRMW raw-frame forwarding and baseline
-  RMW endpoint termination/republish are still not latency-equivalent middle
-  processing.
+  serialized relay with no application deserialization plus bounded
+  `wait_for_all_acked` publisher horizons. A fresh full-scale run passes
+  `35/36`: all three baselines pass `9/9` and relay `5040/5040` payloads;
+  FleetRMW passes `8/9` with one retained `319/320` row. FleetRMW raw-frame
+  forwarding and baseline RMW endpoint termination/republish are still not
+  latency-equivalent middle processing.
 - Native ns-3 3.41 now runs in the project Docker image. The first repeated
   T2S matrix passes `27/27` rows at `8/16/32` robots over Wi-Fi/WAN/roaming
   parameter envelopes and seeds `7,13,29`, using identical traces for FIFO,
@@ -1296,13 +1298,24 @@ infrastructure reruns.
 The v2 harness replaces that typed middle with a C++ `rclcpp`
 generic-subscription/generic-publisher relay. The relay republishes
 `rclcpp::SerializedMessage` directly, reports serialized byte/count evidence,
-and explicitly reports `application_deserialization=false`. A current
-four-system Docker/netem gate passes `4/4`. The machine-readable contract now
-sets hop/profile/RELIABLE and serialized-payload state matching true. It does
-not claim byte-identical serialization across RMWs. Delivery/reliability
-comparison remains allowed, while latency superiority, full middle-hop
-equivalence, and broad cross-RMW superiority remain false because raw FleetRMW
-frame forwarding still differs from RMW endpoint termination/republish.
+and explicitly reports `application_deserialization=false`. A fresh full
+`8/16/32`-robot, seed `7/13/29` Docker/netem matrix passes `35/36`. Fast DDS,
+Cyclone DDS, and Zenoh pass `9/9` each and relay `5040/5040` payloads. FleetRMW
+passes `8/9`; its retained 32-robot seed-29 row delivers `319/320`. All 36
+publishers report supported/completed ACK waits and zero unacked topics. The
+machine-readable contract sets hop/profile/RELIABLE and serialized-payload
+state matching true. It does not claim byte-identical serialization across
+RMWs. Delivery/reliability comparison remains allowed, while latency
+superiority, full middle-hop equivalence, and broad cross-RMW superiority
+remain false because raw FleetRMW frame forwarding still differs from RMW
+endpoint termination/republish.
+
+The full-scale run exposed a separate FleetRMW initial-sequence reliability
+bug: a reader that first observed sequence 2 could cumulatively acknowledge
+sequence 1 even when sequence 1 was dropped. ACK feedback now carries the
+lowest observed sequence and bounds cumulative acknowledgement to that floor.
+A deterministic Docker regression drops sequence 2 for NACK repair, then
+drops sequence 1 for timeout repair; both phases receive `one/two/three`.
 
 Next continue P0/P2 in this order:
 
@@ -1312,9 +1325,9 @@ Next continue P0/P2 in this order:
    boundary. Then push beyond the proven unwindowed total-4096 upstream request
    workload without presenting request completion as simultaneous physical
    navigation.
-2. Preserve both completed comparison contracts and rerun the upgraded
-   generic-serialized same-hop harness at full `8/16/32` scale with more
-   samples and independent repetitions. Match transport-envelope middle
+2. Preserve both completed comparison contracts, increase beyond the current
+   five samples and three independent repetitions, and investigate the one
+   retained FleetRMW `319/320` delivery row. Match transport-envelope middle
    semantics before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.

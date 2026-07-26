@@ -66,7 +66,8 @@ class Ros2DirectRmwNetemProbeTest(unittest.TestCase):
             self.assertIn("SAMPLES = 5", subscriber.read_text())
             self.assertIn("TIMEOUT_S = 7.5", subscriber.read_text())
             self.assertIn("PUBLISH_INTERVAL_S = 0.25", publisher.read_text())
-            self.assertIn("time.sleep(0.5)", publisher.read_text())
+            self.assertIn("PUBLISHER_ACK_HORIZON_S = 0.5", publisher.read_text())
+            self.assertIn("wait_for_all_acked", publisher.read_text())
 
     def test_write_probe_scripts_can_extend_publisher_reliability_horizon(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -82,7 +83,8 @@ class Ros2DirectRmwNetemProbeTest(unittest.TestCase):
                 publisher_linger_s=2.75,
             )
 
-            self.assertIn("time.sleep(2.75)", publisher.read_text())
+            self.assertIn("PUBLISHER_ACK_HORIZON_S = 2.75", publisher.read_text())
+            self.assertIn('"ack_wait_complete"', publisher.read_text())
 
     def test_topic_specs_keep_legacy_default_and_scale_by_robot(self) -> None:
         legacy = topic_specs_for_robot_count(1)

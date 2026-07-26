@@ -139,8 +139,32 @@ def run_comparison(
         and len(relay_results) == expected_relay_result_count
         and serialized_relay_result_count == expected_relay_result_count
     )
+    publisher_results = [
+        result.get("publisher", {})
+        for row in rows
+        if isinstance(row.get("result"), dict)
+        for result in [row["result"]]
+        if isinstance(result.get("publisher"), dict)
+    ]
+    publisher_ack_wait_supported_count = sum(
+        publisher.get("ack_wait_supported") is True
+        for publisher in publisher_results
+    )
+    publisher_ack_wait_complete_count = sum(
+        publisher.get("ack_wait_complete") is True
+        and int(publisher.get("unacked_topic_count", -1)) == 0
+        for publisher in publisher_results
+    )
+    publisher_ack_horizon_contract_ok = (
+        len(publisher_results) == len(rows)
+        and publisher_ack_wait_supported_count == len(rows)
+        and publisher_ack_wait_complete_count == len(rows)
+    )
     status = "ok" if rows and failed_count == 0 and skipped_count == 0 else "partial"
-    if status == "ok" and not serialized_relay_contract_ok:
+    if status == "ok" and (
+        not serialized_relay_contract_ok or
+        not publisher_ack_horizon_contract_ok
+    ):
         status = "partial"
     if rows and ok_count == 0:
         status = "failed"
@@ -160,6 +184,14 @@ def run_comparison(
         "source_netem_profile_matched": True,
         "reliable_qos_matched": True,
         "publisher_reliability_horizon_s": 6.0,
+        "publisher_reliability_horizon_mode":
+            "bounded_wait_for_all_acked",
+        "publisher_ack_wait_supported_count":
+            publisher_ack_wait_supported_count,
+        "publisher_ack_wait_complete_count":
+            publisher_ack_wait_complete_count,
+        "publisher_ack_horizon_contract_ok":
+            publisher_ack_horizon_contract_ok,
         "relay_scope": "rclcpp_generic_serialized_passthrough",
         "relay_expected_count": relay_expected_count,
         "relay_payload_count": relay_payload_count,

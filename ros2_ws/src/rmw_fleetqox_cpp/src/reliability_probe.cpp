@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -21,6 +22,7 @@
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_ack_nack_received();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_ack_nack_sent();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_nack_retransmissions();
+extern "C" std::uint64_t rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions();
 extern "C" std::uint64_t rmw_fleetqox_cpp_socket_test_dropped_frames();
 
 namespace
@@ -107,6 +109,21 @@ bool contains_payload(const std::vector<std::string> & payloads, const std::stri
   return std::find(payloads.begin(), payloads.end(), expected) != payloads.end();
 }
 
+std::string configured_drop_sequences()
+{
+  const char * value = std::getenv("FLEETQOX_RMW_DROP_SOURCE_SEQUENCES");
+  if (value == nullptr || *value == '\0') {
+    return "2";
+  }
+  const std::string text = value;
+  const bool valid = std::all_of(
+    text.begin(), text.end(),
+    [](const char character) {
+      return (character >= '0' && character <= '9') || character == ',';
+    });
+  return valid ? text : "2";
+}
+
 }  // namespace
 
 int main()
@@ -169,6 +186,8 @@ int main()
   const std::uint64_t ack_sent_before = rmw_fleetqox_cpp_socket_ack_nack_sent();
   const std::uint64_t ack_received_before = rmw_fleetqox_cpp_socket_ack_nack_received();
   const std::uint64_t retrans_before = rmw_fleetqox_cpp_socket_nack_retransmissions();
+  const std::uint64_t timeout_retrans_before =
+    rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions();
 
   std::vector<std::string> received_payloads;
   const rmw_ret_t publish_one_ret = rmw_publish_serialized_message(publisher, &one, nullptr);
@@ -179,8 +198,10 @@ int main()
   const rmw_ret_t publish_three_ret = rmw_publish_serialized_message(publisher, &three, nullptr);
   const bool took_three = publish_three_ret == RMW_RET_OK &&
     take_until(subscription, &incoming, "three", &received_payloads, 1000);
-  const bool took_retransmitted_two = publish_two_ret == RMW_RET_OK &&
-    take_until(subscription, &incoming, "two", &received_payloads, 2000);
+  const bool took_two_before_repair_wait = contains_payload(received_payloads, "two");
+  const bool took_two = publish_two_ret == RMW_RET_OK &&
+    (took_two_before_repair_wait ||
+    take_until(subscription, &incoming, "two", &received_payloads, 2000));
 
   const std::uint64_t dropped =
     rmw_fleetqox_cpp_socket_test_dropped_frames() - dropped_before;
@@ -190,6 +211,9 @@ int main()
     rmw_fleetqox_cpp_socket_ack_nack_received() - ack_received_before;
   const std::uint64_t retransmissions =
     rmw_fleetqox_cpp_socket_nack_retransmissions() - retrans_before;
+  const std::uint64_t timeout_retransmissions =
+    rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions() -
+    timeout_retrans_before;
 
   const rmw_ret_t one_fini_ret = rmw_serialized_message_fini(&one);
   const rmw_ret_t two_fini_ret = rmw_serialized_message_fini(&two);
@@ -211,23 +235,25 @@ int main()
   const bool reliability_ok =
     took_one &&
     took_three &&
-    took_retransmitted_two &&
+    took_two &&
     contains_payload(received_payloads, "one") &&
     contains_payload(received_payloads, "two") &&
     contains_payload(received_payloads, "three") &&
     dropped >= 1 &&
     ack_sent >= 2 &&
     ack_received >= 2 &&
-    retransmissions >= 1;
+    retransmissions + timeout_retransmissions >= 1;
 
   std::cout << "{\"schema_version\":\"fleetrmw.rmw_reliability_probe.v1\",";
   std::cout << "\"status\":\"" << (reliability_ok && cleanup_ok ? "ok" : "failed") << "\",";
   std::cout << "\"topic\":\"" << topic << "\",";
-  std::cout << "\"drop_source_sequences\":[2],";
+  std::cout << "\"drop_source_sequences\":[" << configured_drop_sequences() << "],";
   std::cout << "\"test_dropped_frames\":" << dropped << ",";
   std::cout << "\"ack_nack_sent\":" << ack_sent << ",";
   std::cout << "\"ack_nack_received\":" << ack_received << ",";
   std::cout << "\"nack_retransmissions\":" << retransmissions << ",";
+  std::cout << "\"reliable_timeout_retransmissions\":" <<
+    timeout_retransmissions << ",";
   std::cout << "\"received_payloads\":[";
   for (size_t i = 0; i < received_payloads.size(); ++i) {
     if (i > 0) {

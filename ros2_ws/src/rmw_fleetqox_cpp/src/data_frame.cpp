@@ -810,6 +810,9 @@ AckNackFeedback observe_frame(SequenceState & state, const DataFrame & frame)
 AckNackFeedback feedback_from_sequence_state(const SequenceState & state)
 {
   AckNackFeedback feedback;
+  if (!state.observed_sequences.empty()) {
+    feedback.lowest_observed_sequence = *state.observed_sequences.begin();
+  }
   feedback.highest_contiguous_sequence = state.highest_contiguous_sequence;
   feedback.highest_observed_sequence = state.highest_observed_sequence;
   if (state.highest_contiguous_sequence >= state.highest_observed_sequence ||
@@ -874,7 +877,8 @@ std::string encode_ack_nack(
     out << feedback.missing_sequence_ranges[i].second << "]";
   }
   out << "]},";
-  out << "\"state\":{\"highest_contiguous_sequence\":" << feedback.highest_contiguous_sequence << ",";
+  out << "\"state\":{\"lowest_observed_sequence\":" << feedback.lowest_observed_sequence << ",";
+  out << "\"highest_contiguous_sequence\":" << feedback.highest_contiguous_sequence << ",";
   out << "\"highest_observed_sequence\":" << feedback.highest_observed_sequence << ",";
   out << "\"duplicate\":" << (feedback.duplicate ? "true" : "false") << ",";
   out << "\"out_of_order\":" << (feedback.out_of_order ? "true" : "false") << "}}";
@@ -908,6 +912,8 @@ std::optional<AckNackFrame> decode_ack_nack(const std::string & payload)
   frame.ack_sequence_number = *sequence;
   frame.source_timestamp_ns = static_cast<std::int64_t>(*timestamp);
   frame.missing_sequence_ranges = missing_ranges_from_ack_nack(body);
+  frame.lowest_observed_sequence =
+    json_uint_value(state, "lowest_observed_sequence").value_or(0);
   frame.highest_contiguous_sequence =
     json_uint_value(state, "highest_contiguous_sequence").value_or(0);
   frame.highest_observed_sequence =

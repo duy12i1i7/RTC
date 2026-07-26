@@ -33,6 +33,10 @@ def main() -> int:
         print(f"  status: {summary['status']}")
         print(f"  dropped: {summary.get('probe', {}).get('test_dropped_frames')}")
         print(f"  retransmissions: {summary.get('probe', {}).get('nack_retransmissions')}")
+        print(
+            "  initial-sequence timeout retransmissions: "
+            f"{summary.get('initial_sequence_probe', {}).get('reliable_timeout_retransmissions')}"
+        )
     return 0 if summary["status"] == "ok" else 1
 
 
@@ -57,32 +61,53 @@ FLEETQOX_RMW_DROP_SOURCE_SEQUENCES=2 \
   /tmp/fleetrmw_install/rmw_fleetqox_cpp/lib/rmw_fleetqox_cpp/fleetrmw_reliability_probe \
   > /tmp/fleetrmw_reliability_probe.out 2> /tmp/fleetrmw_reliability_probe.err
 probe_ret=$?
-PROBE_RET="$probe_ret" python3 - <<'PY'
+FLEETQOX_RMW_DROP_SOURCE_SEQUENCES=1 \
+FLEETQOX_RMW_RELIABLE_ACK_TIMEOUT_MS=100 \
+FLEETQOX_RMW_RELIABLE_MAX_RETRANSMISSIONS=3 \
+  /tmp/fleetrmw_install/rmw_fleetqox_cpp/lib/rmw_fleetqox_cpp/fleetrmw_reliability_probe \
+  > /tmp/fleetrmw_initial_reliability_probe.out \
+  2> /tmp/fleetrmw_initial_reliability_probe.err
+initial_probe_ret=$?
+PROBE_RET="$probe_ret" INITIAL_PROBE_RET="$initial_probe_ret" python3 - <<'PY'
 import json
 import os
 from pathlib import Path
 
-stdout = Path("/tmp/fleetrmw_reliability_probe.out").read_text()
+def parse_probe(path):
+    stdout = Path(path).read_text()
+    probe = {}
+    for line in reversed(stdout.splitlines()):
+        stripped = line.strip()
+        if stripped.startswith("{"):
+            try:
+                probe = json.loads(stripped)
+            except json.JSONDecodeError:
+                probe = {"status": "parse_failed", "raw": stripped}
+            break
+    if not probe:
+        probe = {"status": "missing", "raw_stdout": stdout}
+    return stdout, probe
+
+
+stdout, probe = parse_probe("/tmp/fleetrmw_reliability_probe.out")
 stderr = Path("/tmp/fleetrmw_reliability_probe.err").read_text()
-probe = {}
-for line in reversed(stdout.splitlines()):
-    stripped = line.strip()
-    if stripped.startswith("{"):
-        try:
-            probe = json.loads(stripped)
-        except json.JSONDecodeError:
-            probe = {"status": "parse_failed", "raw": stripped}
-        break
-if not probe:
-    probe = {"status": "missing", "raw_stdout": stdout}
+initial_stdout, initial_probe = parse_probe(
+    "/tmp/fleetrmw_initial_reliability_probe.out"
+)
+initial_stderr = Path("/tmp/fleetrmw_initial_reliability_probe.err").read_text()
 payloads = set(probe.get("received_payloads", []))
+initial_payloads = set(initial_probe.get("received_payloads", []))
 summary = {
     "schema_version": "fleetrmw.rmw_docker_reliability_probe.v1",
     "status": "pending",
     "probe": probe,
+    "initial_sequence_probe": initial_probe,
     "probe_stdout": stdout,
     "probe_stderr": stderr,
     "probe_returncode": int(os.environ["PROBE_RET"]),
+    "initial_sequence_probe_stdout": initial_stdout,
+    "initial_sequence_probe_stderr": initial_stderr,
+    "initial_sequence_probe_returncode": int(os.environ["INITIAL_PROBE_RET"]),
 }
 summary["status"] = "ok" if (
     summary["probe_returncode"] == 0 and
@@ -92,7 +117,14 @@ summary["status"] = "ok" if (
     probe.get("ack_nack_received", 0) >= 2 and
     probe.get("nack_retransmissions", 0) >= 1 and
     {"one", "two", "three"}.issubset(payloads) and
-    stderr == ""
+    stderr == "" and
+    summary["initial_sequence_probe_returncode"] == 0 and
+    initial_probe.get("status") == "ok" and
+    initial_probe.get("drop_source_sequences") == [1] and
+    initial_probe.get("test_dropped_frames", 0) >= 1 and
+    initial_probe.get("reliable_timeout_retransmissions", 0) >= 1 and
+    {"one", "two", "three"}.issubset(initial_payloads) and
+    initial_stderr == ""
 ) else "failed"
 print(json.dumps(summary, sort_keys=True))
 PY

@@ -44,6 +44,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
         self.assertIn("netem_loss_scale=netem_loss_scale", source)
         self.assertIn("publisher_linger_s=6.0", source)
         self.assertIn('"publisher_reliability_horizon_s": 6.0', source)
+        self.assertIn('"publisher_ack_horizon_contract_ok":', source)
 
     def test_old_resume_rows_cannot_satisfy_serialized_relay_contract(self):
         module = load_runner()
@@ -101,6 +102,9 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                         "hop_count_matched": True,
                         "source_netem_profile_matched": True,
                         "reliable_qos_matched": True,
+                        "publisher_ack_wait_supported_count": 36,
+                        "publisher_ack_wait_complete_count": 36,
+                        "publisher_ack_horizon_contract_ok": True,
                         "relay_scope": "rclcpp_generic_serialized_passthrough",
                         "serialized_relay_contract_ok": True,
                         "middle_payload_serialization_state_matched": True,
@@ -129,6 +133,9 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             )
             self.assertFalse(
                 summary["metrics"]["middle_application_deserialization"]
+            )
+            self.assertTrue(
+                summary["metrics"]["publisher_ack_horizon_contract_ok"]
             )
             self.assertTrue(
                 summary["metrics"]["delivery_reliability_comparison_allowed"]

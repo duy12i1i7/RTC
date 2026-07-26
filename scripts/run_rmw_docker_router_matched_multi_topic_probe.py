@@ -136,6 +136,10 @@ def run_probe(
         max_retransmissions=reliable_max_retransmissions,
     )
     reliable_max_retransmissions = max(int(reliable_max_retransmissions), 0)
+    router_post_satisfaction_ms = max(
+        1000,
+        int(round(publisher_linger_s * 1000.0)) + 1000,
+    )
 
     def docker_shell(command: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
         return run([
@@ -175,7 +179,8 @@ def run_probe(
             f"--expected-frames {len(specs) * samples} "
             f"--expected-route-advertisements {len(specs)} "
             f"--expected-graph-advertisements {len(specs) * 2} "
-            "--post-satisfaction-ms 1000 --timeout-ms 30000",
+            f"--post-satisfaction-ms {router_post_satisfaction_ms} "
+            "--timeout-ms 30000",
         ])
         subscriber_command = (
             "source /opt/ros/jazzy/setup.bash && "
@@ -264,6 +269,7 @@ def run_probe(
             "reliable_ack_timeout_ms": effective_ack_timeout_ms,
             "reliable_max_retransmissions": reliable_max_retransmissions,
             "publisher_linger_s": publisher_linger_s,
+            "router_post_satisfaction_ms": router_post_satisfaction_ms,
             "logical_data_frames": logical_data_frames,
             "router_observed_data_frames": router_observed_data_frames,
             "router_observed_retransmit_overhead": router_observed_retransmit_overhead,

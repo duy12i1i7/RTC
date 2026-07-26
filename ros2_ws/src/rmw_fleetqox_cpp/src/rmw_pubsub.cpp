@@ -4573,8 +4573,13 @@ bool handle_ack_nack_feedback(const std::string & encoded_frame)
       {
         continue;
       }
-      if (state.source_sequence_number == ack_nack->ack_sequence_number ||
-        state.source_sequence_number <= ack_nack->highest_contiguous_sequence)
+      const bool exact_ack =
+        state.source_sequence_number == ack_nack->ack_sequence_number;
+      const bool bounded_cumulative_ack =
+        ack_nack->lowest_observed_sequence > 0 &&
+        state.source_sequence_number >= ack_nack->lowest_observed_sequence &&
+        state.source_sequence_number <= ack_nack->highest_contiguous_sequence;
+      if (exact_ack || bounded_cumulative_ack)
       {
         const size_t pending_before = state.pending_subscriber_ids.size();
         if (!ack_nack->subscriber_id.empty()) {

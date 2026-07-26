@@ -1492,16 +1492,29 @@ architectural superiority: FleetRMW forwards raw frames while that historical
 artifact used a common typed rclpy relay for the three baselines.
 
 The current v2 harness replaces the typed relay with a C++ `rclcpp` generic
-serialized-message relay. Fast DDS, Cyclone DDS, and Zenoh each pass an
-individual `12/12` relay smoke, and a combined four-system Docker/netem gate
-passes `4/4` with delivery ratio `1.0`. All three baseline rows report opaque
-serialized forwarding and `application_deserialization=false`. This matches
-the application payload's serialized state, not byte-level cross-RMW
-serialization and not the transport-envelope semantics:
+serialized-message relay and uses bounded `wait_for_all_acked` publisher
+horizons. Fast DDS, Cyclone DDS, and Zenoh each pass an individual `12/12`
+relay smoke. A fresh full `8/16/32`-robot, seed `7/13/29` Docker/netem matrix
+passes `35/36`: every baseline passes `9/9`, FleetRMW passes `8/9`, and the
+baseline relays forward `5040/5040` payloads. The retained FleetRMW
+32-robot/seed-29 row delivers `319/320`; it is not retried away. All 36
+publishers report supported and completed ACK waits with zero unacked topics.
+All baseline rows report opaque serialized forwarding and
+`application_deserialization=false`. This matches the application payload's
+serialized state, not byte-level cross-RMW serialization and not the
+transport-envelope semantics:
 FleetRMW forwards raw frames while the baselines terminate and republish
 serialized messages through an RMW endpoint. Therefore delivery/reliability
 comparison remains allowed, while latency and architectural superiority remain
 disallowed.
+
+The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
+bug. A first observation at sequence 2 previously advanced the cumulative ACK
+through a dropped sequence 1. ACK feedback now carries
+`lowest_observed_sequence`, and the writer applies cumulative ACK only within
+that observed floor. A deterministic Docker probe preserves the sequence-2
+NACK-repair path and separately drops sequence 1; timeout retransmission
+recovers it and both phases receive all three payloads.
 
 The latest budgeted fleet-plan actuation closes the gap between the Python
 optimizer and the C++ RMW data plane. Four concurrent robot control topics run

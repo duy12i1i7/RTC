@@ -96,6 +96,7 @@ struct SequenceState
 struct AckNackFeedback
 {
   std::vector<std::pair<std::uint64_t, std::uint64_t>> missing_sequence_ranges;
+  std::uint64_t lowest_observed_sequence = 0;
   std::uint64_t highest_contiguous_sequence = 0;
   std::uint64_t highest_observed_sequence = 0;
   bool duplicate = false;
@@ -111,6 +112,7 @@ struct AckNackFrame
   std::uint64_t ack_sequence_number = 0;
   std::int64_t source_timestamp_ns = 0;
   std::vector<std::pair<std::uint64_t, std::uint64_t>> missing_sequence_ranges;
+  std::uint64_t lowest_observed_sequence = 0;
   std::uint64_t highest_contiguous_sequence = 0;
   std::uint64_t highest_observed_sequence = 0;
   bool duplicate = false;
