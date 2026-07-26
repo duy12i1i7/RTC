@@ -12,6 +12,7 @@
   <depend>rmw</depend>
   <depend>rmw_dds_common</depend>
   <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>openssl</depend>
   <depend>rcl</depend>
   <depend>rclcpp</depend>

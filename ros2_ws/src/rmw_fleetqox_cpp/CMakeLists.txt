@@ -9,6 +9,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(rcl REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rcutils REQUIRED)
@@ -828,6 +829,7 @@ add_executable(fleetrmw_rclcpp_interprocess_probe
 target_compile_features(fleetrmw_rclcpp_interprocess_probe PRIVATE cxx_std_17)
 ament_target_dependencies(fleetrmw_rclcpp_interprocess_probe
   geometry_msgs
+  nav_msgs
   rclcpp
   std_srvs
 )

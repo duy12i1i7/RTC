@@ -39,6 +39,16 @@ METRIC_KEYS = (
     "publisher_ack_wait_supported_count",
     "publisher_ack_wait_complete_count",
     "publisher_ack_horizon_contract_ok",
+    "direction_count",
+    "ok_direction_count",
+    "path_pose_count",
+    "service_request_repeat_count",
+    "service_request_repeat_interval_ms",
+    "bounded_service_discovery_repair_claim",
+    "service_exactly_once_claim",
+    "netem_applied_all",
+    "bidirectional_cpp_python_claim",
+    "sequence_heavy_nested_path_claim",
     "relay_scope",
     "relay_expected_count",
     "relay_payload_count",
@@ -1066,6 +1076,11 @@ METRIC_KEYS = (
 )
 
 CLAIM_BOUNDARY_KEYS = (
+    "docker_router_cpp_python_path_5run_netem",
+    "bidirectional_cpp_python_path_claim",
+    "sequence_heavy_nested_path_cpp_python_claim",
+    "service_discovery_bounded_repeat_dedup_claim",
+    "full_exactly_once_service_semantics_claim",
     "production_quic_backend_claim",
     "full_bidirectional_quic_backend_claim",
     "rmw_integrated_quic_backend_claim",
@@ -1752,6 +1767,12 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
     if "dynamic_message" in text or "dynamic-message" in text:
         return "abi/dynamic-message"
     if "take_sequence" in text or "take-sequence" in text:
+        return "rmw-abi"
+    if (
+        "cpp_python_path" in text
+        or "rclcpp_interprocess" in text
+        or "cpp_typesupport" in text
+    ):
         return "rmw-abi"
     if "wait_for_all_acked" in text or "wait-for-all-acked" in text:
         return "rmw-abi"

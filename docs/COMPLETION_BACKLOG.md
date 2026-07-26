@@ -54,9 +54,13 @@ project. It is ordered by dependency and regression value.
 - A standalone `rosidl_typesupport_cpp` Docker regression round-trips C++
   `std_msgs/String` and nested `geometry_msgs/PoseStamped` through
   `rmw_serialize`/`rmw_deserialize` (40 and 129 serialized bytes).
-- A two-container `rclcpp` regression routes nested `PoseStamped` request/reply
-  and a C++ `SetBool` service through the FleetRMW router. Both endpoints pass,
-  the router forwards `2/2` service frames, and invalid frames remain zero.
+- The `rclcpp` regression now routes nested `PoseStamped`, a dynamic 64-pose
+  `nav_msgs/Path`, and `SetBool` through the FleetRMW router. A separate
+  bidirectional C++/rclpy Docker/netem matrix passes `5/5` runs and `10/10`
+  direction rows with exact nested Path validation and zero invalid frames.
+  Its service leg explicitly uses five 100 ms request repeats: early requests
+  may be rejected until the reciprocal client graph converges, then endpoint
+  deduplication preserves one callback and response replay completes the call.
 - The same C++ regression validates publisher/subscription UDP network-flow
   endpoint metadata and observes real on-new-request/on-new-response callbacks;
   these ABI surfaces are no longer placeholder successes.
@@ -107,12 +111,15 @@ project. It is ordered by dependency and regression value.
 
 ## P0: Make The RMW ABI Complete Enough For Real ROS 2 Workloads
 
-- Expand the now-working introspection-C++ path beyond Nav2 manager,
-  String/PoseStamped standalone, and C++ interprocess Pose/SetBool probes into
-  sequence-heavy services and cross-language C/C++ matrices.
-- Add regression coverage for more ROS message shapes: bounded/unbounded
-  sequences, nested arrays, time/duration-heavy messages, and common Nav2/RMF
-  message families.
+- Expand the now-working introspection-C++ path beyond the completed
+  bidirectional C++/rclpy `PoseStamped`/64-pose `Path`/`SetBool` router matrix
+  into sequence-heavy request/response service types and a broader generated
+  C/C++ compatibility matrix.
+- Add regression coverage for bounded sequences and additional common Nav2/RMF
+  service families. Unbounded nested message sequences, headers, signed time,
+  dynamic byte/float arrays, fixed covariance arrays, and Duration are already
+  covered by the Path/CLI/Nav2 matrix, but this is not an exhaustive ROSIDL
+  shape corpus.
 - Complete service timeout, cancellation, stale request/response, and error
   semantics instead of only proving the successful SetBool path.
 - Harden action transport on top of pub/sub plus service reliability:

@@ -140,6 +140,7 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
             service_source,
         )
         self.assertIn("<depend>std_srvs</depend>", manifest)
+        self.assertIn("<depend>nav_msgs</depend>", manifest)
         cpp_probe = (PKG / "src" / "cpp_typesupport_probe.cpp").read_text()
         self.assertIn("fleetrmw.cpp_typesupport_probe.v1", cpp_probe)
         self.assertIn("rosidl_typesupport_cpp", cpp_probe)
@@ -156,6 +157,9 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         rclcpp_probe = (PKG / "src" / "rclcpp_interprocess_probe.cpp").read_text()
         self.assertIn("fleetrmw.rclcpp_interprocess_client.v1", rclcpp_probe)
         self.assertIn("geometry_msgs::msg::PoseStamped", rclcpp_probe)
+        self.assertIn("nav_msgs::msg::Path", rclcpp_probe)
+        self.assertIn("kPathPoseCount = 64", rclcpp_probe)
+        self.assertIn("path_roundtrip", rclcpp_probe)
         self.assertIn("publisher_network_flow", rclcpp_probe)
         self.assertIn("subscription_network_flow", rclcpp_probe)
         self.assertIn("request_callback_observed", rclcpp_probe)
@@ -163,9 +167,41 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         rclcpp_runner = ROOT / "scripts" / "run_rmw_docker_router_rclcpp_interprocess_probe.py"
         self.assertTrue(rclcpp_runner.exists())
         self.assertIn(
-            "fleetrmw.docker_router_rclcpp_interprocess_probe.v1",
+            "fleetrmw.docker_router_rclcpp_interprocess_probe.v2",
             rclcpp_runner.read_text(),
         )
+        self.assertIn('client.get("path_roundtrip") is True', rclcpp_runner.read_text())
+        cross_language_endpoint = (
+            ROOT / "scripts" / "rclpy_cpp_interprocess_endpoint.py"
+        )
+        self.assertTrue(cross_language_endpoint.exists())
+        cross_language_endpoint_source = cross_language_endpoint.read_text()
+        self.assertIn(
+            "fleetrmw.rclpy_cpp_interprocess_endpoint.v1",
+            cross_language_endpoint_source,
+        )
+        self.assertIn("PATH_POSE_COUNT = 64", cross_language_endpoint_source)
+        self.assertIn("valid_path_request", cross_language_endpoint_source)
+        self.assertIn("valid_path_reply", cross_language_endpoint_source)
+        cross_language_runner = (
+            ROOT / "scripts" / "run_rmw_docker_router_cpp_python_path_probe.py"
+        )
+        self.assertTrue(cross_language_runner.exists())
+        cross_language_runner_source = cross_language_runner.read_text()
+        self.assertIn(
+            "fleetrmw.docker_router_cpp_python_path_probe.v1",
+            cross_language_runner_source,
+        )
+        self.assertIn("cpp_server_python_client", cross_language_runner_source)
+        self.assertIn("cpp_client_python_server", cross_language_runner_source)
+        self.assertIn("--iterations", cross_language_runner_source)
+        self.assertIn("tc qdisc replace dev eth0 root netem", cross_language_runner_source)
+        self.assertIn("SERVICE_REQUEST_REPEATS = 5", cross_language_runner_source)
+        self.assertIn(
+            "bounded_service_discovery_repair_claim",
+            cross_language_runner_source,
+        )
+        self.assertIn("service_exactly_once_claim", cross_language_runner_source)
         header = (PKG / "include" / "rmw_fleetqox_cpp" / "data_frame.hpp").read_text()
         self.assertIn("fleetrmw.data_frame.v1", header)
         self.assertIn("fleetrmw.ack_nack.v1", header)
@@ -3997,6 +4033,29 @@ int main()
         self.assertTrue(manifest["supported"]["udp_network_flow_endpoints"])
         self.assertTrue(
             manifest["supported"]["new_message_request_response_callbacks"]
+        )
+        self.assertTrue(
+            manifest["supported"]["interprocess_rclcpp_nav_msgs_path_64_pose_router"]
+        )
+        self.assertTrue(
+            manifest["supported"]["bidirectional_rclcpp_rclpy_nav_msgs_path_router"]
+        )
+        self.assertTrue(
+            manifest["supported"]["docker_bidirectional_cpp_python_path_5run_netem"]
+        )
+        self.assertTrue(
+            manifest["supported"]["service_request_bounded_discovery_repeat_dedup"]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "docker_router_cpp_python_path_5run_netem"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"]["bidirectional_cpp_python_path_claim"]
+        )
+        self.assertFalse(
+            manifest["claim_boundaries"]["full_exactly_once_service_semantics_claim"]
         )
         self.assertTrue(
             manifest["supported"][

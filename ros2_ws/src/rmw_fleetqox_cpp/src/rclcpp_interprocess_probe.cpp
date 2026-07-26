@@ -1,13 +1,17 @@
+#include <atomic>
 #include <chrono>
 #include <cmath>
-#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <future>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav_msgs/msg/path.hpp"
 #include "rcl/client.h"
 #include "rcl/publisher.h"
 #include "rcl/service.h"
@@ -78,12 +82,88 @@ bool subscription_flow_ok(
   return ok;
 }
 
+constexpr std::size_t kPathPoseCount = 64;
+
+nav_msgs::msg::Path make_path_request()
+{
+  nav_msgs::msg::Path path;
+  path.header.stamp.sec = -11;
+  path.header.stamp.nanosec = 987654321u;
+  path.header.frame_id = "fleet/path";
+  path.poses.reserve(kPathPoseCount);
+  for (std::size_t index = 0; index < kPathPoseCount; ++index) {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.stamp.sec = static_cast<std::int32_t>(index) - 32;
+    pose.header.stamp.nanosec = static_cast<std::uint32_t>(index * 1000000u);
+    pose.header.frame_id = "fleet/path/" + std::to_string(index);
+    pose.pose.position.x = static_cast<double>(index) * 0.25;
+    pose.pose.position.y = -static_cast<double>(index) * 0.5;
+    pose.pose.position.z = static_cast<double>(index % 3);
+    pose.pose.orientation.z = static_cast<double>(index) / 100.0;
+    pose.pose.orientation.w = 1.0;
+    path.poses.push_back(std::move(pose));
+  }
+  return path;
+}
+
+bool valid_path_request(const nav_msgs::msg::Path & path)
+{
+  if (path.header.stamp.sec != -11 ||
+    path.header.stamp.nanosec != 987654321u ||
+    path.header.frame_id != "fleet/path" ||
+    path.poses.size() != kPathPoseCount)
+  {
+    return false;
+  }
+  for (std::size_t index = 0; index < path.poses.size(); ++index) {
+    const auto & pose = path.poses[index];
+    if (pose.header.stamp.sec != static_cast<std::int32_t>(index) - 32 ||
+      pose.header.stamp.nanosec != static_cast<std::uint32_t>(index * 1000000u) ||
+      pose.header.frame_id != "fleet/path/" + std::to_string(index) ||
+      std::abs(pose.pose.position.x - static_cast<double>(index) * 0.25) > 1e-12 ||
+      std::abs(pose.pose.position.y + static_cast<double>(index) * 0.5) > 1e-12 ||
+      std::abs(pose.pose.position.z - static_cast<double>(index % 3)) > 1e-12 ||
+      std::abs(pose.pose.orientation.z - static_cast<double>(index) / 100.0) > 1e-12 ||
+      std::abs(pose.pose.orientation.w - 1.0) > 1e-12)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool valid_path_reply(const nav_msgs::msg::Path & path)
+{
+  if (path.header.frame_id != "fleet/path/ack" ||
+    path.header.stamp.sec != -11 ||
+    path.header.stamp.nanosec != 987654321u ||
+    path.poses.size() != kPathPoseCount)
+  {
+    return false;
+  }
+  for (std::size_t index = 0; index < path.poses.size(); ++index) {
+    const auto & pose = path.poses[index];
+    if (pose.header.frame_id != "fleet/path/" + std::to_string(index) + "/ack" ||
+      pose.header.stamp.sec != static_cast<std::int32_t>(index) - 32 ||
+      pose.header.stamp.nanosec != static_cast<std::uint32_t>(index * 1000000u) ||
+      std::abs(pose.pose.position.x - (static_cast<double>(index) * 0.25 + 100.0)) > 1e-12 ||
+      std::abs(pose.pose.position.y + static_cast<double>(index) * 0.5) > 1e-12 ||
+      std::abs(pose.pose.orientation.z - static_cast<double>(index) / 100.0) > 1e-12)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 int run_server()
 {
   auto node = std::make_shared<rclcpp::Node>("fleetqox_cpp_interprocess_server");
   auto reply_publisher = node->create_publisher<geometry_msgs::msg::PoseStamped>(
     "/fleetqox/cpp_pose_reply", rclcpp::QoS(10).reliable());
   bool pose_received = false;
+  bool path_received = false;
+  bool path_valid = false;
   bool service_received = false;
   auto subscription = node->create_subscription<geometry_msgs::msg::PoseStamped>(
     "/fleetqox/cpp_pose_request",
@@ -94,6 +174,25 @@ int run_server()
       reply.pose.position.x += 1.0;
       reply_publisher->publish(reply);
       pose_received = true;
+    });
+  auto path_reply_publisher = node->create_publisher<nav_msgs::msg::Path>(
+    "/fleetqox/cpp_path_reply", rclcpp::QoS(10).reliable());
+  auto path_subscription = node->create_subscription<nav_msgs::msg::Path>(
+    "/fleetqox/cpp_path_request",
+    rclcpp::QoS(10).reliable(),
+    [&](nav_msgs::msg::Path::ConstSharedPtr request) {
+      path_received = true;
+      path_valid = valid_path_request(*request);
+      if (!path_valid) {
+        return;
+      }
+      nav_msgs::msg::Path reply = *request;
+      reply.header.frame_id += "/ack";
+      for (auto & pose : reply.poses) {
+        pose.header.frame_id += "/ack";
+        pose.pose.position.x += 100.0;
+      }
+      path_reply_publisher->publish(reply);
     });
   auto service = node->create_service<std_srvs::srv::SetBool>(
     "/fleetqox/cpp_set_bool",
@@ -115,21 +214,26 @@ int run_server()
   executor.add_node(node);
   const auto deadline = std::chrono::steady_clock::now() + 15s;
   while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline &&
-    !(pose_received && service_received))
+    !(pose_received && path_received && path_valid && service_received))
   {
     executor.spin_once(50ms);
   }
   const bool request_callback_observed = request_callback_count.load() > 0;
-  const bool ok = pose_received && service_received && request_callback_registered &&
-    request_callback_observed;
+  const bool ok = pose_received && path_received && path_valid && service_received &&
+    request_callback_registered && request_callback_observed;
   std::cout << "{\"schema_version\":\"fleetrmw.rclcpp_interprocess_server.v1\","
             << "\"status\":\"" << (ok ? "ok" : "failed") << "\","
             << "\"pose_received\":" << (pose_received ? "true" : "false") << ","
+            << "\"path_received\":" << (path_received ? "true" : "false") << ","
+            << "\"path_valid\":" << (path_valid ? "true" : "false") << ","
+            << "\"path_pose_count\":" << kPathPoseCount << ","
             << "\"service_received\":" << (service_received ? "true" : "false") << ","
             << "\"request_callback_observed\":"
             << (request_callback_observed ? "true" : "false") << "}\n";
   executor.remove_node(node);
   service.reset();
+  path_subscription.reset();
+  path_reply_publisher.reset();
   subscription.reset();
   reply_publisher.reset();
   node.reset();
@@ -142,6 +246,7 @@ int run_client()
   auto request_publisher = node->create_publisher<geometry_msgs::msg::PoseStamped>(
     "/fleetqox/cpp_pose_request", rclcpp::QoS(10).reliable());
   bool pose_received = false;
+  bool path_received = false;
   auto subscription = node->create_subscription<geometry_msgs::msg::PoseStamped>(
     "/fleetqox/cpp_pose_reply",
     rclcpp::QoS(10).reliable(),
@@ -153,6 +258,14 @@ int run_client()
         std::abs(reply->pose.position.x - 2.25) < 1e-12 &&
         std::abs(reply->pose.position.y + 2.5) < 1e-12;
     });
+  auto path_request_publisher = node->create_publisher<nav_msgs::msg::Path>(
+    "/fleetqox/cpp_path_request", rclcpp::QoS(10).reliable());
+  auto path_subscription = node->create_subscription<nav_msgs::msg::Path>(
+    "/fleetqox/cpp_path_reply",
+    rclcpp::QoS(10).reliable(),
+    [&](nav_msgs::msg::Path::ConstSharedPtr reply) {
+      path_received = valid_path_reply(*reply);
+    });
   auto client = node->create_client<std_srvs::srv::SetBool>("/fleetqox/cpp_set_bool");
   std::atomic<size_t> response_callback_count{0};
   rmw_client_t * rmw_client = rcl_client_get_rmw_handle(client->get_client_handle().get());
@@ -161,6 +274,8 @@ int run_client()
     rmw_client, count_new_data_callback, &response_callback_count) == RMW_RET_OK;
   const bool publisher_network_flow = publisher_flow_ok(request_publisher, 49802);
   const bool subscription_network_flow = subscription_flow_ok(subscription, 49802);
+  const bool path_publisher_network_flow = publisher_flow_ok(path_request_publisher, 49802);
+  const bool path_subscription_network_flow = subscription_flow_ok(path_subscription, 49802);
 
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(node);
@@ -185,15 +300,22 @@ int run_client()
   pose.pose.position.x = 1.25;
   pose.pose.position.y = -2.5;
   pose.pose.orientation.w = 1.0;
+  const nav_msgs::msg::Path path = make_path_request();
 
   bool service_ok = false;
   const auto deadline = std::chrono::steady_clock::now() + 12s;
   auto next_publish = std::chrono::steady_clock::now();
   while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline &&
-    !(pose_received && service_ok))
+    !(pose_received && path_received && service_ok))
   {
     if (std::chrono::steady_clock::now() >= next_publish && !pose_received) {
       request_publisher->publish(pose);
+      if (!path_received) {
+        path_request_publisher->publish(path);
+      }
+      next_publish = std::chrono::steady_clock::now() + 200ms;
+    } else if (std::chrono::steady_clock::now() >= next_publish && !path_received) {
+      path_request_publisher->publish(path);
       next_publish = std::chrono::steady_clock::now() + 200ms;
     }
     executor.spin_once(50ms);
@@ -204,8 +326,9 @@ int run_client()
     }
   }
   const bool response_callback_observed = response_callback_count.load() > 0;
-  const bool ok = service_available && service_ok && pose_received &&
+  const bool ok = service_available && service_ok && pose_received && path_received &&
     publisher_network_flow && subscription_network_flow &&
+    path_publisher_network_flow && path_subscription_network_flow &&
     response_callback_registered && response_callback_observed;
   std::cout << "{\"schema_version\":\"fleetrmw.rclcpp_interprocess_client.v1\","
             << "\"status\":\"" << (ok ? "ok" : "failed") << "\","
@@ -215,11 +338,19 @@ int run_client()
             << (publisher_network_flow ? "true" : "false") << ","
             << "\"subscription_network_flow\":"
             << (subscription_network_flow ? "true" : "false") << ","
+            << "\"path_publisher_network_flow\":"
+            << (path_publisher_network_flow ? "true" : "false") << ","
+            << "\"path_subscription_network_flow\":"
+            << (path_subscription_network_flow ? "true" : "false") << ","
             << "\"response_callback_observed\":"
             << (response_callback_observed ? "true" : "false") << ","
-            << "\"pose_roundtrip\":" << (pose_received ? "true" : "false") << "}\n";
+            << "\"pose_roundtrip\":" << (pose_received ? "true" : "false") << ","
+            << "\"path_roundtrip\":" << (path_received ? "true" : "false") << ","
+            << "\"path_pose_count\":" << kPathPoseCount << "}\n";
   executor.remove_node(node);
   client.reset();
+  path_subscription.reset();
+  path_request_publisher.reset();
   subscription.reset();
   request_publisher.reset();
   node.reset();

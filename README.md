@@ -49,8 +49,12 @@ This repository starts with the part that should be proven first:
   type-support regression round-trips `String` and nested `PoseStamped`, checks
   exact bounded `Pose` serialized-size calculation, and deliberately scopes
   unbounded artificial sizing as unsupported; a
-  two-container `rclcpp` probe routes nested PoseStamped pub/sub plus SetBool
-  service traffic through the FleetRMW router; a separate two-container POSIX
+  two-container `rclcpp` probe routes nested PoseStamped and a 64-pose
+  `nav_msgs/Path` plus SetBool service traffic through the FleetRMW router;
+  a bidirectional `rclcpp`/`rclpy` Docker/netem matrix repeats the same
+  sequence-heavy Path contract `5/5` in both language directions (`10/10`
+  direction rows, zero invalid frames), using bounded request repeats to cover
+  asynchronous client/service graph convergence; a separate two-container POSIX
   shared-memory gate transfers a 100 KB payload with no UDP peer or slot
   overwrite, reports zero network-flow endpoints in SHM mode, and proves an
   explicit UDP fallback path under injected SHM initialization failure; a

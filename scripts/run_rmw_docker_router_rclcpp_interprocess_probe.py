@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 from scripts.run_rmw_docker_router_service_call_probe import parse_last_json
 
 
-SCHEMA_VERSION = "fleetrmw.docker_router_rclcpp_interprocess_probe.v1"
+SCHEMA_VERSION = "fleetrmw.docker_router_rclcpp_interprocess_probe.v2"
 DEFAULT_IMAGE = "localhost/fleetrmw/rmw-netem:jazzy"
 
 
@@ -63,8 +63,8 @@ def run_probe(*, root: Path, image: str) -> dict[str, Any]:
             f"source {install_base}/setup.bash && "
             f"{install_base}/rmw_fleetqox_cpp/lib/rmw_fleetqox_cpp/"
             "fleetrmw_udp_router_probe --bind 0.0.0.0:49800 "
-            "--expected-frames 2 --expected-service-frames 2 "
-            "--expected-graph-advertisements 4 --post-satisfaction-ms 1000 "
+            "--expected-frames 4 --expected-service-frames 2 "
+            "--expected-graph-advertisements 8 --post-satisfaction-ms 1000 "
             "--timeout-ms 30000",
         ])
         time.sleep(0.4)
@@ -108,13 +108,20 @@ def run_probe(*, root: Path, image: str) -> dict[str, Any]:
             and client.get("status") == "ok" and server.get("status") == "ok"
             and router.get("status") == "ok"
             and client.get("pose_roundtrip") is True
+            and client.get("path_roundtrip") is True
+            and int(client.get("path_pose_count", 0)) == 64
             and client.get("service_ok") is True
             and client.get("publisher_network_flow") is True
             and client.get("subscription_network_flow") is True
+            and client.get("path_publisher_network_flow") is True
+            and client.get("path_subscription_network_flow") is True
             and client.get("response_callback_observed") is True
             and server.get("request_callback_observed") is True
+            and server.get("path_received") is True
+            and server.get("path_valid") is True
+            and int(server.get("path_pose_count", 0)) == 64
             and int(router.get("service_forwarded", 0)) >= 2
-            and int(router.get("forwarded_frames", 0)) >= 2
+            and int(router.get("forwarded_frames", 0)) >= 4
             and int(router.get("invalid_frames", -1)) == 0
         )
         return {
