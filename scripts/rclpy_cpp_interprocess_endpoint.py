@@ -12,12 +12,14 @@ from typing import Any
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
+from nav_msgs.srv import GetPlan
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_srvs.srv import SetBool
 
 
 SCHEMA_VERSION = "fleetrmw.rclpy_cpp_interprocess_endpoint.v1"
 PATH_POSE_COUNT = 64
+PLAN_POSE_COUNT = 512
 QOS = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 
 
@@ -86,6 +88,89 @@ def valid_path_reply(path: Path) -> bool:
     return True
 
 
+def make_plan_request() -> GetPlan.Request:
+    request = GetPlan.Request()
+    request.start.header.stamp.sec = -9
+    request.start.header.stamp.nanosec = 111222333
+    request.start.header.frame_id = "fleet/plan_map"
+    request.start.pose.position.x = -2.0
+    request.start.pose.position.y = 1.5
+    request.start.pose.orientation.w = 1.0
+    request.goal.header.stamp.sec = 19
+    request.goal.header.stamp.nanosec = 444555666
+    request.goal.header.frame_id = "fleet/plan_map"
+    request.goal.pose.position.x = 8.0
+    request.goal.pose.position.y = -3.5
+    request.goal.pose.orientation.w = 1.0
+    request.tolerance = 0.125
+    return request
+
+
+def valid_plan_request(request: GetPlan.Request) -> bool:
+    return (
+        request.start.header.stamp.sec == -9
+        and request.start.header.stamp.nanosec == 111222333
+        and request.start.header.frame_id == "fleet/plan_map"
+        and math.isclose(request.start.pose.position.x, -2.0, abs_tol=1e-12)
+        and math.isclose(request.start.pose.position.y, 1.5, abs_tol=1e-12)
+        and request.goal.header.stamp.sec == 19
+        and request.goal.header.stamp.nanosec == 444555666
+        and request.goal.header.frame_id == "fleet/plan_map"
+        and math.isclose(request.goal.pose.position.x, 8.0, abs_tol=1e-12)
+        and math.isclose(request.goal.pose.position.y, -3.5, abs_tol=1e-12)
+        and math.isclose(request.tolerance, 0.125, abs_tol=1e-6)
+    )
+
+
+def make_plan_response(request: GetPlan.Request) -> Path:
+    plan = Path()
+    plan.header.stamp = copy.deepcopy(request.goal.header.stamp)
+    plan.header.frame_id = request.start.header.frame_id + "/plan"
+    for index in range(PLAN_POSE_COUNT):
+        ratio = index / (PLAN_POSE_COUNT - 1)
+        pose = PoseStamped()
+        pose.header.stamp.sec = index - 32
+        pose.header.stamp.nanosec = index * 1_000_000
+        pose.header.frame_id = f"{plan.header.frame_id}/{index}"
+        pose.pose.position.x = request.start.pose.position.x + ratio * (
+            request.goal.pose.position.x - request.start.pose.position.x
+        )
+        pose.pose.position.y = request.start.pose.position.y + ratio * (
+            request.goal.pose.position.y - request.start.pose.position.y
+        )
+        pose.pose.orientation.z = ratio
+        pose.pose.orientation.w = 1.0
+        plan.poses.append(pose)
+    return plan
+
+
+def valid_plan_response(plan: Path) -> bool:
+    if (
+        plan.header.stamp.sec != 19
+        or plan.header.stamp.nanosec != 444555666
+        or plan.header.frame_id != "fleet/plan_map/plan"
+        or len(plan.poses) != PLAN_POSE_COUNT
+    ):
+        return False
+    for index, pose in enumerate(plan.poses):
+        ratio = index / (PLAN_POSE_COUNT - 1)
+        if (
+            pose.header.stamp.sec != index - 32
+            or pose.header.stamp.nanosec != index * 1_000_000
+            or pose.header.frame_id != f"fleet/plan_map/plan/{index}"
+            or not math.isclose(
+                pose.pose.position.x, -2.0 + ratio * 10.0, abs_tol=1e-12
+            )
+            or not math.isclose(
+                pose.pose.position.y, 1.5 - ratio * 5.0, abs_tol=1e-12
+            )
+            or not math.isclose(pose.pose.orientation.z, ratio, abs_tol=1e-12)
+            or not math.isclose(pose.pose.orientation.w, 1.0, abs_tol=1e-12)
+        ):
+            return False
+    return True
+
+
 def print_summary(summary: dict[str, Any]) -> int:
     print(json.dumps(summary, sort_keys=True), flush=True)
     return 0 if summary["status"] == "ok" else 1
@@ -102,6 +187,8 @@ def run_server() -> int:
         "path_received": False,
         "path_valid": False,
         "service_received": False,
+        "plan_service_received": False,
+        "plan_request_valid": False,
     }
     pose_publisher = node.create_publisher(
         PoseStamped, "/fleetqox/cpp_pose_reply", QOS
@@ -133,9 +220,19 @@ def run_server() -> int:
         response.message = "cpp-service-ok" if request.data else "cpp-service-false"
         return response
 
+    def on_plan(
+        request: GetPlan.Request, response: GetPlan.Response
+    ) -> GetPlan.Response:
+        state["plan_service_received"] = True
+        state["plan_request_valid"] = valid_plan_request(request)
+        if state["plan_request_valid"]:
+            response.plan = make_plan_response(request)
+        return response
+
     node.create_subscription(PoseStamped, "/fleetqox/cpp_pose_request", on_pose, QOS)
     node.create_subscription(Path, "/fleetqox/cpp_path_request", on_path, QOS)
     node.create_service(SetBool, "/fleetqox/cpp_set_bool", on_service)
+    node.create_service(GetPlan, "/fleetqox/cpp_get_plan", on_plan)
     deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline and not all(state.values()):
         rclpy.spin_once(node, timeout_sec=0.05)
@@ -146,6 +243,7 @@ def run_server() -> int:
         "status": "ok" if ok else "failed",
         **state,
         "path_pose_count": PATH_POSE_COUNT,
+        "plan_pose_count": PLAN_POSE_COUNT,
     }
     node.destroy_node()
     return print_summary(summary)
@@ -178,12 +276,17 @@ def run_client() -> int:
     node.create_subscription(PoseStamped, "/fleetqox/cpp_pose_reply", on_pose, QOS)
     node.create_subscription(Path, "/fleetqox/cpp_path_reply", on_path, QOS)
     service = node.create_client(SetBool, "/fleetqox/cpp_set_bool")
+    plan_service = node.create_client(GetPlan, "/fleetqox/cpp_get_plan")
     service_available = service.wait_for_service(timeout_sec=8.0)
+    plan_service_available = plan_service.wait_for_service(timeout_sec=8.0)
     future = None
     if service_available:
         request = SetBool.Request()
         request.data = True
         future = service.call_async(request)
+    plan_future = None
+    if plan_service_available:
+        plan_future = plan_service.call_async(make_plan_request())
 
     pose = PoseStamped()
     pose.header.stamp.sec = -7
@@ -195,10 +298,14 @@ def run_client() -> int:
     path = make_path_request()
 
     service_ok = False
+    plan_service_ok = False
     next_publish = 0.0
     deadline = time.monotonic() + 12.0
     while time.monotonic() < deadline and not (
-        state["pose_roundtrip"] and state["path_roundtrip"] and service_ok
+        state["pose_roundtrip"]
+        and state["path_roundtrip"]
+        and service_ok
+        and plan_service_ok
     ):
         now = time.monotonic()
         if now >= next_publish:
@@ -215,16 +322,30 @@ def run_client() -> int:
                 and response.success
                 and response.message == "cpp-service-ok"
             )
+        if plan_future is not None and plan_future.done():
+            response = plan_future.result()
+            plan_service_ok = (
+                response is not None and valid_plan_response(response.plan)
+            )
 
-    ok = service_available and service_ok and all(state.values())
+    ok = (
+        service_available
+        and service_ok
+        and plan_service_available
+        and plan_service_ok
+        and all(state.values())
+    )
     summary = {
         "schema_version": SCHEMA_VERSION,
         "role": "client",
         "status": "ok" if ok else "failed",
         "service_available": service_available,
         "service_ok": service_ok,
+        "plan_service_available": plan_service_available,
+        "plan_service_ok": plan_service_ok,
         **state,
         "path_pose_count": PATH_POSE_COUNT,
+        "plan_pose_count": PLAN_POSE_COUNT,
     }
     node.destroy_node()
     return print_summary(summary)

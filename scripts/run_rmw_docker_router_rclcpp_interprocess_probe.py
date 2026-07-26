@@ -63,7 +63,7 @@ def run_probe(*, root: Path, image: str) -> dict[str, Any]:
             f"source {install_base}/setup.bash && "
             f"{install_base}/rmw_fleetqox_cpp/lib/rmw_fleetqox_cpp/"
             "fleetrmw_udp_router_probe --bind 0.0.0.0:49800 "
-            "--expected-frames 4 --expected-service-frames 2 "
+            "--expected-frames 4 --expected-service-frames 4 "
             "--expected-graph-advertisements 8 --post-satisfaction-ms 1000 "
             "--timeout-ms 30000",
         ])
@@ -111,6 +111,10 @@ def run_probe(*, root: Path, image: str) -> dict[str, Any]:
             and client.get("path_roundtrip") is True
             and int(client.get("path_pose_count", 0)) == 64
             and client.get("service_ok") is True
+            and client.get("plan_service_available") is True
+            and client.get("plan_service_ok") is True
+            and int(client.get("plan_pose_count", 0)) == 512
+            and client.get("plan_response_callback_observed") is True
             and client.get("publisher_network_flow") is True
             and client.get("subscription_network_flow") is True
             and client.get("path_publisher_network_flow") is True
@@ -119,8 +123,15 @@ def run_probe(*, root: Path, image: str) -> dict[str, Any]:
             and server.get("request_callback_observed") is True
             and server.get("path_received") is True
             and server.get("path_valid") is True
+            and server.get("plan_service_received") is True
+            and server.get("plan_request_valid") is True
+            and int(server.get("plan_pose_count", 0)) == 512
             and int(server.get("path_pose_count", 0)) == 64
-            and int(router.get("service_forwarded", 0)) >= 2
+            and int(router.get("service_forwarded", 0)) >= 4
+            and {
+                "/fleetqox/cpp_set_bool",
+                "/fleetqox/cpp_get_plan",
+            }.issubset(set(router.get("service_names", [])))
             and int(router.get("forwarded_frames", 0)) >= 4
             and int(router.get("invalid_frames", -1)) == 0
         )

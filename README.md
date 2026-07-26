@@ -50,9 +50,11 @@ This repository starts with the part that should be proven first:
   exact bounded `Pose` serialized-size calculation, and deliberately scopes
   unbounded artificial sizing as unsupported; a
   two-container `rclcpp` probe routes nested PoseStamped and a 64-pose
-  `nav_msgs/Path` plus SetBool service traffic through the FleetRMW router;
+  `nav_msgs/Path` plus SetBool and `nav_msgs/GetPlan` service traffic through
+  the FleetRMW router; GetPlan returns a checked 512-pose/73,181-byte response
+  that exceeds one UDP datagram and exercises fragmentation/reassembly;
   a bidirectional `rclcpp`/`rclpy` Docker/netem matrix repeats the same
-  sequence-heavy Path contract `5/5` in both language directions (`10/10`
+  sequence-heavy Path/GetPlan contract `5/5` in both language directions (`10/10`
   direction rows, zero invalid frames), using bounded request repeats to cover
   asynchronous client/service graph convergence; a separate two-container POSIX
   shared-memory gate transfers a 100 KB payload with no UDP peer or slot

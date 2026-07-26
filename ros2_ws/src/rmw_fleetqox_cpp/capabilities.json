@@ -30,6 +30,9 @@
     "interprocess_rclcpp_nav_msgs_path_64_pose_router": true,
     "bidirectional_rclcpp_rclpy_nav_msgs_path_router": true,
     "docker_bidirectional_cpp_python_path_5run_netem": true,
+    "bidirectional_rclcpp_rclpy_nav_msgs_get_plan_512_pose": true,
+    "docker_bidirectional_cpp_python_get_plan_5run_netem": true,
+    "large_service_udp_fragmentation_reassembly": true,
     "service_request_bounded_discovery_repeat_dedup": true,
     "same_host_posix_shared_memory_pubsub": true,
     "shared_memory_to_udp_fallback": true,
@@ -387,7 +390,7 @@
     "qos_deadline_metadata": true
   },
   "partial": {
-    "type_support": "rosidl_typesupport_c/cpp dispatched to matching introspection C/C++; a 5/5 bidirectional rclcpp/rclpy Docker/netem matrix routes 64-element nav_msgs/Path messages, nested PoseStamped/header/time fields, PoseStamped control messages, and SetBool traffic through the UDP router with zero invalid frames. Dynamic serialization/take loads an optional rosidl_dynamic_typesupport plugin at runtime; non-introspection typed publish/take, broader bounded-sequence/service families, and middleware type discovery remain unsupported",
+    "type_support": "rosidl_typesupport_c/cpp dispatched to matching introspection C/C++; a 5/5 bidirectional rclcpp/rclpy Docker/netem matrix routes 64-element nav_msgs/Path messages, nested PoseStamped/header/time fields, PoseStamped control messages, SetBool, and nav_msgs/GetPlan through the UDP router with zero invalid frames. GetPlan validates nested start/goal/tolerance requests and a 512-pose response in both language directions; its 73181-byte serialized response exceeds the 65507-byte UDP datagram limit and therefore proves service-frame fragmentation/reassembly. Dynamic serialization/take loads an optional rosidl_dynamic_typesupport plugin at runtime; non-introspection typed publish/take, broader bounded-sequence/service families, and middleware type discovery remain unsupported",
     "qos": "KEEP_LAST, lifespan, deadline metadata, reliability transport subset, ROS 2-compatible profile checking across reliability, durability, deadline, liveliness kind, and liveliness lease duration with ERROR/WARNING reason aggregation, and rmw_dds_common-backed BEST_AVAILABLE endpoint adaptation at create time. The 5/5 BEST_AVAILABLE artifact covers publisher/subscription discovery selection, zero-endpoint defaults, mixed-publisher liveliness/max-lease selection, actual-QoS reporting, and frozen policy after churn",
     "reliability": "source-sequence ACK/NACK repair and unrecoverable-loss notices carry subscriber identity; only reliable readers emit ACK/NACK and participate in rmw_publisher_wait_for_all_acked snapshots, while best-effort readers detect sequence gaps without requesting repair. Cumulative ACKs are bounded by the reader's lowest observed source sequence, so observing a later first frame cannot incorrectly acknowledge an earlier dropped frame. A deterministic Docker regression drops sequence 2 and repairs it by NACK, then drops sequence 1 and repairs it by timeout retransmission; both phases receive all payloads. If a requested reliable sample has already left writer history, the writer emits a targeted loss notice and the reader advances without NACKing forever; repair admission/budget/attempt exhaustion uses the same terminal path. The three policy-terminal paths each pass 5/5 two-container Docker/netem runs with clean teardown. rmw_publisher_wait_for_all_acked waits for every still-matched reliable endpoint and honors finite and zero timeout behavior. In addition to the local two-reader 5/5 control, a four-container UDP/router/netem gate repeats 5/5: a deliberately delayed second remote ACK yields RMW_RET_TIMEOUT at 1/2 ACKs and OK at 2/2, with one DATA and both ACKs observed and forwarded by the router. Cross-language service discovery uses an explicitly bounded five-repeat/100 ms request repair window in its 5/5 netem gate; server deduplication preserves one callback and response replay serves duplicate requests after graph convergence. Full exactly-once service semantics, full DDS writer-history/resource-limit semantics, and DDS wire interoperability are not claimed",
     "wait_sets": "subscriptions, services, clients, domain-scoped automatically triggered graph guard conditions for local/remote add/remove/descriptor/QoS changes and remote lease expiry, max_conditions enforcement with zero meaning unbounded, null-entry rejection, active/same-context validation, and exact entity-owner node validation. Unread status readiness is implemented for every non-invalid Jazzy rmw_event_type_t: offered/requested deadline missed, liveliness lost/changed, offered/requested incompatible QoS, message lost, publisher/subscription incompatible type, and publication/subscription matched. A 5/5 Docker matrix executes seven production probes per round (35/35 components), checks initial/cleared not-ready controls, and consumes ready statuses through rmw_take_event. Separate event-family DDS semantics and remote production boundaries remain scoped",
@@ -419,8 +422,11 @@
   ],
   "claim_boundaries": {
     "docker_router_cpp_python_path_5run_netem": true,
+    "docker_router_cpp_python_get_plan_5run_netem": true,
     "bidirectional_cpp_python_path_claim": true,
     "sequence_heavy_nested_path_cpp_python_claim": true,
+    "sequence_heavy_get_plan_service_claim": true,
+    "large_sequence_service_fragmentation_claim": true,
     "service_discovery_bounded_repeat_dedup_claim": true,
     "full_exactly_once_service_semantics_claim": false,
     "same_hop_cross_rmw_superiority": false,

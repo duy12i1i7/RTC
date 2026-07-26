@@ -197,7 +197,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker ROS repeated Nav2 NavigateToPose recovered success after Spin | `results_rmw_socket/docker_nav2_navigate_to_pose_recovered_success_repeated_probe_summary.json` |
 | Docker ROS standalone C++ type-support round trip | `results_rmw_socket/docker_cpp_typesupport_probe_summary.json` |
 | Docker ROS router-mediated C++ interprocess pub/sub + service | `results_rmw_socket/docker_router_rclcpp_interprocess_probe_summary.json` |
-| Docker/netem bidirectional C++/rclpy 64-pose Path + service | `results_rmw_socket/docker_router_cpp_python_path_probe_summary.json` |
+| Docker/netem bidirectional C++/rclpy 64-pose Path + 512-pose GetPlan service | `results_rmw_socket/docker_router_cpp_python_path_probe_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -554,7 +554,9 @@ interpreted.
 
 The two-container `rclcpp` artifact also reports `status=ok`: nested
 `PoseStamped` and a 64-element `nav_msgs/Path` request/reply cross the router
-in both directions and a C++ `SetBool` client receives the C++ server response.
+in both directions; C++ `SetBool` and `nav_msgs/GetPlan` clients receive the
+C++ server responses. GetPlan validates nested start/goal/tolerance request
+fields and returns a 512-pose Path.
 Every Path pose validates nested frame IDs, signed seconds, nanoseconds,
 position, and orientation before the server mutates and returns it. The router
 records all four application topics, reliable ACK/NACK traffic, service
@@ -564,8 +566,11 @@ response callbacks are observed.
 
 The cross-language follow-on artifact passes `5/5` independent Docker/netem
 runs and `10/10` direction rows: C++ server/Python client and Python
-server/C++ client each exchange the same 64-pose Path, PoseStamped, and SetBool
-contract through a fresh FleetRMW router. All endpoint processes and routers
+server/C++ client each exchange the same 64-pose Path, PoseStamped, SetBool,
+and 512-pose GetPlan contract through a fresh FleetRMW router. The serialized
+GetPlan response is 73,181 bytes in every direction row, exceeding the
+65,507-byte UDP datagram limit and forcing FleetRMW fragmentation/reassembly.
+All endpoint processes and routers
 exit cleanly, all ten rows validate the complete nested sequence, netem is
 applied to every endpoint, and every router reports zero invalid frames. The
 service leg configures five request repeats at 100 ms. Trace evidence shows

@@ -55,7 +55,10 @@ project. It is ordered by dependency and regression value.
   `std_msgs/String` and nested `geometry_msgs/PoseStamped` through
   `rmw_serialize`/`rmw_deserialize` (40 and 129 serialized bytes).
 - The `rclcpp` regression now routes nested `PoseStamped`, a dynamic 64-pose
-  `nav_msgs/Path`, and `SetBool` through the FleetRMW router. A separate
+  `nav_msgs/Path`, `SetBool`, and `nav_msgs/GetPlan` through the FleetRMW
+  router. GetPlan checks nested start/goal/tolerance requests and returns a
+  512-pose Path; its 73,181-byte serialized response exceeds the 65,507-byte
+  UDP datagram boundary and proves service-frame fragmentation/reassembly. A separate
   bidirectional C++/rclpy Docker/netem matrix passes `5/5` runs and `10/10`
   direction rows with exact nested Path validation and zero invalid frames.
   Its service leg explicitly uses five 100 ms request repeats: early requests
@@ -112,9 +115,9 @@ project. It is ordered by dependency and regression value.
 ## P0: Make The RMW ABI Complete Enough For Real ROS 2 Workloads
 
 - Expand the now-working introspection-C++ path beyond the completed
-  bidirectional C++/rclpy `PoseStamped`/64-pose `Path`/`SetBool` router matrix
-  into sequence-heavy request/response service types and a broader generated
-  C/C++ compatibility matrix.
+  bidirectional C++/rclpy `PoseStamped`/64-pose `Path`/`SetBool`/512-pose
+  `GetPlan` router matrix into additional bounded-sequence request/response
+  service types and a broader generated C/C++ compatibility matrix.
 - Add regression coverage for bounded sequences and additional common Nav2/RMF
   service families. Unbounded nested message sequences, headers, signed time,
   dynamic byte/float arrays, fixed covariance arrays, and Duration are already

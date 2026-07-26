@@ -159,6 +159,10 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertIn("geometry_msgs::msg::PoseStamped", rclcpp_probe)
         self.assertIn("nav_msgs::msg::Path", rclcpp_probe)
         self.assertIn("kPathPoseCount = 64", rclcpp_probe)
+        self.assertIn("nav_msgs::srv::GetPlan", rclcpp_probe)
+        self.assertIn("kPlanPoseCount = 512", rclcpp_probe)
+        self.assertIn("valid_plan_request", rclcpp_probe)
+        self.assertIn("valid_plan_response", rclcpp_probe)
         self.assertIn("path_roundtrip", rclcpp_probe)
         self.assertIn("publisher_network_flow", rclcpp_probe)
         self.assertIn("subscription_network_flow", rclcpp_probe)
@@ -181,8 +185,12 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
             cross_language_endpoint_source,
         )
         self.assertIn("PATH_POSE_COUNT = 64", cross_language_endpoint_source)
+        self.assertIn("PLAN_POSE_COUNT = 512", cross_language_endpoint_source)
         self.assertIn("valid_path_request", cross_language_endpoint_source)
         self.assertIn("valid_path_reply", cross_language_endpoint_source)
+        self.assertIn("GetPlan", cross_language_endpoint_source)
+        self.assertIn("valid_plan_request", cross_language_endpoint_source)
+        self.assertIn("valid_plan_response", cross_language_endpoint_source)
         cross_language_runner = (
             ROOT / "scripts" / "run_rmw_docker_router_cpp_python_path_probe.py"
         )
@@ -202,6 +210,11 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
             cross_language_runner_source,
         )
         self.assertIn("service_exactly_once_claim", cross_language_runner_source)
+        self.assertIn(
+            "large_sequence_service_fragmentation_claim",
+            cross_language_runner_source,
+        )
+        self.assertIn("plan_response_payload_bytes > 65507", cross_language_runner_source)
         header = (PKG / "include" / "rmw_fleetqox_cpp" / "data_frame.hpp").read_text()
         self.assertIn("fleetrmw.data_frame.v1", header)
         self.assertIn("fleetrmw.ack_nack.v1", header)
@@ -4044,6 +4057,19 @@ int main()
             manifest["supported"]["docker_bidirectional_cpp_python_path_5run_netem"]
         )
         self.assertTrue(
+            manifest["supported"][
+                "bidirectional_rclcpp_rclpy_nav_msgs_get_plan_512_pose"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_bidirectional_cpp_python_get_plan_5run_netem"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"]["large_service_udp_fragmentation_reassembly"]
+        )
+        self.assertTrue(
             manifest["supported"]["service_request_bounded_discovery_repeat_dedup"]
         )
         self.assertTrue(
@@ -4053,6 +4079,14 @@ int main()
         )
         self.assertTrue(
             manifest["claim_boundaries"]["bidirectional_cpp_python_path_claim"]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"]["sequence_heavy_get_plan_service_claim"]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "large_sequence_service_fragmentation_claim"
+            ]
         )
         self.assertFalse(
             manifest["claim_boundaries"]["full_exactly_once_service_semantics_claim"]

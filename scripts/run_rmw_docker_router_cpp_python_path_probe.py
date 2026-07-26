@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -119,7 +120,7 @@ def run_direction(
                 common
                 + f"{install_base}/rmw_fleetqox_cpp/lib/rmw_fleetqox_cpp/"
                 "fleetrmw_udp_router_probe --bind 0.0.0.0:49800 "
-                "--expected-frames 4 --expected-service-frames 2 "
+                "--expected-frames 4 --expected-service-frames 4 "
                 "--expected-graph-advertisements 8 "
                 "--post-satisfaction-ms 1200 --timeout-ms 30000",
             ]
@@ -195,6 +196,17 @@ def run_direction(
         cpp = parse_last_json(cpp_logs)
         python = parse_last_json(python_logs)
         router = parse_last_json(router_logs)
+        plan_payload_sizes = [
+            int(value)
+            for value in re.findall(
+                (
+                    r"service=/fleetqox/cpp_get_plan[^\n]*"
+                    r"role=response[^\n]*payload=(\d+)"
+                ),
+                cpp_logs + python_logs,
+            )
+        ]
+        plan_response_payload_bytes = max(plan_payload_sizes, default=0)
         topics = set(router.get("forwarded_topics", []))
         required_topics = {
             "/fleetqox/cpp_pose_request",
@@ -202,11 +214,17 @@ def run_direction(
             "/fleetqox/cpp_path_request",
             "/fleetqox/cpp_path_reply",
         }
+        required_services = {
+            "/fleetqox/cpp_set_bool",
+            "/fleetqox/cpp_get_plan",
+        }
         endpoint_semantics = (
             cpp.get("status") == "ok"
             and python.get("status") == "ok"
             and int(cpp.get("path_pose_count", 0)) == 64
             and int(python.get("path_pose_count", 0)) == 64
+            and int(cpp.get("plan_pose_count", 0)) == 512
+            and int(python.get("plan_pose_count", 0)) == 512
         )
         if cpp_mode == "server":
             endpoint_semantics = (
@@ -216,6 +234,10 @@ def run_direction(
                 and python.get("path_roundtrip") is True
                 and python.get("pose_roundtrip") is True
                 and python.get("service_ok") is True
+                and python.get("plan_service_available") is True
+                and python.get("plan_service_ok") is True
+                and cpp.get("plan_service_received") is True
+                and cpp.get("plan_request_valid") is True
             )
         else:
             endpoint_semantics = (
@@ -225,6 +247,11 @@ def run_direction(
                 and cpp.get("path_roundtrip") is True
                 and cpp.get("pose_roundtrip") is True
                 and cpp.get("service_ok") is True
+                and cpp.get("plan_service_available") is True
+                and cpp.get("plan_service_ok") is True
+                and cpp.get("plan_response_callback_observed") is True
+                and python.get("plan_service_received") is True
+                and python.get("plan_request_valid") is True
                 and cpp.get("path_publisher_network_flow") is True
                 and cpp.get("path_subscription_network_flow") is True
             )
@@ -235,15 +262,21 @@ def run_direction(
             and endpoint_semantics
             and router.get("status") == "ok"
             and int(router.get("forwarded_frames", 0)) >= 4
-            and int(router.get("service_forwarded", 0)) >= 2
+            and int(router.get("service_forwarded", 0)) >= 4
             and int(router.get("invalid_frames", -1)) == 0
             and required_topics.issubset(topics)
+            and required_services.issubset(set(router.get("service_names", [])))
+            and plan_response_payload_bytes > 65507
         )
         return {
             "direction": direction,
             "status": "ok" if ok else "failed",
             "netem_applied": cpp_returncode == 0 and python_returncode == 0,
             "netem_profile": NETEM_PROFILE,
+            "plan_response_payload_bytes": plan_response_payload_bytes,
+            "service_payload_exceeds_udp_datagram": (
+                plan_response_payload_bytes > 65507
+            ),
             "cpp_returncode": cpp_returncode,
             "python_returncode": python_returncode,
             "router_returncode": router_returncode,
@@ -320,6 +353,11 @@ def run_probe(
             for direction in row["directions"]
         )
         status = "ok" if ok_run_count == iterations else "failed"
+        plan_response_payload_sizes = [
+            int(direction.get("plan_response_payload_bytes", 0))
+            for row in runs
+            for direction in row["directions"]
+        ]
         return {
             "schema_version": SCHEMA_VERSION,
             "status": status,
@@ -329,12 +367,23 @@ def run_probe(
             "direction_count": iterations * 2,
             "ok_direction_count": ok_direction_count,
             "path_pose_count": 64,
+            "plan_pose_count": 512,
+            "min_plan_response_payload_bytes": min(
+                plan_response_payload_sizes, default=0
+            ),
+            "service_payload_exceeds_udp_datagram_all": all(
+                direction.get("service_payload_exceeds_udp_datagram") is True
+                for row in runs
+                for direction in row["directions"]
+            ),
             "service_request_repeat_count": SERVICE_REQUEST_REPEATS,
             "service_request_repeat_interval_ms": SERVICE_REQUEST_REPEAT_INTERVAL_MS,
             "bounded_service_discovery_repair_claim": status == "ok",
             "service_exactly_once_claim": False,
             "bidirectional_cpp_python_claim": status == "ok",
             "sequence_heavy_nested_path_claim": status == "ok",
+            "sequence_heavy_get_plan_service_claim": status == "ok",
+            "large_sequence_service_fragmentation_claim": status == "ok",
             "netem_applied_all": all(
                 direction.get("netem_applied") is True
                 for row in runs
