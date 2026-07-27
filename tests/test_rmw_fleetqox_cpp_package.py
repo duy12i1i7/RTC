@@ -5402,6 +5402,15 @@ int main()
             claims["docker_same_hop_common_generic_middle_36of36_claim"]
         )
         self.assertTrue(
+            claims["same_hop_resume_configuration_fail_closed_claim"]
+        )
+        self.assertTrue(
+            claims["same_hop_exact_configuration_resume_36of36_claim"]
+        )
+        self.assertTrue(
+            claims["docker_same_hop_profile_mismatch_rerun_2of2_claim"]
+        )
+        self.assertTrue(
             manifest["supported"][
                 "docker_same_hop_common_generic_middle_8_16_32_3seed"
             ]
@@ -5409,6 +5418,14 @@ int main()
         self.assertTrue(
             manifest["supported"][
                 "same_hop_common_middle_application_processing"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"]["same_hop_resume_configuration_validation"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_same_hop_resume_profile_mismatch_rerun"
             ]
         )
         self.assertTrue(

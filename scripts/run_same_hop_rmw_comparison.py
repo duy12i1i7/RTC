@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
 from typing import Any
@@ -16,7 +17,6 @@ from scripts.run_large_scale_rmw_comparison import (  # noqa: E402
     DEFAULT_RMWS,
     aggregate,
     format_ci,
-    load_prior_rows,
     normalize_row,
     parse_csv,
     parse_csv_int,
@@ -32,19 +32,130 @@ from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
 )
 
 
-SCHEMA_VERSION = "fleetrmw.same_hop_rmw_comparison.v3"
+SCHEMA_VERSION = "fleetrmw.same_hop_rmw_comparison.v4"
 
 
 def should_reuse_prior_row(
     row: dict[str, Any] | None,
     *,
     rerun_failed_rows: bool,
+    image: str,
+    profile: str,
+    netem_loss_scale: float,
+    samples: int,
+    publish_interval_ms: int,
 ) -> bool:
     return (
         row is not None
+        and prior_row_matches_configuration(
+            row,
+            image=image,
+            profile=profile,
+            netem_loss_scale=netem_loss_scale,
+            samples=samples,
+            publish_interval_ms=publish_interval_ms,
+        )
         and not (rerun_failed_rows and row.get("status") == "failed")
         and not row_needs_infrastructure_rerun(row)
     )
+
+
+def load_same_hop_prior_rows(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return []
+    configuration = {
+        key: payload.get(key)
+        for key in (
+            "image",
+            "profile",
+            "netem_loss_scale",
+            "samples",
+            "publish_interval_ms",
+            "timeout_s",
+        )
+    }
+    rows = payload.get("runs", [])
+    if not isinstance(rows, list):
+        return []
+    annotated: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        copied = dict(row)
+        copied["_resume_summary_configuration"] = configuration
+        annotated.append(copied)
+    return annotated
+
+
+def prior_row_matches_configuration(
+    row: dict[str, Any],
+    *,
+    image: str,
+    profile: str,
+    netem_loss_scale: float,
+    samples: int,
+    publish_interval_ms: int,
+) -> bool:
+    result = row.get("result")
+    if not isinstance(result, dict):
+        return False
+    summary = row.get("_resume_summary_configuration")
+    if not isinstance(summary, dict):
+        summary = {}
+
+    def recorded(key: str, row_key: str | None = None) -> Any:
+        value = result.get(key)
+        if value is not None:
+            return value
+        if row_key is not None:
+            value = row.get(row_key)
+            if value is not None:
+                return value
+        return summary.get(key)
+
+    try:
+        recorded_loss_scale = float(recorded("netem_loss_scale"))
+        recorded_samples = int(recorded("samples"))
+        recorded_publish_interval_ms = int(recorded("publish_interval_ms"))
+        recorded_publisher_linger_s = float(
+            result.get("publisher_linger_s", -1.0)
+        )
+    except (TypeError, ValueError):
+        return False
+    return (
+        recorded("image") == image
+        and recorded("profile", "profile") == profile
+        and math.isclose(
+            recorded_loss_scale,
+            netem_loss_scale,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        and recorded_samples == samples
+        and recorded_publish_interval_ms == publish_interval_ms
+        and result.get("relay_mode") == "generic_serialized"
+        and result.get("relay_scope")
+        == "rclcpp_generic_serialized_passthrough"
+        and result.get("netem_enabled") is True
+        and result.get("netem_required") is True
+        and math.isclose(
+            recorded_publisher_linger_s,
+            6.0,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+    )
+
+
+def clean_reused_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in row.items()
+        if key != "_resume_summary_configuration"
+    }
 
 
 def middle_termination_republish_evidence(
@@ -94,6 +205,9 @@ def run_comparison(
         for row in (prior_rows or [])
         if row.get("system") and int(row.get("robot_count", 0)) > 0
     }
+    reused_row_count = 0
+    executed_row_count = 0
+    resume_configuration_mismatch_count = 0
     try:
         for robot_count in robot_counts:
             for seed in seeds:
@@ -102,10 +216,25 @@ def run_comparison(
                 if should_reuse_prior_row(
                     prior_fleet,
                     rerun_failed_rows=rerun_failed_rows,
+                    image=image,
+                    profile=profile,
+                    netem_loss_scale=netem_loss_scale,
+                    samples=samples,
+                    publish_interval_ms=publish_interval_ms,
                 ):
-                    rows.append(prior_fleet)
+                    rows.append(clean_reused_row(prior_fleet))
+                    reused_row_count += 1
                     print(f"reuse {fleet_key}", file=sys.stderr, flush=True)
                 else:
+                    if prior_fleet is not None and not prior_row_matches_configuration(
+                        prior_fleet,
+                        image=image,
+                        profile=profile,
+                        netem_loss_scale=netem_loss_scale,
+                        samples=samples,
+                        publish_interval_ms=publish_interval_ms,
+                    ):
+                        resume_configuration_mismatch_count += 1
                     print(f"run {fleet_key}", file=sys.stderr, flush=True)
                     fleet = run_relay(
                         root=root,
@@ -124,16 +253,32 @@ def run_comparison(
                         relay_mode="generic_serialized",
                     )
                     rows.append(normalize_row(fleet, system=FLEETQOX_RMW))
+                    executed_row_count += 1
                 for rmw in rmws:
                     key = (rmw, robot_count, seed)
                     prior = prior_index.get(key)
                     if should_reuse_prior_row(
                         prior,
                         rerun_failed_rows=rerun_failed_rows,
+                        image=image,
+                        profile=profile,
+                        netem_loss_scale=netem_loss_scale,
+                        samples=samples,
+                        publish_interval_ms=publish_interval_ms,
                     ):
-                        rows.append(prior)
+                        rows.append(clean_reused_row(prior))
+                        reused_row_count += 1
                         print(f"reuse {key}", file=sys.stderr, flush=True)
                         continue
+                    if prior is not None and not prior_row_matches_configuration(
+                        prior,
+                        image=image,
+                        profile=profile,
+                        netem_loss_scale=netem_loss_scale,
+                        samples=samples,
+                        publish_interval_ms=publish_interval_ms,
+                    ):
+                        resume_configuration_mismatch_count += 1
                     print(f"run {key}", file=sys.stderr, flush=True)
                     baseline = run_relay(
                         root=root,
@@ -152,6 +297,7 @@ def run_comparison(
                         relay_mode="generic_serialized",
                     )
                     rows.append(normalize_row(baseline, system=rmw))
+                    executed_row_count += 1
     finally:
         cleanup_reusable_build(root=root, image=image)
 
@@ -244,6 +390,7 @@ def run_comparison(
         "netem_loss_scale": netem_loss_scale,
         "samples": samples,
         "publish_interval_ms": publish_interval_ms,
+        "timeout_s": timeout_s,
         "comparison_design": "matched_generic_serialized_rmw_middle",
         "hop_count_matched": True,
         "source_netem_profile_matched": True,
@@ -252,6 +399,27 @@ def run_comparison(
         "publisher_reliability_horizon_mode":
             "bounded_wait_for_all_acked",
         "prior_row_count": len(prior_rows or []),
+        "reused_row_count": reused_row_count,
+        "executed_row_count": executed_row_count,
+        "resume_configuration_mismatch_count":
+            resume_configuration_mismatch_count,
+        "resume_configuration_match_contract_ok":
+            reused_row_count + executed_row_count == len(rows),
+        "resume_configuration_validation_enabled": True,
+        "resume_configuration_fields": [
+            "image",
+            "profile",
+            "netem_loss_scale",
+            "samples",
+            "publish_interval_ms",
+            "relay_mode",
+            "relay_scope",
+            "netem_enabled",
+            "netem_required",
+            "publisher_linger_s",
+        ],
+        "resume_configuration_mismatch_policy":
+            "execute_current_configuration",
         "rerun_failed_rows": rerun_failed_rows,
         "publisher_ack_wait_supported_count":
             publisher_ack_wait_supported_count,
@@ -392,7 +560,7 @@ def main() -> int:
         samples=max(args.samples, 1),
         publish_interval_ms=max(args.publish_interval_ms, 0),
         timeout_s=max(args.timeout_s, 1.0),
-        prior_rows=load_prior_rows(args.resume_summary),
+        prior_rows=load_same_hop_prior_rows(args.resume_summary),
         rerun_failed_rows=args.rerun_failed,
     )
     summary_path = ROOT / args.summary_json

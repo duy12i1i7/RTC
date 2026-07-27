@@ -433,6 +433,11 @@ Current verification:
 - current `8/16/32`-robot, three-seed common generic-middle matrix, with all
   four systems terminating and republishing through the same relay:
   `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v4_common_middle_summary.json`;
+- exact-configuration `36/36` resume-provenance control:
+  `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v5_resume_provenance_summary.json`;
+- Docker profile-mismatch negative control; a roaming resume source is rejected
+  for Wi-Fi and both requested rows execute again:
+  `results_rmw_socket/same_hop_rmw_comparison_resume_profile_mismatch_docker_summary.json`;
 - deterministic middle-sequence NACK and initial-sequence timeout-repair
   regression:
   `results_rmw_socket/docker_rmw_initial_sequence_reliability_probe_summary.json`;

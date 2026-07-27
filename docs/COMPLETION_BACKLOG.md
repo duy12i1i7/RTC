@@ -6,10 +6,10 @@ project. It is ordered by dependency and regression value.
 
 ## Current Baseline
 
-- The full repository suite passes `655/655` unit/contract tests; ROS-facing
+- The full repository suite passes `657/657` unit/contract tests; ROS-facing
   runtime probes use the pinned ROS 2 Jazzy Docker image. The unified report
-  currently indexes `358`
-  retained artifacts (`297` ok, `17` partial, `40` historical failed, and `4`
+  currently indexes `360`
+  retained artifacts (`299` ok, `17` partial, `40` historical failed, and `4`
   unknown); its overall `partial` status deliberately includes old debug,
   negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
@@ -1380,6 +1380,14 @@ so scoped latency-distribution comparison is now allowed. Broad latency,
 architectural, or production superiority remains false pending more
 repetitions, profile sensitivity, payload-size sensitivity, and host-resource
 sensitivity.
+
+The resume path is now safe to use for the next sensitivity campaign. It
+validates image, profile, loss scale, samples, publish interval, generic relay
+contract, required netem, and publisher horizon before reuse. An exact control
+reuses `36/36` rows with zero executions. A roaming-to-Wi-Fi negative control
+rejects both keyed candidates, executes FleetRMW and Cyclone DDS again, and
+passes `2/2` with `160/160` relay payloads. Profile sensitivity can no longer
+be fabricated accidentally by a stale resume artifact.
 
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge

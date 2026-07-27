@@ -19,6 +19,50 @@ def load_runner():
     return module
 
 
+def common_relay_result(
+    *,
+    system: str = "rmw_fleetqox_cpp",
+    profile: str = "roaming",
+    loss_scale: float = 0.1,
+    samples: int = 3,
+    publish_interval_ms: int = 30,
+) -> dict:
+    return {
+        "status": "ok",
+        "image": "unused",
+        "rmw": system,
+        "profile": profile,
+        "netem_loss_scale": loss_scale,
+        "netem_enabled": True,
+        "netem_required": True,
+        "samples": samples,
+        "publish_interval_ms": publish_interval_ms,
+        "publisher_linger_s": 6.0,
+        "robot_count": 2,
+        "topic_count": 4,
+        "repetition_seed": 7,
+        "relay_mode": "generic_serialized",
+        "relay_scope": "rclcpp_generic_serialized_passthrough",
+        "middle_payload_remains_serialized": True,
+        "middle_application_deserialization": False,
+        "middle_rmw_termination_republish": True,
+        "relay_expected_count": 12,
+        "relay_payload_count": 12,
+        "control_expected_count": 6,
+        "state_expected_count": 6,
+        "control_payload_count": 6,
+        "state_payload_count": 6,
+        "control_delivery_ratio": 1.0,
+        "state_delivery_ratio": 1.0,
+        "min_topic_delivery_ratio": 1.0,
+        "publisher": {
+            "ack_wait_supported": True,
+            "ack_wait_complete": True,
+            "unacked_topic_count": 0,
+        },
+    }
+
+
 class SameHopRmwComparisonTest(unittest.TestCase):
     def test_runner_has_all_baselines(self):
         module = load_runner()
@@ -29,10 +73,10 @@ class SameHopRmwComparisonTest(unittest.TestCase):
 
     def test_failed_resume_rows_require_explicit_rerun(self):
         module = load_runner()
-        row = {
-            "status": "failed",
-            "reason": "",
-            "result": {
+        result = common_relay_result()
+        result.update(
+            {
+                "status": "failed",
                 "control_expected_count": 160,
                 "state_expected_count": 160,
                 "control_payload_count": 159,
@@ -40,18 +84,96 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                 "publisher_returncode": 0,
                 "subscriber_returncode": 1,
                 "router_returncode": 0,
-            },
+            }
+        )
+        row = {
+            "status": "failed",
+            "reason": "",
+            "result": result,
         }
         self.assertTrue(
             module.should_reuse_prior_row(
                 row,
                 rerun_failed_rows=False,
+                image="unused",
+                profile="roaming",
+                netem_loss_scale=0.1,
+                samples=3,
+                publish_interval_ms=30,
             )
         )
         self.assertFalse(
             module.should_reuse_prior_row(
                 row,
                 rerun_failed_rows=True,
+                image="unused",
+                profile="roaming",
+                netem_loss_scale=0.1,
+                samples=3,
+                publish_interval_ms=30,
+            )
+        )
+
+    def test_resume_configuration_mismatch_fails_closed(self):
+        module = load_runner()
+        row = module.normalize_row(
+            common_relay_result(),
+            system="rmw_fleetqox_cpp",
+        )
+        expected = {
+            "image": "unused",
+            "profile": "roaming",
+            "netem_loss_scale": 0.1,
+            "samples": 3,
+            "publish_interval_ms": 30,
+        }
+        self.assertTrue(
+            module.prior_row_matches_configuration(row, **expected)
+        )
+        for key, value in (
+            ("image", "different"),
+            ("profile", "wifi"),
+            ("netem_loss_scale", 0.25),
+            ("samples", 4),
+            ("publish_interval_ms", 31),
+        ):
+            mismatched = dict(expected)
+            mismatched[key] = value
+            self.assertFalse(
+                module.prior_row_matches_configuration(row, **mismatched),
+                key,
+            )
+
+    def test_resume_loader_uses_summary_configuration_for_legacy_rows(self):
+        module = load_runner()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "summary.json"
+            result = common_relay_result()
+            result.pop("publish_interval_ms")
+            row = module.normalize_row(result, system="rmw_fleetqox_cpp")
+            path.write_text(
+                json.dumps(
+                    {
+                        "image": "unused",
+                        "profile": "roaming",
+                        "netem_loss_scale": 0.1,
+                        "samples": 3,
+                        "publish_interval_ms": 30,
+                        "runs": [row],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = module.load_same_hop_prior_rows(path)
+        self.assertEqual(len(loaded), 1)
+        self.assertTrue(
+            module.prior_row_matches_configuration(
+                loaded[0],
+                image="unused",
+                profile="roaming",
+                netem_loss_scale=0.1,
+                samples=3,
+                publish_interval_ms=30,
             )
         )
 
@@ -77,6 +199,12 @@ class SameHopRmwComparisonTest(unittest.TestCase):
         )
         self.assertIn('"middle_payload_serialization_state_matched":', source)
         self.assertIn("same rclcpp generic", source)
+        self.assertIn("prior_row_matches_configuration", source)
+        self.assertIn('"resume_configuration_validation_enabled": True', source)
+        self.assertIn(
+            '"resume_configuration_mismatch_policy":',
+            source,
+        )
 
     def test_legacy_generic_relay_fields_are_strict_contract_evidence(self):
         module = load_runner()
@@ -108,34 +236,30 @@ class SameHopRmwComparisonTest(unittest.TestCase):
         self.assertIn("--rerun-failed", source)
         self.assertIn('"rerun_failed_rows": rerun_failed_rows', source)
 
-    def test_old_resume_rows_cannot_satisfy_serialized_relay_contract(self):
+    def test_typed_resume_row_is_rerun_through_generic_relay(self):
         module = load_runner()
         module.cleanup_reusable_build = lambda **_: None
+        module.run_relay = lambda **kwargs: common_relay_result(
+            system=kwargs["rmw"],
+        )
+        fleet_result = common_relay_result()
+        typed_result = common_relay_result(system="rmw_fastrtps_cpp")
+        typed_result.update(
+            {
+                "relay_mode": "rclpy_typed",
+                "relay_scope": "rclpy_std_msgs_string_deserialize_republish",
+                "middle_payload_remains_serialized": False,
+                "middle_application_deserialization": True,
+                "middle_rmw_termination_republish": False,
+            }
+        )
         prior_rows = [
             module.normalize_row(
-                {
-                    "status": "ok",
-                    "robot_count": 2,
-                    "repetition_seed": 7,
-                    "relay_scope": "rclcpp_generic_serialized_passthrough",
-                    "middle_payload_remains_serialized": True,
-                    "middle_application_deserialization": False,
-                    "middle_rmw_termination_republish": True,
-                    "publisher": {
-                        "ack_wait_supported": True,
-                        "ack_wait_complete": True,
-                        "unacked_topic_count": 0,
-                    },
-                },
+                fleet_result,
                 system="rmw_fleetqox_cpp",
             ),
             module.normalize_row(
-                {
-                    "status": "ok",
-                    "robot_count": 2,
-                    "repetition_seed": 7,
-                    "relay_scope": "rclpy_std_msgs_string_deserialize_republish",
-                },
+                typed_result,
                 system="rmw_fastrtps_cpp",
             ),
         ]
@@ -154,9 +278,11 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             prior_rows=prior_rows,
         )
 
-        self.assertEqual(summary["status"], "partial")
-        self.assertFalse(summary["serialized_relay_contract_ok"])
-        self.assertIsNone(summary["middle_application_deserialization"])
+        self.assertEqual(summary["status"], "ok")
+        self.assertTrue(summary["serialized_relay_contract_ok"])
+        self.assertEqual(summary["reused_row_count"], 1)
+        self.assertEqual(summary["executed_row_count"], 1)
+        self.assertEqual(summary["resume_configuration_mismatch_count"], 1)
 
     def test_unified_report_classifies_and_preserves_same_hop_metrics(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -165,7 +291,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             artifact.write_text(
                 json.dumps(
                     {
-                        "schema_version": "fleetrmw.same_hop_rmw_comparison.v3",
+                        "schema_version": "fleetrmw.same_hop_rmw_comparison.v4",
                         "status": "ok",
                         "run_count": 36,
                         "ok_run_count": 32,

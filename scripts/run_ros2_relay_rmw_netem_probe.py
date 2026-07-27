@@ -572,6 +572,8 @@ def run_probe(
             "robot_count": robot_count,
             "topic_count": len(destinations),
             "samples": samples,
+            "publish_interval_ms": publish_interval_ms,
+            "timeout_s": timeout_s,
             "repetition_seed": repetition_seed,
             "publisher_linger_s": publisher_linger_s,
             "zenoh_router_enabled": use_zenoh_router,

@@ -208,6 +208,8 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker/netem SIGKILL durable completed-service replay matrix | `results_rmw_socket/docker_service_durable_replay_probe_summary.json` |
 | Same-hop generic-serialized 8/16/32 three-seed v3 post-fix matrix | `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v3_summary.json` |
 | Same-hop common generic-middle 8/16/32 three-seed v4 matrix | `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v4_common_middle_summary.json` |
+| Same-hop exact-configuration 36-row resume-provenance control | `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v5_resume_provenance_summary.json` |
+| Same-hop roaming-to-Wi-Fi resume mismatch Docker control | `results_rmw_socket/same_hop_rmw_comparison_resume_profile_mismatch_docker_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -1680,6 +1682,17 @@ Broad latency superiority, architectural superiority, byte-identical
 cross-RMW serialization, and production superiority remain disallowed: three
 repetitions per cell and one roaming profile are insufficient for those
 claims.
+
+Resume provenance is now fail-closed before extending this matrix into a
+profile sensitivity study. Reuse requires matching image tag, profile, netem
+loss scale, sample count, publish interval, generic relay mode/scope, required
+netem, and publisher reliability horizon. The exact-configuration control
+reuses all `36/36` v4 rows, executes zero rows, and preserves `6720/6720`
+relay payloads. The negative control supplies that roaming artifact to a
+Wi-Fi request for FleetRMW and Cyclone DDS: both candidates are counted as
+configuration mismatches, zero rows are reused, both rows execute in Docker,
+and both pass with `160/160` relay payloads. Thus a profile change cannot be
+silently satisfied by stale measurements.
 
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK
