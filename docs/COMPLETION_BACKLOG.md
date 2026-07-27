@@ -132,8 +132,11 @@ project. It is ordered by dependency and regression value.
   sequence, matching responses cancel pending work, client teardown clears it,
   and the Docker/netem runners require no retry environment override. Standard
   ROS 2 services have no cancellation operation; action cancellation is covered
-  separately. Remaining service work is broader concurrency/resource-limit,
-  crash-persistent deduplication, and exactly-once semantics.
+  separately. Request/response queues, pending-response state, dedupe history,
+  and response replay are now bounded and configurable; a limit-four Docker
+  gate proves capacity rejection remains repairable and delivers 10/10 unique
+  requests/responses in 5/5 runs. Remaining service work is multi-client
+  overload fairness, crash-persistent deduplication, and exactly-once semantics.
 - Harden action transport on top of pub/sub plus service reliability:
   goal, result, feedback, cancel, status, deadlines, and larger concurrent
   action/client counts.

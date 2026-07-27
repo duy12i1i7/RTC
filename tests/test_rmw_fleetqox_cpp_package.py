@@ -1443,6 +1443,34 @@ int main()
         docker_service_error_source = docker_service_error_script.read_text()
         self.assertIn("fleetrmw.rmw_docker_service_error_probe.v1", docker_service_error_source)
         self.assertIn("fleetrmw_service_error_probe", docker_service_error_source)
+        service_resource_probe = PKG / "src" / "service_resource_limit_probe.cpp"
+        self.assertTrue(service_resource_probe.exists())
+        service_resource_source = service_resource_probe.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_service_resource_limit_probe.v1",
+            service_resource_source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_service_request_queue_resource_drops",
+            service_resource_source,
+        )
+        self.assertIn("resource_repair_exact_delivery", service_resource_source)
+        docker_service_resource_script = (
+            ROOT / "scripts" / "run_rmw_docker_service_resource_limit_probe.py"
+        )
+        self.assertTrue(docker_service_resource_script.exists())
+        docker_service_resource_source = docker_service_resource_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_docker_service_resource_limit_probe.v1",
+            docker_service_resource_source,
+        )
+        self.assertIn(
+            "service_resource_backpressure_repair_claim",
+            docker_service_resource_source,
+        )
+        self.assertIn("tc qdisc replace dev lo root netem", docker_service_resource_source)
+        cmake_source = (PKG / "CMakeLists.txt").read_text()
+        self.assertIn("fleetrmw_service_resource_limit_probe", cmake_source)
         self.assertIn("malformed_response_error", docker_service_error_source)
         self.assertIn("after_invalid_response_taken", docker_service_error_source)
         action_probe = PKG / "src" / "action_frame_probe.cpp"
@@ -4153,6 +4181,15 @@ int main()
             manifest["supported"]["service_request_response_cancelled_repair"]
         )
         self.assertTrue(
+            manifest["supported"]["bounded_service_request_response_queues"]
+        )
+        self.assertTrue(
+            manifest["supported"]["bounded_service_dedupe_and_response_replay"]
+        )
+        self.assertTrue(
+            manifest["supported"]["docker_service_resource_limit_5run_netem"]
+        )
+        self.assertTrue(
             manifest["claim_boundaries"][
                 "docker_router_cpp_python_path_5run_netem"
             ]
@@ -4186,6 +4223,11 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "service_discovery_repair_without_runner_override_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "service_resource_backpressure_repair_claim"
             ]
         )
         self.assertFalse(

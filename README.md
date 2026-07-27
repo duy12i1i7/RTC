@@ -61,7 +61,12 @@ This repository starts with the part that should be proven first:
   asynchronous client/service graph convergence; a separate ROSIDL-generated
   `FleetShape` service passes another `5/5`/`10/10` matrix at maximum declared
   bounds for `string<=32`, `uint8[16]`, `float32[<=128]`, nested
-  `PoseStamped[<=16]`, `Duration`, and `uint32[<=64]`; a separate two-container POSIX
+  `PoseStamped[<=16]`, `Duration`, and `uint32[<=64]`; a service resource gate
+  caps request/response queues, pending-response state,
+  dedupe history, and response replay; with every limit forced to four, its
+  `5/5` Docker/loopback-netem matrix rejects eight capacity attempts per run
+  without marking them seen, then repairs all ten requests and responses while
+  keeping every observed structure within its bound; a separate two-container POSIX
   shared-memory gate transfers a 100 KB payload with no UDP peer or slot
   overwrite, reports zero network-flow endpoints in SHM mode, and proves an
   explicit UDP fallback path under injected SHM initialization failure; a

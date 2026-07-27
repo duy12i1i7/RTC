@@ -54,6 +54,18 @@ METRIC_KEYS = (
     "request_repairs_scheduled",
     "request_retries_sent",
     "request_repairs_cancelled_by_response",
+    "request_count",
+    "request_queue_limit",
+    "response_queue_limit",
+    "dedupe_history_limit",
+    "response_replay_limit",
+    "request_queue_resource_drops",
+    "unique_requests_taken",
+    "unique_responses_taken",
+    "bounded_service_queue_claim",
+    "bounded_service_dedupe_history_claim",
+    "bounded_service_response_replay_claim",
+    "service_resource_backpressure_repair_claim",
     "token_size",
     "range_count",
     "waypoint_count",
@@ -1117,6 +1129,10 @@ CLAIM_BOUNDARY_KEYS = (
     "nonblocking_async_service_request_repair_claim",
     "response_cancelled_request_repair_claim",
     "service_discovery_repair_without_runner_override_claim",
+    "bounded_service_queue_claim",
+    "bounded_service_dedupe_history_claim",
+    "bounded_service_response_replay_claim",
+    "service_resource_backpressure_repair_claim",
     "full_exactly_once_service_semantics_claim",
     "production_quic_backend_claim",
     "full_bidirectional_quic_backend_claim",
@@ -1810,6 +1826,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         or "rclcpp_interprocess" in text
         or "cpp_typesupport" in text
         or "bounded_shape" in text
+        or "service_resource_limit" in text
     ):
         return "rmw-abi"
     if "wait_for_all_acked" in text or "wait-for-all-acked" in text:

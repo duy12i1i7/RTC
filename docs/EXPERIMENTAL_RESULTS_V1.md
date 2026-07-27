@@ -199,6 +199,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker ROS router-mediated C++ interprocess pub/sub + service | `results_rmw_socket/docker_router_rclcpp_interprocess_probe_summary.json` |
 | Docker/netem bidirectional C++/rclpy 64-pose Path + 512-pose GetPlan service | `results_rmw_socket/docker_router_cpp_python_path_probe_summary.json` |
 | Docker/netem generated bounded-shape C++/rclpy service matrix | `results_rmw_socket/docker_router_bounded_shape_service_probe_summary.json` |
+| Docker/loopback-netem bounded service resource/backpressure matrix | `results_rmw_socket/docker_service_resource_limit_probe_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -592,7 +593,20 @@ their declared limits. The response validates `uint32[<=64]`, repaired
 `PoseStamped[<=16]`, and `string<=64`. Every server checks every request field,
 every client checks every response field, and every router reports zero invalid
 frames. This closes the scoped bounded-shape gap, not all generated ROSIDL
-types or service resource-limit semantics.
+types.
+
+The bounded service-resource artifact then covers that resource-limit slice
+directly. It repeats `5/5` in fresh Docker containers with loopback netem and
+forces request queue, response queue, dedupe history, pending-response state,
+and response replay limits to four. Every run first injects ten unique requests
+into a full queue: eight capacity attempts are rejected across three rounds,
+one true duplicate is suppressed, and rejected requests remain eligible for
+same-sequence repair. All ten unique requests and ten matching responses are
+eventually taken. Request and response queues peak at exactly four, pending
+response state peaks at one, replay peaks at four, and six old request,
+response, and replay records are evicted per run. This proves bounded in-memory
+service state and repair-compatible backpressure, not multi-client fairness,
+crash-persistent deduplication, or full exactly-once semantics.
 
 The local transport artifact reports `status=ok` for a separate two-container
 POSIX shared-memory run. Publisher and subscriber have zero UDP peers and both

@@ -222,6 +222,14 @@ struct FleetQoxServiceData
   std::map<std::string, std::string> response_replay_cache;
   std::unordered_set<std::string> seen_request_keys;
   std::unordered_set<std::string> seen_response_keys;
+  std::deque<std::string> seen_request_order;
+  std::deque<std::string> seen_response_order;
+  std::deque<std::string> response_replay_order;
+  size_t request_queue_limit;
+  size_t response_queue_limit;
+  size_t pending_response_limit;
+  size_t dedupe_history_limit;
+  size_t response_replay_limit;
 };
 
 struct FleetQoxEventData
@@ -287,6 +295,16 @@ std::atomic<std::uint64_t> g_service_request_repairs_scheduled{0};
 std::atomic<std::uint64_t> g_service_request_retries_sent{0};
 std::atomic<std::uint64_t> g_service_request_repairs_cancelled{0};
 std::atomic<std::uint64_t> g_service_request_repairs_exhausted{0};
+std::atomic<std::uint64_t> g_service_request_queue_resource_drops{0};
+std::atomic<std::uint64_t> g_service_response_queue_resource_drops{0};
+std::atomic<std::uint64_t> g_service_pending_response_backpressure{0};
+std::atomic<std::uint64_t> g_service_request_dedupe_evictions{0};
+std::atomic<std::uint64_t> g_service_response_dedupe_evictions{0};
+std::atomic<std::uint64_t> g_service_response_replay_evictions{0};
+std::atomic<std::uint64_t> g_service_request_queue_max_observed{0};
+std::atomic<std::uint64_t> g_service_response_queue_max_observed{0};
+std::atomic<std::uint64_t> g_service_pending_response_max_observed{0};
+std::atomic<std::uint64_t> g_service_response_replay_max_observed{0};
 ServiceRequestRepairShutdownGuard g_service_request_repair_shutdown_guard;
 std::mutex g_event_mutex;
 std::vector<rmw_event_t *> g_event_handles;
@@ -667,6 +685,75 @@ int parse_nonnegative_int_env(const char * name, int default_value, int max_valu
   return static_cast<int>(std::min<long>(parsed, max_value));
 }
 
+size_t service_resource_limit(
+  const char * name,
+  size_t default_value,
+  size_t max_value = 65536)
+{
+  const size_t bounded_default = std::max<size_t>(
+    1, std::min(default_value, max_value));
+  return static_cast<size_t>(std::max(
+      1, parse_nonnegative_int_env(
+        name, static_cast<int>(bounded_default), static_cast<int>(max_value))));
+}
+
+void update_max_observed(std::atomic<std::uint64_t> * maximum, size_t value)
+{
+  if (maximum == nullptr) {
+    return;
+  }
+  std::uint64_t observed = maximum->load(std::memory_order_relaxed);
+  const std::uint64_t candidate = static_cast<std::uint64_t>(value);
+  while (observed < candidate &&
+    !maximum->compare_exchange_weak(
+      observed, candidate, std::memory_order_relaxed, std::memory_order_relaxed))
+  {
+  }
+}
+
+void remember_bounded_service_key(
+  std::unordered_set<std::string> * keys,
+  std::deque<std::string> * order,
+  const std::string & key,
+  size_t limit,
+  std::atomic<std::uint64_t> * eviction_counter)
+{
+  if (keys == nullptr || order == nullptr || !keys->insert(key).second) {
+    return;
+  }
+  order->push_back(key);
+  while (order->size() > limit) {
+    keys->erase(order->front());
+    order->pop_front();
+    if (eviction_counter != nullptr) {
+      eviction_counter->fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+}
+
+void store_bounded_service_response_replay(
+  FleetQoxServiceData * data,
+  const std::string & key,
+  const std::string & encoded)
+{
+  if (data == nullptr) {
+    return;
+  }
+  const bool new_key = data->response_replay_cache.find(key) ==
+    data->response_replay_cache.end();
+  data->response_replay_cache[key] = encoded;
+  if (new_key) {
+    data->response_replay_order.push_back(key);
+  }
+  while (data->response_replay_order.size() > data->response_replay_limit) {
+    data->response_replay_cache.erase(data->response_replay_order.front());
+    data->response_replay_order.pop_front();
+    g_service_response_replay_evictions.fetch_add(1, std::memory_order_relaxed);
+  }
+  update_max_observed(
+    &g_service_response_replay_max_observed, data->response_replay_cache.size());
+}
+
 void trace_service_request_repair_event(
   const char * event,
   const std::string & client_endpoint_id,
@@ -921,6 +1008,22 @@ FleetQoxServiceData * allocate_service_data(
   if (memory == nullptr) {
     return nullptr;
   }
+  const size_t qos_depth = qos->depth == 0 ? 10 : qos->depth;
+  const size_t request_queue_limit = service_resource_limit(
+    "FLEETQOX_RMW_SERVICE_REQUEST_QUEUE_LIMIT", qos_depth);
+  const size_t response_queue_limit = service_resource_limit(
+    "FLEETQOX_RMW_SERVICE_RESPONSE_QUEUE_LIMIT", qos_depth);
+  const size_t pending_response_limit = service_resource_limit(
+    "FLEETQOX_RMW_SERVICE_PENDING_RESPONSE_LIMIT",
+    std::max<size_t>(qos_depth, 1024));
+  const size_t dedupe_history_limit = service_resource_limit(
+    "FLEETQOX_RMW_SERVICE_DEDUPE_HISTORY_LIMIT",
+    std::max<size_t>(qos_depth, 1024));
+  const size_t configured_replay_limit = service_resource_limit(
+    "FLEETQOX_RMW_SERVICE_RESPONSE_REPLAY_LIMIT",
+    std::max<size_t>(qos_depth, 1024));
+  const size_t response_replay_limit =
+    std::max(configured_replay_limit, dedupe_history_limit);
   auto * data = new (memory) FleetQoxServiceData{
     allocator,
     context,
@@ -951,7 +1054,15 @@ FleetQoxServiceData * allocate_service_data(
     std::map<std::string, std::string>{},
     std::map<std::string, std::string>{},
     std::unordered_set<std::string>{},
-    std::unordered_set<std::string>{}};
+    std::unordered_set<std::string>{},
+    std::deque<std::string>{},
+    std::deque<std::string>{},
+    std::deque<std::string>{},
+    request_queue_limit,
+    response_queue_limit,
+    pending_response_limit,
+    dedupe_history_limit,
+    response_replay_limit};
   data->service_name = rcutils_strdup(service_name, allocator);
   if (data->service_name == nullptr) {
     data->~FleetQoxServiceData();
@@ -1482,8 +1593,21 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
             trace_service_event("drop_duplicate_request", data, &*frame, data->request_queue.size());
             continue;
           }
-          data->seen_request_keys.insert(dedupe_key);
+          if (data->request_queue.size() >= data->request_queue_limit) {
+            g_service_request_queue_resource_drops.fetch_add(1, std::memory_order_relaxed);
+            trace_service_event(
+              "request_queue_resource_limit", data, &*frame, data->request_queue.size());
+            continue;
+          }
+          remember_bounded_service_key(
+            &data->seen_request_keys,
+            &data->seen_request_order,
+            dedupe_key,
+            data->dedupe_history_limit,
+            &g_service_request_dedupe_evictions);
           data->request_queue.push_back(*frame);
+          update_max_observed(
+            &g_service_request_queue_max_observed, data->request_queue.size());
           trace_service_event("enqueue_request", data, &*frame, data->request_queue.size());
           if (data->on_new_request_callback != nullptr) {
             callbacks.emplace_back(
@@ -1503,14 +1627,28 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
             trace_service_event("deny_response_subscribe", data, &*frame);
             continue;
           }
-          matched_response = true;
           const std::string dedupe_key = service_frame_dedupe_key(*frame);
           if (data->seen_response_keys.find(dedupe_key) != data->seen_response_keys.end()) {
+            matched_response = true;
             trace_service_event("drop_duplicate_response", data, &*frame, data->response_queue.size());
             continue;
           }
-          data->seen_response_keys.insert(dedupe_key);
+          if (data->response_queue.size() >= data->response_queue_limit) {
+            g_service_response_queue_resource_drops.fetch_add(1, std::memory_order_relaxed);
+            trace_service_event(
+              "response_queue_resource_limit", data, &*frame, data->response_queue.size());
+            continue;
+          }
+          remember_bounded_service_key(
+            &data->seen_response_keys,
+            &data->seen_response_order,
+            dedupe_key,
+            data->dedupe_history_limit,
+            &g_service_response_dedupe_evictions);
           data->response_queue.push_back(*frame);
+          matched_response = true;
+          update_max_observed(
+            &g_service_response_queue_max_observed, data->response_queue.size());
           trace_service_event("enqueue_response", data, &*frame, data->response_queue.size());
           if (data->on_new_response_callback != nullptr) {
             callbacks.emplace_back(
@@ -2517,6 +2655,16 @@ rmw_ret_t rmw_take_request(
   rmw_fleetqox_cpp::ServiceFrame frame{};
   {
     std::lock_guard<std::mutex> lock(g_service_bus_mutex);
+    if (!data->request_queue.empty() &&
+      data->pending_response_clients.size() >= data->pending_response_limit)
+    {
+      g_service_pending_response_backpressure.fetch_add(1, std::memory_order_relaxed);
+      trace_service_event(
+        "pending_response_backpressure", data, &data->request_queue.front(),
+        data->request_queue.size());
+      *taken = false;
+      return RMW_RET_OK;
+    }
     while (!data->request_queue.empty()) {
       frame = std::move(data->request_queue.front());
       data->request_queue.pop_front();
@@ -2546,6 +2694,9 @@ rmw_ret_t rmw_take_request(
   {
     std::lock_guard<std::mutex> lock(g_service_bus_mutex);
     data->pending_response_clients[request_key(request_header->request_id)] = frame.client_endpoint_id;
+    update_max_observed(
+      &g_service_pending_response_max_observed,
+      data->pending_response_clients.size());
   }
   *taken = true;
   trace_service_event("take_request", data, &frame);
@@ -2612,8 +2763,10 @@ rmw_ret_t rmw_send_response(
   const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(frame);
   {
     std::lock_guard<std::mutex> lock(g_service_bus_mutex);
-    data->response_replay_cache[
-      service_response_replay_key(client_endpoint_id, request_header->sequence_number)] = encoded;
+    store_bounded_service_response_replay(
+      data,
+      service_response_replay_key(client_endpoint_id, request_header->sequence_number),
+      encoded);
   }
   return send_service_frame_with_repeats(
     encoded,
@@ -3466,6 +3619,56 @@ std::uint64_t rmw_fleetqox_cpp_service_request_repairs_cancelled()
 std::uint64_t rmw_fleetqox_cpp_service_request_repairs_exhausted()
 {
   return g_service_request_repairs_exhausted.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_request_queue_resource_drops()
+{
+  return g_service_request_queue_resource_drops.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_response_queue_resource_drops()
+{
+  return g_service_response_queue_resource_drops.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_pending_response_backpressure()
+{
+  return g_service_pending_response_backpressure.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_request_dedupe_evictions()
+{
+  return g_service_request_dedupe_evictions.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_response_dedupe_evictions()
+{
+  return g_service_response_dedupe_evictions.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_response_replay_evictions()
+{
+  return g_service_response_replay_evictions.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_request_queue_max_observed()
+{
+  return g_service_request_queue_max_observed.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_response_queue_max_observed()
+{
+  return g_service_response_queue_max_observed.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_pending_response_max_observed()
+{
+  return g_service_pending_response_max_observed.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_response_replay_max_observed()
+{
+  return g_service_response_replay_max_observed.load(std::memory_order_relaxed);
 }
 
 }  // extern "C"
