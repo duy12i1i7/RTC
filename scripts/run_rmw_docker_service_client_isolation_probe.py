@@ -125,6 +125,7 @@ def run_probe(*, root: Path, image: str, iterations: int) -> dict[str, Any]:
                 == PER_CLIENT_REQUEST_QUEUE_LIMIT
                 and int(probe.get("first_wave_request_count", 0)) == 4
                 and probe.get("quiet_admitted_first_wave") is True
+                and probe.get("first_wave_round_robin") is True
                 and int(probe.get("unique_requests_taken", 0)) == 10
                 and int(probe.get("noisy_responses_taken", 0)) == 8
                 and int(probe.get("quiet_responses_taken", 0)) == 2
@@ -177,6 +178,7 @@ def run_probe(*, root: Path, image: str, iterations: int) -> dict[str, Any]:
             "quiet_client_first_wave_admission_claim": status == "ok",
             "per_client_service_pending_isolation_claim": status == "ok",
             "service_noisy_neighbor_bounded_fairness_claim": status == "ok",
+            "service_inter_client_round_robin_claim": status == "ok",
             "weighted_service_fairness_claim": False,
             "runs": runs,
         }

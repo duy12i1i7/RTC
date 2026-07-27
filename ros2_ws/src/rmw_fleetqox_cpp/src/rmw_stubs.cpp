@@ -218,6 +218,7 @@ struct FleetQoxServiceData
   std::int64_t next_sequence_id;
   std::deque<rmw_fleetqox_cpp::ServiceFrame> request_queue;
   std::deque<rmw_fleetqox_cpp::ServiceFrame> response_queue;
+  std::string last_dequeued_client_endpoint_id;
   std::map<std::string, std::string> pending_response_clients;
   std::map<std::string, std::string> response_replay_cache;
   std::unordered_set<std::string> seen_request_keys;
@@ -1056,6 +1057,7 @@ FleetQoxServiceData * allocate_service_data(
     1,
     std::deque<rmw_fleetqox_cpp::ServiceFrame>{},
     std::deque<rmw_fleetqox_cpp::ServiceFrame>{},
+    std::string{},
     std::map<std::string, std::string>{},
     std::map<std::string, std::string>{},
     std::unordered_set<std::string>{},
@@ -2687,12 +2689,26 @@ rmw_ret_t rmw_take_request(
       return RMW_RET_OK;
     }
     while (!data->request_queue.empty()) {
-      frame = std::move(data->request_queue.front());
-      data->request_queue.pop_front();
+      auto selected = data->request_queue.begin();
+      if (!data->last_dequeued_client_endpoint_id.empty()) {
+        const auto different_client = std::find_if(
+          data->request_queue.begin(),
+          data->request_queue.end(),
+          [data](const rmw_fleetqox_cpp::ServiceFrame & candidate) {
+            return candidate.client_endpoint_id !=
+                   data->last_dequeued_client_endpoint_id;
+          });
+        if (different_client != data->request_queue.end()) {
+          selected = different_client;
+        }
+      }
+      frame = std::move(*selected);
+      data->request_queue.erase(selected);
       if (drop_if_expired_service_frame(frame)) {
         frame = rmw_fleetqox_cpp::ServiceFrame{};
         continue;
       }
+      data->last_dequeued_client_endpoint_id = frame.client_endpoint_id;
       break;
     }
     if (frame.role.empty()) {

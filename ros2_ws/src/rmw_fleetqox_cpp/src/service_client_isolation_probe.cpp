@@ -96,9 +96,12 @@ bool inject_request(
 bool drain_requests(
   const rmw_service_t * service,
   std::set<std::int64_t> * all_sequences,
-  std::set<std::int64_t> * batch_sequences)
+  std::set<std::int64_t> * batch_sequences,
+  std::vector<std::int64_t> * batch_order)
 {
-  if (service == nullptr || all_sequences == nullptr || batch_sequences == nullptr) {
+  if (service == nullptr || all_sequences == nullptr ||
+    batch_sequences == nullptr || batch_order == nullptr)
+  {
     return false;
   }
   std_srvs__srv__SetBool_Request request;
@@ -124,6 +127,7 @@ bool drain_requests(
     ok = request.data &&
       all_sequences->insert(sequence).second &&
       batch_sequences->insert(sequence).second;
+    batch_order->push_back(sequence);
     response.success = true;
     if (ok && rmw_send_response(service, &info.request_id, &response) != RMW_RET_OK) {
       ok = false;
@@ -218,6 +222,7 @@ int main()
   std::set<std::int64_t> noisy_responses;
   std::set<std::int64_t> quiet_responses;
   std::set<std::int64_t> first_batch;
+  std::vector<std::int64_t> first_batch_order;
   bool exercise_ok = setup_ok;
   if (exercise_ok) {
     for (std::int64_t sequence = 1; sequence <= 8; ++sequence) {
@@ -228,7 +233,8 @@ int main()
       quiet_endpoint, payload, 100, context.actual_domain_id);
     exercise_ok = exercise_ok && inject_request(
       quiet_endpoint, payload, 101, context.actual_domain_id);
-    exercise_ok = exercise_ok && drain_requests(service, &requests, &first_batch);
+    exercise_ok = exercise_ok && drain_requests(
+      service, &requests, &first_batch, &first_batch_order);
     exercise_ok = exercise_ok &&
       drain_client_responses(noisy_client, 2, &noisy_responses) &&
       drain_client_responses(quiet_client, 2, &quiet_responses);
@@ -240,7 +246,9 @@ int main()
           noisy_endpoint, payload, sequence, context.actual_domain_id);
       }
       std::set<std::int64_t> batch;
-      exercise_ok = exercise_ok && drain_requests(service, &requests, &batch);
+      std::vector<std::int64_t> batch_order;
+      exercise_ok = exercise_ok && drain_requests(
+        service, &requests, &batch, &batch_order);
       noisy_expected += 2;
       exercise_ok = exercise_ok &&
         drain_client_responses(noisy_client, noisy_expected, &noisy_responses);
@@ -257,6 +265,8 @@ int main()
     rmw_fleetqox_cpp_service_request_per_client_max_observed();
   const bool quiet_admitted_first_wave =
     first_batch == std::set<std::int64_t>({1, 2, 100, 101});
+  const bool first_wave_round_robin =
+    first_batch_order == std::vector<std::int64_t>({1, 100, 2, 101});
   const bool exact_delivery =
     requests.size() == 10 &&
     noisy_responses.size() == 8 &&
@@ -266,7 +276,8 @@ int main()
     per_client_resource_drops == 12 &&
     queue_max == 4 &&
     per_client_max == 2 &&
-    quiet_admitted_first_wave;
+    quiet_admitted_first_wave &&
+    first_wave_round_robin;
 
   const rmw_ret_t destroy_noisy_ret =
     noisy_client == nullptr ? RMW_RET_OK : rmw_destroy_client(node, noisy_client);
@@ -298,6 +309,8 @@ int main()
             << "\"first_wave_request_count\":" << first_batch.size() << ","
             << "\"quiet_admitted_first_wave\":"
             << (quiet_admitted_first_wave ? "true" : "false") << ","
+            << "\"first_wave_round_robin\":"
+            << (first_wave_round_robin ? "true" : "false") << ","
             << "\"unique_requests_taken\":" << requests.size() << ","
             << "\"noisy_responses_taken\":" << noisy_responses.size() << ","
             << "\"quiet_responses_taken\":" << quiet_responses.size() << ","

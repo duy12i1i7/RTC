@@ -137,8 +137,9 @@ project. It is ordered by dependency and regression value.
   gate proves capacity rejection remains repairable and delivers 10/10 unique
   requests/responses in 5/5 runs. A second 5/5 noisy/quiet-client gate proves
   optional per-client pending isolation: the noisy client cannot consume the
-  quiet client's two first-wave slots, while all deferred requests are later
-  delivered. Remaining service work is weighted/priority fairness,
+  quiet client's two first-wave slots; round-robin dequeue alternates clients
+  while preserving each client's FIFO order, and all deferred requests are
+  later delivered. Remaining service work is weighted/priority fairness,
   crash-persistent deduplication, and exactly-once semantics.
 - Harden action transport on top of pub/sub plus service reliability:
   goal, result, feedback, cancel, status, deadlines, and larger concurrent

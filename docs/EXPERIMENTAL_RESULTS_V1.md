@@ -615,8 +615,10 @@ quota. An eight-request noisy client arrives first; only its first two requests
 enter. A two-request quiet client then occupies the two remaining first-wave
 slots. Twelve noisy attempts are explicitly deferred over the bounded repair
 rounds, global queue rejection remains zero, the global/per-client observed
-maxima stay at four/two, and all eight noisy plus both quiet requests receive
-their matching responses. This is bounded noisy-neighbor isolation, not
+maxima stay at four/two, first-wave dequeue is exactly
+noisy-quiet-noisy-quiet while per-client FIFO is retained, and all eight noisy
+plus both quiet requests receive their matching responses. This is bounded
+noisy-neighbor isolation and unweighted inter-client round-robin, not
 weighted, priority-aware, or globally optimal service scheduling.
 
 The local transport artifact reports `status=ok` for a separate two-container

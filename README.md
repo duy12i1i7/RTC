@@ -69,7 +69,8 @@ This repository starts with the part that should be proven first:
   keeping every observed structure within its bound; an optional per-client
   pending quota then passes a second `5/5` noisy/quiet-client gate: the noisy
   client is held to two of four queue slots, the quiet client's two requests
-  enter the first wave, and all ten calls still receive responses; a separate two-container POSIX
+  enter the first wave, dequeue alternates noisy/quiet while retaining
+  per-client FIFO, and all ten calls still receive responses; a separate two-container POSIX
   shared-memory gate transfers a 100 KB payload with no UDP peer or slot
   overwrite, reports zero network-flow endpoints in SHM mode, and proves an
   explicit UDP fallback path under injected SHM initialization failure; a

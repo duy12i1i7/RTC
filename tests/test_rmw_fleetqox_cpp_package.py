@@ -1496,6 +1496,11 @@ int main()
             "service_noisy_neighbor_bounded_fairness_claim",
             docker_service_isolation_source,
         )
+        self.assertIn(
+            "service_inter_client_round_robin_claim",
+            docker_service_isolation_source,
+        )
+        self.assertIn("first_wave_round_robin", service_isolation_source)
         cmake_source = (PKG / "CMakeLists.txt").read_text()
         self.assertIn("fleetrmw_service_resource_limit_probe", cmake_source)
         self.assertIn("fleetrmw_service_client_isolation_probe", cmake_source)
@@ -4224,6 +4229,9 @@ int main()
             manifest["supported"]["docker_service_client_isolation_5run_netem"]
         )
         self.assertTrue(
+            manifest["supported"]["service_inter_client_round_robin_dequeue"]
+        )
+        self.assertTrue(
             manifest["claim_boundaries"][
                 "docker_router_cpp_python_path_5run_netem"
             ]
@@ -4267,6 +4275,11 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "service_noisy_neighbor_bounded_fairness_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "service_inter_client_round_robin_claim"
             ]
         )
         self.assertFalse(
