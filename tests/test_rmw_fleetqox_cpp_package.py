@@ -1469,8 +1469,36 @@ int main()
             docker_service_resource_source,
         )
         self.assertIn("tc qdisc replace dev lo root netem", docker_service_resource_source)
+        service_isolation_probe = (
+            PKG / "src" / "service_client_isolation_probe.cpp"
+        )
+        self.assertTrue(service_isolation_probe.exists())
+        service_isolation_source = service_isolation_probe.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_service_client_isolation_probe.v1",
+            service_isolation_source,
+        )
+        self.assertIn("quiet_admitted_first_wave", service_isolation_source)
+        self.assertIn(
+            "rmw_fleetqox_cpp_service_request_per_client_resource_drops",
+            service_isolation_source,
+        )
+        docker_service_isolation_script = (
+            ROOT / "scripts" / "run_rmw_docker_service_client_isolation_probe.py"
+        )
+        self.assertTrue(docker_service_isolation_script.exists())
+        docker_service_isolation_source = docker_service_isolation_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_docker_service_client_isolation_probe.v1",
+            docker_service_isolation_source,
+        )
+        self.assertIn(
+            "service_noisy_neighbor_bounded_fairness_claim",
+            docker_service_isolation_source,
+        )
         cmake_source = (PKG / "CMakeLists.txt").read_text()
         self.assertIn("fleetrmw_service_resource_limit_probe", cmake_source)
+        self.assertIn("fleetrmw_service_client_isolation_probe", cmake_source)
         self.assertIn("malformed_response_error", docker_service_error_source)
         self.assertIn("after_invalid_response_taken", docker_service_error_source)
         action_probe = PKG / "src" / "action_frame_probe.cpp"
@@ -4190,6 +4218,12 @@ int main()
             manifest["supported"]["docker_service_resource_limit_5run_netem"]
         )
         self.assertTrue(
+            manifest["supported"]["per_client_service_request_queue_quota"]
+        )
+        self.assertTrue(
+            manifest["supported"]["docker_service_client_isolation_5run_netem"]
+        )
+        self.assertTrue(
             manifest["claim_boundaries"][
                 "docker_router_cpp_python_path_5run_netem"
             ]
@@ -4228,6 +4262,11 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "service_resource_backpressure_repair_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "service_noisy_neighbor_bounded_fairness_claim"
             ]
         )
         self.assertFalse(

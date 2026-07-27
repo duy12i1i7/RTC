@@ -66,6 +66,16 @@ METRIC_KEYS = (
     "bounded_service_dedupe_history_claim",
     "bounded_service_response_replay_claim",
     "service_resource_backpressure_repair_claim",
+    "noisy_request_count",
+    "quiet_request_count",
+    "per_client_request_queue_limit",
+    "per_client_resource_drops",
+    "noisy_responses_taken",
+    "quiet_responses_taken",
+    "quiet_client_first_wave_admission_claim",
+    "per_client_service_pending_isolation_claim",
+    "service_noisy_neighbor_bounded_fairness_claim",
+    "weighted_service_fairness_claim",
     "token_size",
     "range_count",
     "waypoint_count",
@@ -1133,6 +1143,10 @@ CLAIM_BOUNDARY_KEYS = (
     "bounded_service_dedupe_history_claim",
     "bounded_service_response_replay_claim",
     "service_resource_backpressure_repair_claim",
+    "quiet_client_first_wave_admission_claim",
+    "per_client_service_pending_isolation_claim",
+    "service_noisy_neighbor_bounded_fairness_claim",
+    "weighted_service_fairness_claim",
     "full_exactly_once_service_semantics_claim",
     "production_quic_backend_claim",
     "full_bidirectional_quic_backend_claim",
@@ -1827,6 +1841,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         or "cpp_typesupport" in text
         or "bounded_shape" in text
         or "service_resource_limit" in text
+        or "service_client_isolation" in text
     ):
         return "rmw-abi"
     if "wait_for_all_acked" in text or "wait-for-all-acked" in text:
