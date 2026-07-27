@@ -187,6 +187,7 @@ struct ServiceFrame
   std::uint64_t client_priority = 0;
   std::int64_t local_enqueue_timestamp_ns = 0;
   std::uint64_t client_weight = 1;
+  std::uint64_t request_deadline_ns = 0;
 };
 
 struct ActionFrame

@@ -559,6 +559,7 @@ int main()
   frame.domain_id = 31;
   frame.client_priority = 7;
   frame.client_weight = 3;
+  frame.request_deadline_ns = 42000000;
   const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(frame);
   const auto decoded = rmw_fleetqox_cpp::decode_service_frame(encoded);
   if (!decoded || decoded->role != frame.role ||
@@ -569,6 +570,7 @@ int main()
     decoded->domain_id != frame.domain_id ||
     decoded->client_priority != frame.client_priority ||
     decoded->client_weight != frame.client_weight ||
+    decoded->request_deadline_ns != frame.request_deadline_ns ||
     decoded->serialized_payload != frame.serialized_payload)
   {
     return 1;
@@ -590,6 +592,7 @@ int main()
     legacy_decoded->domain_id != 0 ||
     legacy_decoded->client_priority != 0 ||
     legacy_decoded->client_weight != 1 ||
+    legacy_decoded->request_deadline_ns != 0 ||
     rmw_fleetqox_cpp::service_frame_expired(*legacy_decoded, 999999999))
   {
     return 4;
@@ -1594,6 +1597,38 @@ int main()
         )
         self.assertIn(
             "fleetrmw_service_weighted_fairness_probe",
+            cmake_source,
+        )
+        deadline_service_probe = (
+            PKG / "src" / "service_deadline_scheduler_probe.cpp"
+        )
+        self.assertTrue(deadline_service_probe.exists())
+        deadline_service_source = deadline_service_probe.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_service_deadline_scheduler_probe.v1",
+            deadline_service_source,
+        )
+        self.assertIn("earliest_deadline_first_claim", deadline_service_source)
+        self.assertIn("rmw_send_request", deadline_service_source)
+        docker_deadline_service_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_service_deadline_scheduler_probe.py"
+        )
+        self.assertTrue(docker_deadline_service_script.exists())
+        docker_deadline_service_source = (
+            docker_deadline_service_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_docker_service_deadline_scheduler_probe.v1",
+            docker_deadline_service_source,
+        )
+        self.assertIn(
+            "deadline_aware_service_scheduling_claim",
+            docker_deadline_service_source,
+        )
+        self.assertIn(
+            "fleetrmw_service_deadline_scheduler_probe",
             cmake_source,
         )
         self.assertIn("malformed_response_error", docker_service_error_source)
@@ -4339,6 +4374,9 @@ int main()
             manifest["supported"]["service_smooth_weighted_round_robin"]
         )
         self.assertTrue(
+            manifest["supported"]["service_earliest_deadline_first"]
+        )
+        self.assertTrue(
             manifest["claim_boundaries"][
                 "docker_router_cpp_python_path_5run_netem"
             ]
@@ -4401,6 +4439,11 @@ int main()
         )
         self.assertTrue(
             manifest["claim_boundaries"]["weighted_service_ratio_claim"]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "deadline_aware_service_scheduling_claim"
+            ]
         )
         self.assertFalse(
             manifest["claim_boundaries"]["full_exactly_once_service_semantics_claim"]

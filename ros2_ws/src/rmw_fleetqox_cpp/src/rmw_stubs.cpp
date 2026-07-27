@@ -234,9 +234,12 @@ struct FleetQoxServiceData
   size_t response_replay_limit;
   std::int64_t service_priority_aging_ns;
   bool weighted_service_scheduler;
+  bool deadline_service_scheduler;
+  std::int64_t service_deadline_aging_ns;
   std::map<std::string, std::int64_t> weighted_service_current;
   std::uint64_t service_client_priority;
   std::uint64_t service_client_weight;
+  std::uint64_t service_client_deadline_ns;
 };
 
 struct FleetQoxEventData
@@ -320,6 +323,8 @@ std::atomic<std::uint64_t> g_service_response_replay_max_observed{0};
 std::atomic<std::uint64_t> g_service_priority_dequeues{0};
 std::atomic<std::uint64_t> g_service_aged_priority_dequeues{0};
 std::atomic<std::uint64_t> g_service_weighted_dequeues{0};
+std::atomic<std::uint64_t> g_service_deadline_dequeues{0};
+std::atomic<std::uint64_t> g_service_deadline_aged_dequeues{0};
 ServiceRequestRepairShutdownGuard g_service_request_repair_shutdown_guard;
 std::mutex g_event_mutex;
 std::vector<rmw_event_t *> g_event_handles;
@@ -408,13 +413,14 @@ void trace_service_event(
   if (frame != nullptr) {
     std::fprintf(
       stderr,
-      " role=%s client=%s service_endpoint=%s seq=%ld priority=%lu weight=%lu payload=%zu queue=%zu",
+      " role=%s client=%s service_endpoint=%s seq=%ld priority=%lu weight=%lu deadline_ns=%lu payload=%zu queue=%zu",
       frame->role.c_str(),
       frame->client_endpoint_id.c_str(),
       frame->service_endpoint_id.c_str(),
       static_cast<long>(frame->sequence_id),
       static_cast<unsigned long>(frame->client_priority),
       static_cast<unsigned long>(frame->client_weight),
+      static_cast<unsigned long>(frame->request_deadline_ns),
       frame->serialized_payload.size(),
       queue_size);
   }
@@ -710,6 +716,14 @@ bool weighted_service_scheduler_enabled()
          std::strcmp(raw, "weighted_fair") == 0);
 }
 
+bool deadline_service_scheduler_enabled()
+{
+  const char * raw = std::getenv("FLEETQOX_RMW_SERVICE_SCHEDULER");
+  return raw != nullptr &&
+         (std::strcmp(raw, "deadline") == 0 ||
+         std::strcmp(raw, "edf") == 0);
+}
+
 size_t service_resource_limit(
   const char * name,
   size_t default_value,
@@ -795,6 +809,25 @@ std::uint64_t effective_service_priority(
   const std::uint64_t available =
     std::numeric_limits<std::uint64_t>::max() - effective;
   return effective + std::min(age_quanta, available);
+}
+
+std::uint64_t effective_service_deadline(
+  const rmw_fleetqox_cpp::ServiceFrame & frame,
+  std::int64_t deadline_aging_ns)
+{
+  const std::uint64_t relative_deadline =
+    frame.request_deadline_ns > 0 ?
+    frame.request_deadline_ns :
+    static_cast<std::uint64_t>(std::max<std::int64_t>(0, deadline_aging_ns));
+  if (frame.local_enqueue_timestamp_ns <= 0 || relative_deadline == 0) {
+    return std::numeric_limits<std::uint64_t>::max();
+  }
+  const std::uint64_t enqueued =
+    static_cast<std::uint64_t>(frame.local_enqueue_timestamp_ns);
+  if (std::numeric_limits<std::uint64_t>::max() - enqueued < relative_deadline) {
+    return std::numeric_limits<std::uint64_t>::max();
+  }
+  return enqueued + relative_deadline;
 }
 
 void trace_service_request_repair_event(
@@ -1104,11 +1137,19 @@ FleetQoxServiceData * allocate_service_data(
     std::max(configured_replay_limit, dedupe_history_limit);
   const int priority_aging_ms = parse_nonnegative_int_env(
     "FLEETQOX_RMW_SERVICE_PRIORITY_AGING_MS", 100, 60000);
+  const int deadline_aging_ms = parse_nonnegative_int_env(
+    "FLEETQOX_RMW_SERVICE_DEADLINE_AGING_MS", 1000, 60000);
   const int client_priority = parse_nonnegative_int_env(
     "FLEETQOX_RMW_SERVICE_CLIENT_PRIORITY", 0, 255);
   const int client_weight = std::max(
     1, parse_nonnegative_int_env(
       "FLEETQOX_RMW_SERVICE_CLIENT_WEIGHT", 1, 64));
+  const int configured_client_deadline_ms = parse_nonnegative_int_env(
+    "FLEETQOX_RMW_SERVICE_CLIENT_DEADLINE_MS", -1, 60000);
+  const std::int64_t client_deadline_ns =
+    configured_client_deadline_ms >= 0 ?
+    static_cast<std::int64_t>(configured_client_deadline_ms) * 1000000 :
+    qos_duration_ns(qos->deadline);
   auto * data = new (memory) FleetQoxServiceData{
     allocator,
     context,
@@ -1152,9 +1193,12 @@ FleetQoxServiceData * allocate_service_data(
     response_replay_limit,
     static_cast<std::int64_t>(priority_aging_ms) * 1000000,
     weighted_service_scheduler_enabled(),
+    deadline_service_scheduler_enabled(),
+    static_cast<std::int64_t>(deadline_aging_ms) * 1000000,
     std::map<std::string, std::int64_t>{},
     static_cast<std::uint64_t>(client_priority),
-    static_cast<std::uint64_t>(client_weight)};
+    static_cast<std::uint64_t>(client_weight),
+    static_cast<std::uint64_t>(std::max<std::int64_t>(0, client_deadline_ns))};
   data->service_name = rcutils_strdup(service_name, allocator);
   if (data->service_name == nullptr) {
     data->~FleetQoxServiceData();
@@ -2520,6 +2564,7 @@ rmw_ret_t rmw_send_request(
   rmw_fleetqox_cpp::ServiceFrame prioritized_frame = frame;
   prioritized_frame.client_priority = data->service_client_priority;
   prioritized_frame.client_weight = data->service_client_weight;
+  prioritized_frame.request_deadline_ns = data->service_client_deadline_ns;
   trace_service_event("send_request", data, &prioritized_frame);
   const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(prioritized_frame);
   if (!schedule_service_request_repair(data->endpoint_id, next_sequence, encoded)) {
@@ -2792,7 +2837,30 @@ rmw_ret_t rmw_take_request(
         }
       }
       auto selected = data->request_queue.end();
-      if (data->weighted_service_scheduler) {
+      if (data->deadline_service_scheduler) {
+        std::uint64_t earliest_deadline = std::numeric_limits<std::uint64_t>::max();
+        for (const auto & client_head : client_heads) {
+          const auto candidate = client_head.second;
+          const std::uint64_t deadline = effective_service_deadline(
+            *candidate, data->service_deadline_aging_ns);
+          if (selected == data->request_queue.end() || deadline < earliest_deadline) {
+            selected = candidate;
+            earliest_deadline = deadline;
+          } else if (
+            deadline == earliest_deadline &&
+            !data->last_dequeued_client_endpoint_id.empty() &&
+            candidate->client_endpoint_id != data->last_dequeued_client_endpoint_id)
+          {
+            selected = candidate;
+          }
+        }
+        if (selected != data->request_queue.end()) {
+          g_service_deadline_dequeues.fetch_add(1, std::memory_order_relaxed);
+          if (selected->request_deadline_ns == 0) {
+            g_service_deadline_aged_dequeues.fetch_add(1, std::memory_order_relaxed);
+          }
+        }
+      } else if (data->weighted_service_scheduler) {
         std::int64_t total_weight = 0;
         std::int64_t best_current = std::numeric_limits<std::int64_t>::min();
         for (const auto & client_head : client_heads) {
@@ -3906,6 +3974,16 @@ std::uint64_t rmw_fleetqox_cpp_service_aged_priority_dequeues()
 std::uint64_t rmw_fleetqox_cpp_service_weighted_dequeues()
 {
   return g_service_weighted_dequeues.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_deadline_dequeues()
+{
+  return g_service_deadline_dequeues.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_deadline_aged_dequeues()
+{
+  return g_service_deadline_aged_dequeues.load(std::memory_order_relaxed);
 }
 
 }  // extern "C"

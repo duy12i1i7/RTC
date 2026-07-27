@@ -204,6 +204,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker/loopback-netem bounded service-repair admission matrix | `results_rmw_socket/docker_service_repair_admission_probe_summary.json` |
 | Docker/loopback-netem service priority and aging matrix | `results_rmw_socket/docker_service_priority_probe_summary.json` |
 | Docker/loopback-netem smooth weighted service matrix | `results_rmw_socket/docker_service_weighted_fairness_probe_summary.json` |
+| Docker/loopback-netem deadline-aware service matrix | `results_rmw_socket/docker_service_deadline_scheduler_probe_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -656,8 +657,18 @@ weights 1 and 3, every 40-request measurement window contains exactly 10
 low-weight and 30 high-weight dequeues; the low-weight client is served at
 least once every four dequeues. Per-client heads are chosen by source sequence,
 so the same runs retain FIFO despite reordered netem arrival. This is a
-measured 3:1 fairness boundary, not deadline-aware scheduling or a proof for
-every workload distribution.
+measured 3:1 fairness boundary, not a proof for every workload distribution;
+deadline-aware scheduling is evaluated separately below.
+
+The deadline scheduler artifact separately passes `5/5` through
+`rmw_send_request`. A FleetQoX request frame carries a relative scheduling
+deadline; the server combines it with local enqueue time so robot clock epochs
+are never compared. Earliest-deadline-first selects the 20 ms request before an
+earlier 200 ms request. A request without a declared deadline receives a
+synthetic 100 ms aging deadline and, after waiting 150 ms, is selected before a
+new 20 ms request. Standard bidirectional ROS service QoS compatibility remains
+unchanged; heterogeneous per-client scheduling deadlines are explicitly a
+FleetQoX extension.
 
 The local transport artifact reports `status=ok` for a separate two-container
 POSIX shared-memory run. Publisher and subscriber have zero UDP peers and both

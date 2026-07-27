@@ -150,8 +150,11 @@ project. It is ordered by dependency and regression value.
   including reordered wire arrival, reaches an exact 3:1 saturated dequeue
   split, and bounds the tested
   lower-weight client's wait to four dequeues in a separate 5/5 Docker/netem
-  gate. Remaining service work is deadline-aware fairness,
-  crash-persistent deduplication, and exactly-once semantics.
+  gate. An opt-in EDF scheduler now carries relative request deadlines, orders
+  them from server-local enqueue time, and gives no-deadline requests a
+  configurable synthetic aging deadline; its 5/5 end-to-end gate proves
+  20 ms before 200 ms and the aging escape path. Remaining service work is
+  crash-persistent deduplication and exactly-once semantics.
 - Harden action transport on top of pub/sub plus service reliability:
   goal, result, feedback, cancel, status, deadlines, and larger concurrent
   action/client counts.

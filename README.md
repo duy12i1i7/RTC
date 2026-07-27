@@ -80,11 +80,17 @@ This repository starts with the part that should be proven first:
   weights likewise default to one, while an opt-in smooth weighted
   round-robin mode passes a separate `5/5` Docker/netem gate at an exact
   `3:1` split over each saturated 40-request window without breaking
-  per-client source-sequence FIFO under reordered arrival. Strict mode uses
+  per-client source-sequence FIFO under reordered arrival. A third opt-in
+  earliest-deadline-first mode passes `5/5` with 20/200 ms request deadlines
+  and a server-local synthetic aging deadline for requests without one.
+  Strict mode uses
   `FLEETQOX_RMW_SERVICE_CLIENT_PRIORITY=0..255` and
   `FLEETQOX_RMW_SERVICE_PRIORITY_AGING_MS`; weighted mode uses
   `FLEETQOX_RMW_SERVICE_SCHEDULER=weighted` and per-client
-  `FLEETQOX_RMW_SERVICE_CLIENT_WEIGHT=1..64`; a separate two-container POSIX
+  `FLEETQOX_RMW_SERVICE_CLIENT_WEIGHT=1..64`; deadline mode uses
+  `FLEETQOX_RMW_SERVICE_SCHEDULER=deadline`,
+  `FLEETQOX_RMW_SERVICE_CLIENT_DEADLINE_MS`, and
+  `FLEETQOX_RMW_SERVICE_DEADLINE_AGING_MS`; a separate two-container POSIX
   shared-memory gate transfers a 100 KB payload with no UDP peer or slot
   overwrite, reports zero network-flow endpoints in SHM mode, and proves an
   explicit UDP fallback path under injected SHM initialization failure; a

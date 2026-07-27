@@ -629,6 +629,7 @@ std::string encode_service_frame(const ServiceFrame & frame)
   out << "\"domain_id\":" << frame.domain_id << ",";
   out << "\"client_priority\":" << frame.client_priority << ",";
   out << "\"client_weight\":" << frame.client_weight << ",";
+  out << "\"request_deadline_ns\":" << frame.request_deadline_ns << ",";
   out << "\"role\":\"" << json_escape(frame.role) << "\",";
   out << "\"service_name\":\"" << json_escape(frame.service_name) << "\",";
   out << "\"type_name\":\"" << json_escape(frame.type_name) << "\",";
@@ -697,7 +698,8 @@ std::optional<ServiceFrame> decode_service_frame(const std::string & payload)
     json_uint_value(body, "domain_id").value_or(0),
     json_uint_value(body, "client_priority").value_or(0),
     0,
-    std::max<std::uint64_t>(1, json_uint_value(body, "client_weight").value_or(1))};
+    std::max<std::uint64_t>(1, json_uint_value(body, "client_weight").value_or(1)),
+    json_uint_value(body, "request_deadline_ns").value_or(0)};
 }
 
 bool service_frame_expired(const ServiceFrame & frame, std::int64_t now_ns)
