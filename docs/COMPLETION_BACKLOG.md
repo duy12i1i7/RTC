@@ -143,7 +143,10 @@ project. It is ordered by dependency and regression value.
   optional per-client pending isolation: the noisy client cannot consume the
   quiet client's two first-wave slots; round-robin dequeue alternates clients
   while preserving each client's FIFO order, and all deferred requests are
-  later delivered. Remaining service work is weighted/priority fairness,
+  later delivered. Optional priority metadata, strict priority dequeue, and
+  local enqueue-time aging are covered by a separate 5/5 Docker gate; legacy
+  frames default to priority zero. Remaining service work is arbitrary
+  weighted-share/deadline-aware fairness,
   crash-persistent deduplication, and exactly-once semantics.
 - Harden action transport on top of pub/sub plus service reliability:
   goal, result, feedback, cancel, status, deadlines, and larger concurrent

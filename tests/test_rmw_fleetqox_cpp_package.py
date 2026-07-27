@@ -557,6 +557,7 @@ int main()
     5000000,
     {0x01, 0x02, 0x03}};
   frame.domain_id = 31;
+  frame.client_priority = 7;
   const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(frame);
   const auto decoded = rmw_fleetqox_cpp::decode_service_frame(encoded);
   if (!decoded || decoded->role != frame.role ||
@@ -565,6 +566,7 @@ int main()
     decoded->sequence_id != frame.sequence_id ||
     decoded->lifespan_ns != frame.lifespan_ns ||
     decoded->domain_id != frame.domain_id ||
+    decoded->client_priority != frame.client_priority ||
     decoded->serialized_payload != frame.serialized_payload)
   {
     return 1;
@@ -584,6 +586,7 @@ int main()
   const auto legacy_decoded = rmw_fleetqox_cpp::decode_service_frame(legacy);
   if (!legacy_decoded || legacy_decoded->lifespan_ns != 0 ||
     legacy_decoded->domain_id != 0 ||
+    legacy_decoded->client_priority != 0 ||
     rmw_fleetqox_cpp::service_frame_expired(*legacy_decoded, 999999999))
   {
     return 4;
@@ -1531,6 +1534,29 @@ int main()
             docker_repair_admission_source,
         )
         self.assertIn("fleetrmw_service_repair_admission_probe", cmake_source)
+        service_priority_probe = PKG / "src" / "service_priority_probe.cpp"
+        self.assertTrue(service_priority_probe.exists())
+        service_priority_source = service_priority_probe.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_service_priority_probe.v1",
+            service_priority_source,
+        )
+        self.assertIn("strict_priority_claim", service_priority_source)
+        self.assertIn("aging_starvation_bound_claim", service_priority_source)
+        docker_service_priority_script = (
+            ROOT / "scripts" / "run_rmw_docker_service_priority_probe.py"
+        )
+        self.assertTrue(docker_service_priority_script.exists())
+        docker_service_priority_source = docker_service_priority_script.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_docker_service_priority_probe.v1",
+            docker_service_priority_source,
+        )
+        self.assertIn(
+            "service_priority_aging_starvation_bound_claim",
+            docker_service_priority_source,
+        )
+        self.assertIn("fleetrmw_service_priority_probe", cmake_source)
         self.assertIn("malformed_response_error", docker_service_error_source)
         self.assertIn("after_invalid_response_taken", docker_service_error_source)
         action_probe = PKG / "src" / "action_frame_probe.cpp"
@@ -4265,6 +4291,12 @@ int main()
             manifest["supported"]["docker_service_repair_admission_5run_netem"]
         )
         self.assertTrue(
+            manifest["supported"]["service_client_priority_wire_metadata"]
+        )
+        self.assertTrue(
+            manifest["supported"]["service_priority_aging_starvation_bound"]
+        )
+        self.assertTrue(
             manifest["claim_boundaries"][
                 "docker_router_cpp_python_path_5run_netem"
             ]
@@ -4318,6 +4350,11 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "bounded_service_repair_pending_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "service_strict_priority_dequeue_claim"
             ]
         )
         self.assertFalse(

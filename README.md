@@ -73,7 +73,10 @@ This repository starts with the part that should be proven first:
   pending quota then passes a second `5/5` noisy/quiet-client gate: the noisy
   client is held to two of four queue slots, the quiet client's two requests
   enter the first wave, dequeue alternates noisy/quiet while retaining
-  per-client FIFO, and all ten calls still receive responses; a separate two-container POSIX
+  per-client FIFO, and all ten calls still receive responses; optional service
+  priority metadata is backward-compatible with legacy priority zero, strict
+  priority ordering is combined with local enqueue-time aging to prevent
+  starvation, and a `5/5` Docker gate proves both paths; a separate two-container POSIX
   shared-memory gate transfers a 100 KB payload with no UDP peer or slot
   overwrite, reports zero network-flow endpoints in SHM mode, and proves an
   explicit UDP fallback path under injected SHM initialization failure; a

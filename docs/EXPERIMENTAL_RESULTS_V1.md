@@ -202,6 +202,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker/loopback-netem bounded service resource/backpressure matrix | `results_rmw_socket/docker_service_resource_limit_probe_summary.json` |
 | Docker/loopback-netem noisy/quiet service-client isolation matrix | `results_rmw_socket/docker_service_client_isolation_probe_summary.json` |
 | Docker/loopback-netem bounded service-repair admission matrix | `results_rmw_socket/docker_service_repair_admission_probe_summary.json` |
+| Docker/loopback-netem service priority and aging matrix | `results_rmw_socket/docker_service_priority_probe_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -632,6 +633,16 @@ background repair guarantee rather than the one-shot request. Destroying both
 clients cancels all four admitted jobs and every process exits cleanly. This is
 bounded fail-open repair admission, not a guarantee that overload-rejected
 requests survive packet loss.
+
+The priority scheduler artifact passes `5/5` with optional service-wire
+priorities 0, 5, and 10; a missing field remains backward-compatible priority
+zero. Every strict-order phase dequeues sequence 200, 100, then 1. A second
+phase uses a 10 ms aging quantum: after 120 ms in the local receive queue, a
+priority-zero sequence 2 request is selected before a newly arrived
+priority-ten sequence 201 request. Aging uses the server's local enqueue time,
+not incomparable monotonic clocks from different robots. This proves strict
+priority plus a bounded anti-starvation mechanism, not arbitrary weighted
+shares or deadline-aware service scheduling.
 
 The local transport artifact reports `status=ok` for a separate two-container
 POSIX shared-memory run. Publisher and subscriber have zero UDP peers and both

@@ -89,6 +89,15 @@ METRIC_KEYS = (
     "per_client_service_repair_admission_claim",
     "service_repair_initial_send_fail_open_claim",
     "service_repair_destroy_cleanup_claim",
+    "priority_aging_ms",
+    "strict_priority_order",
+    "aging_order",
+    "priority_dequeues",
+    "aged_priority_dequeues",
+    "service_priority_wire_metadata_claim",
+    "service_strict_priority_dequeue_claim",
+    "service_priority_aging_starvation_bound_claim",
+    "weighted_service_ratio_claim",
     "token_size",
     "range_count",
     "waypoint_count",
@@ -1165,6 +1174,10 @@ CLAIM_BOUNDARY_KEYS = (
     "per_client_service_repair_admission_claim",
     "service_repair_initial_send_fail_open_claim",
     "service_repair_destroy_cleanup_claim",
+    "service_priority_wire_metadata_claim",
+    "service_strict_priority_dequeue_claim",
+    "service_priority_aging_starvation_bound_claim",
+    "weighted_service_ratio_claim",
     "full_exactly_once_service_semantics_claim",
     "production_quic_backend_claim",
     "full_bidirectional_quic_backend_claim",
@@ -1861,6 +1874,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         or "service_resource_limit" in text
         or "service_client_isolation" in text
         or "service_repair_admission" in text
+        or "service_priority" in text
     ):
         return "rmw-abi"
     if "wait_for_all_acked" in text or "wait-for-all-acked" in text:

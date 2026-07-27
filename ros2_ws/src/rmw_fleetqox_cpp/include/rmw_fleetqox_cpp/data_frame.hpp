@@ -184,6 +184,8 @@ struct ServiceFrame
   std::int64_t lifespan_ns = 0;
   std::vector<std::uint8_t> serialized_payload;
   std::uint64_t domain_id = 0;
+  std::uint64_t client_priority = 0;
+  std::int64_t local_enqueue_timestamp_ns = 0;
 };
 
 struct ActionFrame
