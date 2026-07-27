@@ -197,16 +197,31 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertTrue(cross_language_runner.exists())
         cross_language_runner_source = cross_language_runner.read_text()
         self.assertIn(
-            "fleetrmw.docker_router_cpp_python_path_probe.v1",
+            "fleetrmw.docker_router_cpp_python_path_probe.v2",
             cross_language_runner_source,
         )
         self.assertIn("cpp_server_python_client", cross_language_runner_source)
         self.assertIn("cpp_client_python_server", cross_language_runner_source)
         self.assertIn("--iterations", cross_language_runner_source)
         self.assertIn("tc qdisc replace dev eth0 root netem", cross_language_runner_source)
-        self.assertIn("SERVICE_REQUEST_REPEATS = 5", cross_language_runner_source)
+        self.assertIn(
+            'service_request_repair_configuration": "middleware_default"',
+            cross_language_runner_source,
+        )
+        self.assertNotIn(
+            "export FLEETQOX_RMW_SERVICE_REQUEST_REPEATS=",
+            cross_language_runner_source,
+        )
         self.assertIn(
             "bounded_service_discovery_repair_claim",
+            cross_language_runner_source,
+        )
+        self.assertIn(
+            "nonblocking_async_service_request_repair_claim",
+            cross_language_runner_source,
+        )
+        self.assertIn(
+            "response_cancelled_request_repair_claim",
             cross_language_runner_source,
         )
         self.assertIn("service_exactly_once_claim", cross_language_runner_source)
@@ -950,6 +965,13 @@ int main()
         self.assertIn("service_response_replay_key", stubs_source)
         self.assertIn("drop_duplicate_request", stubs_source)
         self.assertIn("drop_duplicate_response", stubs_source)
+        self.assertIn("schedule_service_request_repair", stubs_source)
+        self.assertIn("cancel_service_request_repair", stubs_source)
+        self.assertIn("service_request_repair_worker", stubs_source)
+        send_request_source = stubs_source.split(
+            "rmw_ret_t rmw_send_request(", 1
+        )[1].split("rmw_ret_t rmw_take_response(", 1)[0]
+        self.assertNotIn("send_service_frame_with_repeats", send_request_source)
         router_source = (PKG / "src" / "udp_router_probe.cpp").read_text()
         self.assertIn("fleetrmw.router_path_telemetry.v1", router_source)
         self.assertIn("FLEETQOX_FRAGMENT_V1", router_source)
@@ -2246,10 +2268,18 @@ int main()
             ROOT / "scripts" / "run_rmw_docker_router_bounded_shape_service_probe.py"
         ).read_text()
         self.assertIn(
-            "fleetrmw.docker_router_bounded_shape_service_probe.v1",
+            "fleetrmw.docker_router_bounded_shape_service_probe.v2",
             bounded_runner,
         )
         self.assertIn("bounded_nested_message_sequence_claim", bounded_runner)
+        self.assertIn(
+            "service_discovery_repair_without_runner_override_claim",
+            bounded_runner,
+        )
+        self.assertNotIn(
+            "export FLEETQOX_RMW_SERVICE_REQUEST_REPEATS=",
+            bounded_runner,
+        )
         self.assertIn("--iterations", bounded_runner)
 
         docker_cli_matrix_script = ROOT / "scripts" / "run_rmw_docker_ros2_cli_message_matrix.py"
@@ -4115,6 +4145,14 @@ int main()
             manifest["supported"]["service_request_bounded_discovery_repeat_dedup"]
         )
         self.assertTrue(
+            manifest["supported"][
+                "service_request_nonblocking_async_discovery_repair"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"]["service_request_response_cancelled_repair"]
+        )
+        self.assertTrue(
             manifest["claim_boundaries"][
                 "docker_router_cpp_python_path_5run_netem"
             ]
@@ -4138,6 +4176,16 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "bounded_rosidl_nested_message_sequence_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "nonblocking_async_service_request_repair_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "service_discovery_repair_without_runner_override_claim"
             ]
         )
         self.assertFalse(

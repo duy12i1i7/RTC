@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cerrno>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -233,6 +234,23 @@ struct FleetQoxEventData
   const void * user_data;
 };
 
+struct PendingServiceRequestRepair
+{
+  std::string client_endpoint_id;
+  std::int64_t sequence_id;
+  std::string encoded_frame;
+  std::chrono::steady_clock::time_point next_retry;
+  int remaining_retries;
+  int interval_ms;
+};
+
+void stop_service_request_repair_worker();
+
+struct ServiceRequestRepairShutdownGuard
+{
+  ~ServiceRequestRepairShutdownGuard();
+};
+
 std::mutex g_service_graph_mutex;
 std::vector<FleetQoxServiceData *> g_service_graph_endpoints;
 std::mutex g_service_bus_mutex;
@@ -260,6 +278,16 @@ std::atomic<std::uint64_t> g_sros2_service_response_publish_denied{0};
 std::atomic<std::uint64_t> g_sros2_service_response_subscribe_allowed{0};
 std::atomic<std::uint64_t> g_sros2_service_response_subscribe_denied{0};
 std::atomic<std::uint64_t> g_sros2_service_authorization_parse_errors{0};
+std::mutex g_service_request_repair_mutex;
+std::condition_variable g_service_request_repair_cv;
+std::vector<PendingServiceRequestRepair> g_pending_service_request_repairs;
+std::thread g_service_request_repair_thread;
+bool g_service_request_repair_stop{false};
+std::atomic<std::uint64_t> g_service_request_repairs_scheduled{0};
+std::atomic<std::uint64_t> g_service_request_retries_sent{0};
+std::atomic<std::uint64_t> g_service_request_repairs_cancelled{0};
+std::atomic<std::uint64_t> g_service_request_repairs_exhausted{0};
+ServiceRequestRepairShutdownGuard g_service_request_repair_shutdown_guard;
 std::mutex g_event_mutex;
 std::vector<rmw_event_t *> g_event_handles;
 std::vector<FleetQoxEventData *> g_event_data;
@@ -637,6 +665,192 @@ int parse_nonnegative_int_env(const char * name, int default_value, int max_valu
     return default_value;
   }
   return static_cast<int>(std::min<long>(parsed, max_value));
+}
+
+void trace_service_request_repair_event(
+  const char * event,
+  const std::string & client_endpoint_id,
+  std::int64_t sequence_id,
+  int remaining_retries)
+{
+  if (!trace_service_enabled()) {
+    return;
+  }
+  std::fprintf(
+    stderr,
+    "fleetqox service repair event=%s client=%s seq=%ld remaining=%d\n",
+    event == nullptr ? "unknown" : event,
+    client_endpoint_id.c_str(),
+    static_cast<long>(sequence_id),
+    remaining_retries);
+}
+
+void service_request_repair_worker()
+{
+  std::unique_lock<std::mutex> lock(g_service_request_repair_mutex);
+  while (!g_service_request_repair_stop) {
+    if (g_pending_service_request_repairs.empty()) {
+      g_service_request_repair_cv.wait(
+        lock, []() {
+          return g_service_request_repair_stop ||
+                 !g_pending_service_request_repairs.empty();
+        });
+      continue;
+    }
+
+    const auto earliest = std::min_element(
+      g_pending_service_request_repairs.begin(),
+      g_pending_service_request_repairs.end(),
+      [](const PendingServiceRequestRepair & lhs, const PendingServiceRequestRepair & rhs) {
+        return lhs.next_retry < rhs.next_retry;
+      });
+    const auto now = std::chrono::steady_clock::now();
+    if (earliest->next_retry > now) {
+      g_service_request_repair_cv.wait_until(lock, earliest->next_retry);
+      continue;
+    }
+
+    const std::string client_endpoint_id = earliest->client_endpoint_id;
+    const std::int64_t sequence_id = earliest->sequence_id;
+    if (earliest->remaining_retries <= 0) {
+      g_pending_service_request_repairs.erase(earliest);
+      g_service_request_repairs_exhausted.fetch_add(1, std::memory_order_relaxed);
+      lock.unlock();
+      trace_service_request_repair_event("exhausted", client_endpoint_id, sequence_id, 0);
+      lock.lock();
+      continue;
+    }
+
+    const std::string encoded_frame = earliest->encoded_frame;
+    --earliest->remaining_retries;
+    const int remaining_retries = earliest->remaining_retries;
+    earliest->next_retry =
+      now + std::chrono::milliseconds(earliest->interval_ms);
+    lock.unlock();
+    const rmw_ret_t ret =
+      rmw_fleetqox_cpp_send_encoded_frame(encoded_frame.data(), encoded_frame.size());
+    if (ret == RMW_RET_OK) {
+      g_service_request_retries_sent.fetch_add(1, std::memory_order_relaxed);
+      trace_service_request_repair_event(
+        "retry", client_endpoint_id, sequence_id, remaining_retries);
+    } else {
+      trace_service_request_repair_event(
+        "retry_send_failed", client_endpoint_id, sequence_id, remaining_retries);
+    }
+    lock.lock();
+  }
+}
+
+bool schedule_service_request_repair(
+  const std::string & client_endpoint_id,
+  std::int64_t sequence_id,
+  const std::string & encoded_frame)
+{
+  const int retries = parse_nonnegative_int_env(
+    "FLEETQOX_RMW_SERVICE_REQUEST_REPEATS", 5, 5);
+  if (retries <= 0) {
+    return true;
+  }
+  const int interval_ms = parse_nonnegative_int_env(
+    "FLEETQOX_RMW_SERVICE_REQUEST_REPEAT_INTERVAL_MS", 100, 100);
+  {
+    std::lock_guard<std::mutex> lock(g_service_request_repair_mutex);
+    if (!g_service_request_repair_thread.joinable()) {
+      g_service_request_repair_stop = false;
+      try {
+        g_service_request_repair_thread = std::thread(service_request_repair_worker);
+      } catch (...) {
+        return false;
+      }
+    }
+    g_pending_service_request_repairs.push_back(
+      PendingServiceRequestRepair{
+        client_endpoint_id,
+        sequence_id,
+        encoded_frame,
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(interval_ms),
+        retries,
+        interval_ms});
+  }
+  g_service_request_repairs_scheduled.fetch_add(1, std::memory_order_relaxed);
+  trace_service_request_repair_event("scheduled", client_endpoint_id, sequence_id, retries);
+  g_service_request_repair_cv.notify_all();
+  return true;
+}
+
+bool cancel_service_request_repair(
+  const std::string & client_endpoint_id,
+  std::int64_t sequence_id,
+  const char * event)
+{
+  int remaining_retries = 0;
+  bool removed = false;
+  {
+    std::lock_guard<std::mutex> lock(g_service_request_repair_mutex);
+    const auto repair = std::find_if(
+      g_pending_service_request_repairs.begin(),
+      g_pending_service_request_repairs.end(),
+      [&client_endpoint_id, sequence_id](const PendingServiceRequestRepair & candidate) {
+        return candidate.client_endpoint_id == client_endpoint_id &&
+               candidate.sequence_id == sequence_id;
+      });
+    if (repair != g_pending_service_request_repairs.end()) {
+      remaining_retries = repair->remaining_retries;
+      g_pending_service_request_repairs.erase(repair);
+      removed = true;
+    }
+  }
+  if (removed) {
+    g_service_request_repairs_cancelled.fetch_add(1, std::memory_order_relaxed);
+    trace_service_request_repair_event(
+      event, client_endpoint_id, sequence_id, remaining_retries);
+    g_service_request_repair_cv.notify_all();
+  }
+  return removed;
+}
+
+void cancel_service_request_repairs_for_client(const std::string & client_endpoint_id)
+{
+  std::vector<std::pair<std::int64_t, int>> cancelled;
+  {
+    std::lock_guard<std::mutex> lock(g_service_request_repair_mutex);
+    auto repair = g_pending_service_request_repairs.begin();
+    while (repair != g_pending_service_request_repairs.end()) {
+      if (repair->client_endpoint_id == client_endpoint_id) {
+        cancelled.emplace_back(repair->sequence_id, repair->remaining_retries);
+        repair = g_pending_service_request_repairs.erase(repair);
+      } else {
+        ++repair;
+      }
+    }
+  }
+  if (!cancelled.empty()) {
+    g_service_request_repairs_cancelled.fetch_add(
+      cancelled.size(), std::memory_order_relaxed);
+    for (const auto & repair : cancelled) {
+      trace_service_request_repair_event(
+        "client_destroyed", client_endpoint_id, repair.first, repair.second);
+    }
+    g_service_request_repair_cv.notify_all();
+  }
+}
+
+void stop_service_request_repair_worker()
+{
+  {
+    std::lock_guard<std::mutex> lock(g_service_request_repair_mutex);
+    g_service_request_repair_stop = true;
+    g_pending_service_request_repairs.clear();
+  }
+  g_service_request_repair_cv.notify_all();
+  if (g_service_request_repair_thread.joinable()) {
+    g_service_request_repair_thread.join();
+  }
+}
+
+ServiceRequestRepairShutdownGuard::~ServiceRequestRepairShutdownGuard()
+{
+  stop_service_request_repair_worker();
 }
 
 rmw_ret_t send_service_frame_with_repeats(
@@ -1233,6 +1447,7 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
   }
   std::vector<std::pair<rmw_event_callback_t, const void *>> callbacks;
   std::vector<std::string> replay_responses;
+  bool matched_response = false;
   {
     std::lock_guard<std::mutex> lock(g_service_bus_mutex);
     if (frame->role == "request") {
@@ -1288,6 +1503,7 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
             trace_service_event("deny_response_subscribe", data, &*frame);
             continue;
           }
+          matched_response = true;
           const std::string dedupe_key = service_frame_dedupe_key(*frame);
           if (data->seen_response_keys.find(dedupe_key) != data->seen_response_keys.end()) {
             trace_service_event("drop_duplicate_response", data, &*frame, data->response_queue.size());
@@ -1303,6 +1519,10 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
         }
       }
     }
+  }
+  if (matched_response) {
+    cancel_service_request_repair(
+      frame->client_endpoint_id, frame->sequence_id, "response_received");
   }
   for (const std::string & response : replay_responses) {
     const rmw_ret_t replay_ret = send_service_frame_with_repeats(
@@ -1998,6 +2218,7 @@ rmw_ret_t rmw_destroy_client(rmw_node_t * node, rmw_client_t * client)
   remove_service_graph_renewal_endpoint(data);
   rmw_fleetqox_cpp_graph_unregister_client_endpoint(data->endpoint_id.c_str());
   send_service_graph_advertisement(data, "remove");
+  cancel_service_request_repairs_for_client(data->endpoint_id);
   deallocate_service_data(data);
   rmw_client_free(client);
   return RMW_RET_OK;
@@ -2051,11 +2272,14 @@ rmw_ret_t rmw_send_request(
     data->domain_id};
   trace_service_event("send_request", data, &frame);
   const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(frame);
-  ret = send_service_frame_with_repeats(
-    encoded,
-    "FLEETQOX_RMW_SERVICE_REQUEST_REPEATS",
-    "FLEETQOX_RMW_SERVICE_REQUEST_REPEAT_INTERVAL_MS");
+  if (!schedule_service_request_repair(data->endpoint_id, next_sequence, encoded)) {
+    trace_service_request_repair_event(
+      "schedule_failed", data->endpoint_id, next_sequence, 0);
+  }
+  ret = rmw_fleetqox_cpp_send_encoded_frame(encoded.data(), encoded.size());
   if (ret != RMW_RET_OK) {
+    cancel_service_request_repair(
+      data->endpoint_id, next_sequence, "initial_send_failed");
     return ret;
   }
   *sequence_id = next_sequence;
@@ -3222,6 +3446,26 @@ std::uint64_t rmw_fleetqox_cpp_sros2_service_response_subscribe_denied()
 std::uint64_t rmw_fleetqox_cpp_sros2_service_authorization_parse_errors()
 {
   return g_sros2_service_authorization_parse_errors.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_request_repairs_scheduled()
+{
+  return g_service_request_repairs_scheduled.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_request_retries_sent()
+{
+  return g_service_request_retries_sent.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_request_repairs_cancelled()
+{
+  return g_service_request_repairs_cancelled.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_request_repairs_exhausted()
+{
+  return g_service_request_repairs_exhausted.load(std::memory_order_relaxed);
 }
 
 }  // extern "C"

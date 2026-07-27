@@ -55,7 +55,9 @@ This repository starts with the part that should be proven first:
   that exceeds one UDP datagram and exercises fragmentation/reassembly;
   a bidirectional `rclcpp`/`rclpy` Docker/netem matrix repeats the same
   sequence-heavy Path/GetPlan contract `5/5` in both language directions (`10/10`
-  direction rows, zero invalid frames), using bounded request repeats to cover
+  direction rows, zero invalid frames); bounded request repair now runs
+  asynchronously inside the middleware with five retries at 100 ms by default,
+  is cancelled by the matching response, and needs no runner override to cover
   asynchronous client/service graph convergence; a separate ROSIDL-generated
   `FleetShape` service passes another `5/5`/`10/10` matrix at maximum declared
   bounds for `string<=32`, `uint8[16]`, `float32[<=128]`, nested

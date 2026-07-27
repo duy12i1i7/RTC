@@ -127,9 +127,13 @@ project. It is ordered by dependency and regression value.
   shape coverage, not an exhaustive ROSIDL corpus.
 - Service no-response/timeout, stale request/response lifespan, malformed
   response propagation, and successful SetBool/GetPlan/FleetShape paths are
-  complete. Standard ROS 2 services have no cancellation operation; action
-  cancellation is covered separately. Remaining service work is broader
-  concurrency/resource-limit and exactly-once semantics.
+  complete. Discovery-window repair is now a nonblocking middleware worker:
+  the request call sends once and returns, bounded retries use the same
+  sequence, matching responses cancel pending work, client teardown clears it,
+  and the Docker/netem runners require no retry environment override. Standard
+  ROS 2 services have no cancellation operation; action cancellation is covered
+  separately. Remaining service work is broader concurrency/resource-limit,
+  crash-persistent deduplication, and exactly-once semantics.
 - Harden action transport on top of pub/sub plus service reliability:
   goal, result, feedback, cancel, status, deadlines, and larger concurrent
   action/client counts.

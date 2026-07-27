@@ -19,11 +19,11 @@ if str(ROOT) not in sys.path:
 from scripts.run_rmw_docker_router_service_call_probe import parse_last_json
 
 
-SCHEMA_VERSION = "fleetrmw.docker_router_cpp_python_path_probe.v1"
+SCHEMA_VERSION = "fleetrmw.docker_router_cpp_python_path_probe.v2"
 DEFAULT_IMAGE = "localhost/fleetrmw/rmw-netem:jazzy"
 NETEM_PROFILE = "delay 8ms 2ms rate 50mbit"
-SERVICE_REQUEST_REPEATS = 5
-SERVICE_REQUEST_REPEAT_INTERVAL_MS = 100
+MIDDLEWARE_DEFAULT_REQUEST_REPAIR_RETRIES = 5
+MIDDLEWARE_DEFAULT_REQUEST_REPAIR_INTERVAL_MS = 100
 DIRECTION_NAMES = {
     "server": "cpp_server_python_client",
     "client": "cpp_client_python_server",
@@ -88,9 +88,6 @@ def run_direction(
         f"source {install_base}/setup.bash && "
         "export RMW_IMPLEMENTATION=rmw_fleetqox_cpp && "
         "export FLEETQOX_RMW_TRACE_SERVICE=1 && "
-        f"export FLEETQOX_RMW_SERVICE_REQUEST_REPEATS={SERVICE_REQUEST_REPEATS} && "
-        "export FLEETQOX_RMW_SERVICE_REQUEST_REPEAT_INTERVAL_MS="
-        f"{SERVICE_REQUEST_REPEAT_INTERVAL_MS} && "
     )
     netem = f"tc qdisc replace dev eth0 root netem {NETEM_PROFILE} && "
 
@@ -120,7 +117,7 @@ def run_direction(
                 common
                 + f"{install_base}/rmw_fleetqox_cpp/lib/rmw_fleetqox_cpp/"
                 "fleetrmw_udp_router_probe --bind 0.0.0.0:49800 "
-                "--expected-frames 4 --expected-service-frames 4 "
+                "--expected-frames 4 --expected-service-frames 3 "
                 "--expected-graph-advertisements 8 "
                 "--post-satisfaction-ms 1200 --timeout-ms 30000",
             ]
@@ -207,6 +204,16 @@ def run_direction(
             )
         ]
         plan_response_payload_bytes = max(plan_payload_sizes, default=0)
+        endpoint_logs = cpp_logs + python_logs
+        repair_scheduled_count = endpoint_logs.count(
+            "fleetqox service repair event=scheduled"
+        )
+        repair_retry_count = endpoint_logs.count(
+            "fleetqox service repair event=retry "
+        )
+        repair_response_cancelled_count = endpoint_logs.count(
+            "fleetqox service repair event=response_received"
+        )
         topics = set(router.get("forwarded_topics", []))
         required_topics = {
             "/fleetqox/cpp_pose_request",
@@ -262,11 +269,13 @@ def run_direction(
             and endpoint_semantics
             and router.get("status") == "ok"
             and int(router.get("forwarded_frames", 0)) >= 4
-            and int(router.get("service_forwarded", 0)) >= 4
+            and int(router.get("service_forwarded", 0)) >= 3
             and int(router.get("invalid_frames", -1)) == 0
             and required_topics.issubset(topics)
             and required_services.issubset(set(router.get("service_names", [])))
             and plan_response_payload_bytes > 65507
+            and repair_scheduled_count >= 2
+            and repair_response_cancelled_count >= 2
         )
         return {
             "direction": direction,
@@ -276,6 +285,11 @@ def run_direction(
             "plan_response_payload_bytes": plan_response_payload_bytes,
             "service_payload_exceeds_udp_datagram": (
                 plan_response_payload_bytes > 65507
+            ),
+            "request_repairs_scheduled": repair_scheduled_count,
+            "request_retries_sent": repair_retry_count,
+            "request_repairs_cancelled_by_response": (
+                repair_response_cancelled_count
             ),
             "cpp_returncode": cpp_returncode,
             "python_returncode": python_returncode,
@@ -376,9 +390,18 @@ def run_probe(
                 for row in runs
                 for direction in row["directions"]
             ),
-            "service_request_repeat_count": SERVICE_REQUEST_REPEATS,
-            "service_request_repeat_interval_ms": SERVICE_REQUEST_REPEAT_INTERVAL_MS,
+            "service_request_repair_configuration": "middleware_default",
+            "service_request_repair_environment_overridden": False,
+            "middleware_default_request_repair_retries": (
+                MIDDLEWARE_DEFAULT_REQUEST_REPAIR_RETRIES
+            ),
+            "middleware_default_request_repair_interval_ms": (
+                MIDDLEWARE_DEFAULT_REQUEST_REPAIR_INTERVAL_MS
+            ),
             "bounded_service_discovery_repair_claim": status == "ok",
+            "nonblocking_async_service_request_repair_claim": status == "ok",
+            "response_cancelled_request_repair_claim": status == "ok",
+            "service_discovery_repair_without_runner_override_claim": status == "ok",
             "service_exactly_once_claim": False,
             "bidirectional_cpp_python_claim": status == "ok",
             "sequence_heavy_nested_path_claim": status == "ok",

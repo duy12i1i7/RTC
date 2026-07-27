@@ -574,12 +574,15 @@ GetPlan response is 73,181 bytes in every direction row, exceeding the
 All endpoint processes and routers
 exit cleanly, all ten rows validate the complete nested sequence, netem is
 applied to every endpoint, and every router reports zero invalid frames. The
-service leg configures five request repeats at 100 ms. Trace evidence shows
-that requests arriving before the reciprocal client graph record are rejected;
-after convergence, a same-sequence repeat is accepted, server deduplication
+service leg uses the middleware default of five request repairs at 100 ms and
+does not set either retry environment variable. `rmw_send_request` performs
+the initial send and returns while a background worker owns the bounded retry
+window. Trace evidence shows requests arriving before the reciprocal client
+graph record being rejected; after convergence a same-sequence repair is
+accepted, the matching response cancels remaining work, server deduplication
 limits callback execution, and response replay handles later duplicates. This
-is a scoped bounded discovery-repair result, not a full exactly-once service
-claim or exhaustive cross-language ROSIDL corpus.
+is a scoped nonblocking discovery-repair result, not crash-persistent
+exactly-once service semantics or an exhaustive cross-language ROSIDL corpus.
 
 The generated bounded-shape artifact adds the complementary ROSIDL boundary
 and also passes `5/5` runs and `10/10` C++/Python direction rows under netem.

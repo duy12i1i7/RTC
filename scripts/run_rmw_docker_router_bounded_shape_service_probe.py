@@ -18,11 +18,11 @@ if str(ROOT) not in sys.path:
 from scripts.run_rmw_docker_router_service_call_probe import parse_last_json
 
 
-SCHEMA_VERSION = "fleetrmw.docker_router_bounded_shape_service_probe.v1"
+SCHEMA_VERSION = "fleetrmw.docker_router_bounded_shape_service_probe.v2"
 DEFAULT_IMAGE = "localhost/fleetrmw/rmw-netem:jazzy"
 NETEM_PROFILE = "delay 8ms 2ms rate 50mbit"
-SERVICE_REQUEST_REPEATS = 5
-SERVICE_REQUEST_REPEAT_INTERVAL_MS = 100
+MIDDLEWARE_DEFAULT_REQUEST_REPAIR_RETRIES = 5
+MIDDLEWARE_DEFAULT_REQUEST_REPAIR_INTERVAL_MS = 100
 DIRECTION_NAMES = {
     "server": "cpp_server_python_client",
     "client": "cpp_client_python_server",
@@ -87,9 +87,6 @@ def run_direction(
         f"source {install_base}/setup.bash && "
         "export RMW_IMPLEMENTATION=rmw_fleetqox_cpp && "
         "export FLEETQOX_RMW_TRACE_SERVICE=1 && "
-        f"export FLEETQOX_RMW_SERVICE_REQUEST_REPEATS={SERVICE_REQUEST_REPEATS} && "
-        "export FLEETQOX_RMW_SERVICE_REQUEST_REPEAT_INTERVAL_MS="
-        f"{SERVICE_REQUEST_REPEAT_INTERVAL_MS} && "
     )
     netem = f"tc qdisc replace dev eth0 root netem {NETEM_PROFILE} && "
 
@@ -195,6 +192,16 @@ def run_direction(
         cpp = parse_last_json(cpp_logs)
         python = parse_last_json(python_logs)
         router = parse_last_json(router_logs)
+        endpoint_logs = cpp_logs + python_logs
+        repair_scheduled_count = endpoint_logs.count(
+            "fleetqox service repair event=scheduled"
+        )
+        repair_retry_count = endpoint_logs.count(
+            "fleetqox service repair event=retry "
+        )
+        repair_response_cancelled_count = endpoint_logs.count(
+            "fleetqox service repair event=response_received"
+        )
         endpoint_semantics = cpp.get("status") == "ok" and python.get("status") == "ok"
         if cpp_mode == "server":
             endpoint_semantics = (
@@ -231,12 +238,19 @@ def run_direction(
             and int(router.get("service_forwarded", 0)) >= 2
             and int(router.get("invalid_frames", -1)) == 0
             and "/fleetqox/bounded_shape" in set(router.get("service_names", []))
+            and repair_scheduled_count >= 1
+            and repair_response_cancelled_count >= 1
         )
         return {
             "direction": direction,
             "status": "ok" if ok else "failed",
             "netem_applied": cpp_returncode == 0 and python_returncode == 0,
             "netem_profile": NETEM_PROFILE,
+            "request_repairs_scheduled": repair_scheduled_count,
+            "request_retries_sent": repair_retry_count,
+            "request_repairs_cancelled_by_response": (
+                repair_response_cancelled_count
+            ),
             "cpp_returncode": cpp_returncode,
             "python_returncode": python_returncode,
             "router_returncode": router_returncode,
@@ -334,8 +348,17 @@ def run_probe(*, root: Path, image: str, iterations: int) -> dict[str, Any]:
             "bounded_string_claim": status == "ok",
             "duration_field_claim": status == "ok",
             "bidirectional_cpp_python_bounded_service_claim": status == "ok",
-            "service_request_repeat_count": SERVICE_REQUEST_REPEATS,
-            "service_request_repeat_interval_ms": SERVICE_REQUEST_REPEAT_INTERVAL_MS,
+            "service_request_repair_configuration": "middleware_default",
+            "service_request_repair_environment_overridden": False,
+            "middleware_default_request_repair_retries": (
+                MIDDLEWARE_DEFAULT_REQUEST_REPAIR_RETRIES
+            ),
+            "middleware_default_request_repair_interval_ms": (
+                MIDDLEWARE_DEFAULT_REQUEST_REPAIR_INTERVAL_MS
+            ),
+            "nonblocking_async_service_request_repair_claim": status == "ok",
+            "response_cancelled_request_repair_claim": status == "ok",
+            "service_discovery_repair_without_runner_override_claim": status == "ok",
             "runs": runs,
         }
     except subprocess.CalledProcessError as exc:
