@@ -301,7 +301,9 @@ Current verification:
   symbol audit (`5/5`):
   `results_rmw_socket/docker_rmw_take_sequence_probe_summary.json`;
 - subscriber-identified, multi-reader `rmw_publisher_wait_for_all_acked`
-  timeout/completion artifact (`5/5`):
+  timeout/completion artifact (`5/5`), including post-snapshot publish
+  exclusion, concurrent finite/infinite waiters, reader-unmatch release, and
+  BEST_EFFORT immediate success:
   `results_rmw_socket/docker_rmw_wait_for_all_acked_probe_summary.json`;
 - four-container remote UDP/router/netem `rmw_publisher_wait_for_all_acked`
   timeout/completion artifact (`5/5`):

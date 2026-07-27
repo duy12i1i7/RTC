@@ -9,7 +9,7 @@ import subprocess
 from typing import Any
 
 
-SCHEMA_VERSION = "fleetrmw.rmw_docker_wait_for_all_acked_probe.v1"
+SCHEMA_VERSION = "fleetrmw.rmw_docker_wait_for_all_acked_probe.v2"
 DEFAULT_IMAGE = "localhost/fleetrmw/rmw-netem:jazzy"
 
 
@@ -59,7 +59,7 @@ fi
 source /tmp/fleetrmw_acked_install/setup.bash
 export RMW_IMPLEMENTATION=rmw_fleetqox_cpp
 export FLEETQOX_RMW_TEST_ACK_DELAY_SUBSCRIPTION_SUFFIX=-2
-export FLEETQOX_RMW_TEST_ACK_DELAY_MS=400
+export FLEETQOX_RMW_TEST_ACK_DELAY_MS=700
 RUN_COUNT="${RUN_COUNT}" python3 - <<'PY'
 import json
 import os
@@ -88,7 +88,7 @@ def valid_run(item: dict) -> bool:
     return (
         item["returncode"] == 0
         and item["stderr"] == ""
-        and probe.get("schema_version") == "fleetrmw.rmw_wait_for_all_acked_probe.v1"
+        and probe.get("schema_version") == "fleetrmw.rmw_wait_for_all_acked_probe.v2"
         and probe.get("status") == "ok"
         and probe.get("matched_subscription_count") == 2
         and probe.get("empty_wait_ok") is True
@@ -100,8 +100,15 @@ def valid_run(item: dict) -> bool:
         and probe.get("completed_expected_ack_count") == 2
         and probe.get("completed_observed_ack_count") == 2
         and probe.get("zero_timeout_after_ack_ok") is True
+        and probe.get("snapshot_excludes_later_publish") is True
+        and probe.get("later_publish_initially_unacked") is True
+        and probe.get("concurrent_waiters_ok") is True
+        and probe.get("infinite_wait_ok") is True
+        and probe.get("unmatch_releases_wait") is True
+        and probe.get("best_effort_immediate_ok") is True
+        and probe.get("foreign_publisher_rejected") is True
         and probe.get("null_publisher_rejected") is True
-        and int(probe.get("wait_timeout_count", 0)) >= 1
+        and int(probe.get("wait_timeout_count", 0)) >= 2
     )
 
 
@@ -124,7 +131,7 @@ for index in range(run_count):
 
 successful_runs = sum(valid_run(item) for item in runs)
 summary = {
-    "schema_version": "fleetrmw.rmw_docker_wait_for_all_acked_probe.v1",
+    "schema_version": "fleetrmw.rmw_docker_wait_for_all_acked_probe.v2",
     "status": "ok" if successful_runs == run_count else "failed",
     "run_count": run_count,
     "successful_runs": successful_runs,
@@ -138,6 +145,24 @@ summary = {
     "partial_ack_never_misreported_complete": all(
         item["probe"].get("partial_observed_ack_count") == 1
         and item["probe"].get("partial_ack_timeout") is True
+        for item in runs
+    ),
+    "snapshot_excludes_later_publish_all": all(
+        item["probe"].get("snapshot_excludes_later_publish") is True
+        and item["probe"].get("later_publish_initially_unacked") is True
+        for item in runs
+    ),
+    "concurrent_waiters_all": all(
+        item["probe"].get("concurrent_waiters_ok") is True
+        and item["probe"].get("infinite_wait_ok") is True
+        for item in runs
+    ),
+    "unmatch_releases_wait_all": all(
+        item["probe"].get("unmatch_releases_wait") is True
+        for item in runs
+    ),
+    "best_effort_immediate_all": all(
+        item["probe"].get("best_effort_immediate_ok") is True
         for item in runs
     ),
     "runs": runs,

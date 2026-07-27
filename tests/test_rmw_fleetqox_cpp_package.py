@@ -794,14 +794,23 @@ int main()
         self.assertIn("rmw_fleetqox_cpp_publisher_wait_for_all_acked", stubs_source)
 
         probe_source = (PKG / "src" / "wait_for_all_acked_probe.cpp").read_text()
-        self.assertIn("fleetrmw.rmw_wait_for_all_acked_probe.v1", probe_source)
+        self.assertIn("fleetrmw.rmw_wait_for_all_acked_probe.v2", probe_source)
         self.assertIn("partial_observed_ack_count", probe_source)
         self.assertIn("completed_observed_ack_count", probe_source)
+        self.assertIn("snapshot_excludes_later_publish", probe_source)
+        self.assertIn("concurrent_waiters_ok", probe_source)
+        self.assertIn("RMW_DURATION_INFINITE", probe_source)
+        self.assertIn("unmatch_releases_wait", probe_source)
+        self.assertIn("best_effort_immediate_ok", probe_source)
         runner_source = (
             ROOT / "scripts" / "run_rmw_docker_wait_for_all_acked_probe.py"
         ).read_text()
-        self.assertIn("fleetrmw.rmw_docker_wait_for_all_acked_probe.v1", runner_source)
+        self.assertIn("fleetrmw.rmw_docker_wait_for_all_acked_probe.v2", runner_source)
         self.assertIn("partial_ack_never_misreported_complete", runner_source)
+        self.assertIn("snapshot_excludes_later_publish_all", runner_source)
+        self.assertIn("concurrent_waiters_all", runner_source)
+        self.assertIn("unmatch_releases_wait_all", runner_source)
+        self.assertIn("best_effort_immediate_all", runner_source)
         remote_probe_source = (
             PKG / "src" / "remote_wait_for_all_acked_probe.cpp"
         ).read_text()
@@ -824,6 +833,61 @@ int main()
         self.assertTrue(
             capabilities["claim_boundaries"][
                 "publisher_wait_for_all_acked_matched_snapshot_claim"
+            ]
+        )
+        self.assertTrue(
+            capabilities["claim_boundaries"][
+                "publisher_wait_for_all_acked_public_rmw_contract_claim"
+            ]
+        )
+        self.assertTrue(
+            capabilities["claim_boundaries"][
+                "publisher_wait_for_all_acked_post_snapshot_publish_exclusion_claim"
+            ]
+        )
+        self.assertTrue(
+            capabilities["claim_boundaries"][
+                "publisher_wait_for_all_acked_concurrent_waiters_claim"
+            ]
+        )
+        self.assertTrue(
+            capabilities["claim_boundaries"][
+                "publisher_wait_for_all_acked_infinite_timeout_claim"
+            ]
+        )
+        self.assertTrue(
+            capabilities["claim_boundaries"][
+                "publisher_wait_for_all_acked_reader_unmatch_release_claim"
+            ]
+        )
+        self.assertTrue(
+            capabilities["claim_boundaries"][
+                "publisher_wait_for_all_acked_best_effort_immediate_claim"
+            ]
+        )
+        self.assertTrue(
+            capabilities["supported"][
+                "publisher_wait_for_all_acked_post_snapshot_publish_exclusion"
+            ]
+        )
+        self.assertTrue(
+            capabilities["supported"][
+                "publisher_wait_for_all_acked_concurrent_thread_safety"
+            ]
+        )
+        self.assertTrue(
+            capabilities["supported"][
+                "publisher_wait_for_all_acked_infinite_timeout"
+            ]
+        )
+        self.assertTrue(
+            capabilities["supported"][
+                "publisher_wait_for_all_acked_reader_unmatch_release"
+            ]
+        )
+        self.assertTrue(
+            capabilities["supported"][
+                "publisher_wait_for_all_acked_best_effort_immediate_success"
             ]
         )
         self.assertTrue(

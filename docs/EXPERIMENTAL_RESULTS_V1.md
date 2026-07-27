@@ -733,12 +733,19 @@ equivalence of all optional functions.
 
 The publisher all-ACK artifact replaces the former unconditional-success ABI
 stub with observable reliable-writer behavior. Two matched subscriptions emit
-subscriber-identified ACKs, with the second ACK deliberately delayed by 400 ms.
+subscriber-identified ACKs, with the second ACK deliberately delayed by 700 ms.
 Across `5/5` processes, the 200 ms call times out after exactly `1/2` ACKs
-(measured 201–203 ms), the following one-second call succeeds at `2/2`, an
+(measured 200–202 ms), the following completion call succeeds at `2/2`, an
 empty ledger and a fully acknowledged ledger both satisfy a zero timeout, and
-a null publisher is rejected. This proves FleetRMW's matched-endpoint snapshot
-contract; it is not DDS wire or full writer-history equivalence.
+a null publisher is rejected. The v2 contract then publishes a later write
+while a wait is in progress: the original snapshot completes in `701–707 ms`,
+the later write remains unacknowledged at that instant, and a subsequent wait
+completes it. Two simultaneous finite/infinite waiters both complete on one
+publisher; destroying a delayed reader releases its obligation in `156–161 ms`;
+BEST_EFFORT returns immediately; and a foreign implementation handle
+fails closed. This proves FleetRMW's public matched-endpoint snapshot and
+thread-safety contract; it is not DDS wire or full writer-history/resource
+equivalence.
 
 The QoS event artifact verifies event-object ABI compatibility plus scoped
 deadline event production. Publisher/subscription deadline event objects

@@ -6,10 +6,10 @@ project. It is ordered by dependency and regression value.
 
 ## Current Baseline
 
-- The full repository suite passes `653/653` unit/contract tests; ROS-facing
+- The full repository suite passes `655/655` unit/contract tests; ROS-facing
   runtime probes use the pinned ROS 2 Jazzy Docker image. The unified report
-  currently indexes `353`
-  retained artifacts (`292` ok, `17` partial, `40` historical failed, and `4`
+  currently indexes `358`
+  retained artifacts (`297` ok, `17` partial, `40` historical failed, and `4`
   unknown); its overall `partial` status deliberately includes old debug,
   negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
@@ -72,22 +72,15 @@ project. It is ordered by dependency and regression value.
   DDS, Cyclone DDS, and Zenoh at `8/16/32` robots over repetition IDs
   `7,13,29`; all four pass `9/9`. Its v2 artifact still machine-enforces
   `direct_claim_allowed=false` because FleetRMW has a router hop while the
-  baseline application paths are direct. A separate matched-hop study now
-  gives every row publisher-middle-subscriber topology: Cyclone and Zenoh pass
-  `9/9`, FleetRMW `8/9`, and Fast DDS `6/9` (`32/36` overall). It permits only
-  delivery/reliability comparison. Its historical 36-row artifact used a
-  typed rclpy relay. The current harness instead uses a common `rclcpp` generic
-  serialized relay with no application deserialization plus bounded
-  `wait_for_all_acked` publisher horizons. The original fresh run retained
-  one FleetRMW `319/320` row at `35/36`. It exposed an ACK-baseline bug: after
-  first observing a high sequence, a later lower reordered sequence could
-  falsely widen the cumulative ACK below the baseline. The baseline floor is
-  now immutable, a deterministic `4,1,5,2` regression keeps unseen sequence 3
-  pending, and the explicitly resumed v3 artifact reruns only that failed row
-  after the code change. V3 passes `36/36`; all four systems pass `9/9` and
-  baseline relays retain `5040/5040` payloads. FleetRMW raw-frame
-  forwarding and baseline RMW endpoint termination/republish are still not
-  latency-equivalent middle processing.
+  baseline application paths are direct. Historical matched-hop v1/v2 studies
+  exposed delivery and cumulative-ACK baseline failures that are retained in
+  the report. The repaired v3 matrix passes `36/36`. The current v4 study also
+  replaces all nine FleetRMW raw-router rows with the same `rclcpp` generic
+  serialized terminate/republish middle used by Fast DDS, Cyclone DDS, and
+  Zenoh. It passes `36/36`, relays `6720/6720`, completes all ACK horizons, and
+  permits delivery/reliability plus scoped latency-distribution comparison.
+  Three repetitions per cell still do not support broad latency,
+  architectural, or production superiority.
 - Native ns-3 3.41 now runs in the project Docker image. The first repeated
   T2S matrix passes `27/27` rows at `8/16/32` robots over Wi-Fi/WAN/roaming
   parameter envelopes and seeds `7,13,29`, using identical traces for FIFO,
@@ -212,12 +205,17 @@ endpoint IDs and retain a pending set per write. The API waits only for writes
 that existed when the call began, removes readers that are no longer matched,
 honors zero/finite timeouts, and wakes on ACK arrival. A delayed-second-reader
 Docker control passes `5/5`: the first wait times out with `1/2` ACKs and the
-completion wait returns OK with `2/2`. Full DDS writer-history/resource-limit
-semantics remain explicitly unclaimed. A second `5/5` gate now repeats the
-same boundary over four containers (router, publisher, and two subscribers)
-with `5 ms +/- 1 ms` netem on every hop and a 450 ms delayed second ACK. The
-router observes one DATA plus both subscriber ACKs, the publisher never reports
-the partial `1/2` state as complete, and every process tears down cleanly.
+completion wait returns OK with `2/2`. The v2 local gate additionally proves
+that a later publish does not extend an in-progress snapshot, two concurrent
+waiters on one publisher complete safely, infinite timeout completes on ACK,
+reader unmatch releases its pending obligation, BEST_EFFORT returns
+immediately, and foreign/null handles fail closed. Full DDS
+writer-history/resource-limit semantics remain explicitly unclaimed. A second
+`5/5` gate repeats the two-reader boundary over four containers (router,
+publisher, and two subscribers) with `5 ms +/- 1 ms` netem on every hop and a
+450 ms delayed second ACK. The router observes one DATA plus both subscriber
+ACKs, the publisher never reports the partial `1/2` state as complete, and
+every process tears down cleanly.
 
 The security-options lifecycle ABI slice is complete as a repeated Docker
 boundary. Docker now verifies default security options, custom enclave
