@@ -210,6 +210,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Same-hop common generic-middle 8/16/32 three-seed v4 matrix | `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v4_common_middle_summary.json` |
 | Same-hop exact-configuration 36-row resume-provenance control | `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v5_resume_provenance_summary.json` |
 | Same-hop roaming-to-Wi-Fi resume mismatch Docker control | `results_rmw_socket/same_hop_rmw_comparison_resume_profile_mismatch_docker_summary.json` |
+| Same-hop 16-robot Wi-Fi/WAN/roaming three-seed profile sensitivity | `results_rmw_socket/same_hop_profile_sensitivity_16robot_3profile_3seed_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -1693,6 +1694,16 @@ Wi-Fi request for FleetRMW and Cyclone DDS: both candidates are counted as
 configuration mismatches, zero rows are reused, both rows execute in Docker,
 and both pass with `160/160` relay payloads. Thus a profile change cannot be
 silently satisfied by stale measurements.
+
+The first profile-sensitivity campaign then fixes scale at 16 robots and runs
+all four RMWs over Wi-Fi, WAN, and roaming with seeds `7,13,29`. Wi-Fi and WAN
+contribute 24 fresh Docker/netem rows; roaming contributes 12
+configuration-matched rows from v4. Every profile/system/seed cell passes
+(`36/36`) and the common relay forwards `5760/5760` payloads. The aggregate
+allows profile-scoped delivery/reliability and latency-distribution
+comparison. It still forbids broad latency, cross-RMW, architectural, or
+production superiority; only one robot scale, three repetitions per profile,
+and one payload/sample schedule are represented.
 
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK

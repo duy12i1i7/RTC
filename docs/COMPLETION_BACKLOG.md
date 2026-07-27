@@ -6,10 +6,10 @@ project. It is ordered by dependency and regression value.
 
 ## Current Baseline
 
-- The full repository suite passes `657/657` unit/contract tests; ROS-facing
+- The full repository suite passes `659/659` unit/contract tests; ROS-facing
   runtime probes use the pinned ROS 2 Jazzy Docker image. The unified report
-  currently indexes `360`
-  retained artifacts (`299` ok, `17` partial, `40` historical failed, and `4`
+  currently indexes `364`
+  retained artifacts (`303` ok, `17` partial, `40` historical failed, and `4`
   unknown); its overall `partial` status deliberately includes old debug,
   negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
@@ -1389,6 +1389,15 @@ rejects both keyed candidates, executes FleetRMW and Cyclone DDS again, and
 passes `2/2` with `160/160` relay payloads. Profile sensitivity can no longer
 be fabricated accidentally by a stale resume artifact.
 
+The first common-middle profile-sensitivity campaign is also complete at the
+representative 16-robot scale. FleetRMW, Fast DDS, Cyclone DDS, and Zenoh each
+run Wi-Fi, WAN, and roaming at seeds `7,13,29`; all `36/36` cells pass and
+relay `5760/5760` payloads. Twenty-four Wi-Fi/WAN rows are fresh and twelve
+roaming rows are configuration-matched reuse. This closes the immediate
+single-profile comparison gap, but not robot-scale-by-profile interaction,
+larger repetition counts, payload-size sensitivity, or host-resource
+sensitivity.
+
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
 sequence 1 even when sequence 1 was dropped. ACK feedback now carries the
@@ -1405,10 +1414,10 @@ Next continue P0/P2 in this order:
    workload without presenting request completion as simultaneous physical
    navigation.
 2. Preserve both completed comparison contracts and the repaired `36/36`
-   same-hop common-middle result, then increase beyond the current five samples
-   and three independent repetitions across loss, delay, jitter, payload size,
-   CPU quota, and memory-pressure sensitivity before any latency-superiority
-   claim.
+   same-hop common-middle result plus the completed 16-robot three-profile
+   campaign. Next increase beyond five samples and three repetitions, cross
+   profile with `8/32` robots, and add payload size, CPU quota, and
+   memory-pressure sensitivity before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.
 4. Increase frontier repetitions so the `32`-robot latency-mean confidence

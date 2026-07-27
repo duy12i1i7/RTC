@@ -23,11 +23,21 @@ DEFAULT_SUMMARY = "results_rmw_socket/unified_benchmark_report_summary.json"
 DEFAULT_MARKDOWN = "results_rmw_socket/unified_benchmark_report.md"
 
 METRIC_KEYS = (
+    "run_count",
+    "ok_run_count",
+    "failed_run_count",
     "robot_count",
     "robot_counts",
     "seeds",
     "systems",
     "profile",
+    "profiles",
+    "profile_count",
+    "network_profile_contract_ok",
+    "common_middle_contract_ok",
+    "profile_sensitivity_comparison_allowed",
+    "latency_distribution_comparison_allowed",
+    "cross_rmw_superiority_claim_allowed",
     "campaign_profile",
     "comparison_design",
     "direct_claim_allowed",
@@ -187,6 +197,8 @@ METRIC_KEYS = (
     "same_hop_resume_configuration_fail_closed_claim",
     "same_hop_exact_configuration_resume_36of36_claim",
     "docker_same_hop_profile_mismatch_rerun_2of2_claim",
+    "same_hop_profile_sensitivity_comparison_claim",
+    "docker_same_hop_profile_sensitivity_36of36_claim",
     "same_hop_latency_superiority_claim",
     "expected_relay_payloads_per_run",
     "observed_relay_payloads",
@@ -1296,6 +1308,8 @@ CLAIM_BOUNDARY_KEYS = (
     "same_hop_resume_configuration_fail_closed_claim",
     "same_hop_exact_configuration_resume_36of36_claim",
     "docker_same_hop_profile_mismatch_rerun_2of2_claim",
+    "same_hop_profile_sensitivity_comparison_claim",
+    "docker_same_hop_profile_sensitivity_36of36_claim",
     "docker_same_hop_rmw_comparison_8_16_32_3seed",
     "docker_same_hop_generic_serialized_rmw_comparison_8_16_32_3seed",
     "reception_baseline_cumulative_ack_floor_claim",
@@ -1970,7 +1984,11 @@ def summarize_capabilities(path: Path) -> dict[str, Any]:
 
 def classify_path(path: Path, data: dict[str, Any]) -> str:
     text = f"{path.name} {data.get('schema_version', '')}".lower()
-    if "large_scale_rmw_comparison" in text or "same_hop_rmw_comparison" in text:
+    if (
+        "large_scale_rmw_comparison" in text
+        or "same_hop_rmw_comparison" in text
+        or "same_hop_profile_sensitivity" in text
+    ):
         return "comparison/dds-cyclone-zenoh"
     if "stress_security" in text or "stress-security" in text:
         return "stress/security"

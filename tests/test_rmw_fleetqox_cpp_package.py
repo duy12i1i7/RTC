@@ -5411,6 +5411,12 @@ int main()
             claims["docker_same_hop_profile_mismatch_rerun_2of2_claim"]
         )
         self.assertTrue(
+            claims["same_hop_profile_sensitivity_comparison_claim"]
+        )
+        self.assertTrue(
+            claims["docker_same_hop_profile_sensitivity_36of36_claim"]
+        )
+        self.assertTrue(
             manifest["supported"][
                 "docker_same_hop_common_generic_middle_8_16_32_3seed"
             ]
@@ -5426,6 +5432,16 @@ int main()
         self.assertTrue(
             manifest["supported"][
                 "docker_same_hop_resume_profile_mismatch_rerun"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_same_hop_profile_sensitivity_16robot_3profile_3seed"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "same_hop_profile_sensitivity_common_middle"
             ]
         )
         self.assertTrue(
