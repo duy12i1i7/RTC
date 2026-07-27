@@ -201,6 +201,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker/netem generated bounded-shape C++/rclpy service matrix | `results_rmw_socket/docker_router_bounded_shape_service_probe_summary.json` |
 | Docker/loopback-netem bounded service resource/backpressure matrix | `results_rmw_socket/docker_service_resource_limit_probe_summary.json` |
 | Docker/loopback-netem noisy/quiet service-client isolation matrix | `results_rmw_socket/docker_service_client_isolation_probe_summary.json` |
+| Docker/loopback-netem bounded service-repair admission matrix | `results_rmw_socket/docker_service_repair_admission_probe_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -620,6 +621,17 @@ noisy-quiet-noisy-quiet while per-client FIFO is retained, and all eight noisy
 plus both quiet requests receive their matching responses. This is bounded
 noisy-neighbor isolation and unweighted inter-client round-robin, not
 weighted, priority-aware, or globally optimal service scheduling.
+
+The service-repair admission artifact bounds the asynchronous worker itself
+and passes `5/5` under loopback netem. Two clients each issue four requests
+while the repair pool is capped at four jobs globally and three per client.
+Exactly four repair jobs are scheduled, one request is excluded by the
+per-client cap, and three are excluded by the global cap. All eight initial
+network sends still return success, so overload removes only the optional
+background repair guarantee rather than the one-shot request. Destroying both
+clients cancels all four admitted jobs and every process exits cleanly. This is
+bounded fail-open repair admission, not a guarantee that overload-rejected
+requests survive packet loss.
 
 The local transport artifact reports `status=ok` for a separate two-container
 POSIX shared-memory run. Publisher and subscriber have zero UDP peers and both

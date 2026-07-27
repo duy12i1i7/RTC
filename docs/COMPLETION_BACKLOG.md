@@ -130,7 +130,11 @@ project. It is ordered by dependency and regression value.
   complete. Discovery-window repair is now a nonblocking middleware worker:
   the request call sends once and returns, bounded retries use the same
   sequence, matching responses cancel pending work, client teardown clears it,
-  and the Docker/netem runners require no retry environment override. Standard
+  and the Docker/netem runners require no retry environment override. The
+  pending repair pool now has global/per-client admission bounds; a 5/5 gate
+  reaches exact limits 4/3, keeps all eight initial sends, records one
+  per-client plus three global repair rejections, and cancels all four admitted
+  jobs at teardown. Standard
   ROS 2 services have no cancellation operation; action cancellation is covered
   separately. Request/response queues, pending-response state, dedupe history,
   and response replay are now bounded and configurable; a limit-four Docker

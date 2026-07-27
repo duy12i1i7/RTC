@@ -462,6 +462,20 @@ ament_target_dependencies(fleetrmw_service_client_isolation_probe
   std_srvs
 )
 
+add_executable(fleetrmw_service_repair_admission_probe
+  src/service_repair_admission_probe.cpp
+)
+target_compile_features(fleetrmw_service_repair_admission_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_service_repair_admission_probe
+  ${PROJECT_NAME}
+  std_srvs::std_srvs__rosidl_typesupport_introspection_c
+)
+ament_target_dependencies(fleetrmw_service_repair_admission_probe
+  rcutils
+  rmw
+  std_srvs
+)
+
 add_executable(fleetrmw_reliability_probe
   src/reliability_probe.cpp
 )
@@ -1153,6 +1167,7 @@ install(
     fleetrmw_service_error_probe
     fleetrmw_service_resource_limit_probe
     fleetrmw_service_client_isolation_probe
+    fleetrmw_service_repair_admission_probe
     fleetrmw_reliability_probe
     fleetrmw_wait_for_all_acked_probe
     fleetrmw_remote_wait_for_all_acked_probe

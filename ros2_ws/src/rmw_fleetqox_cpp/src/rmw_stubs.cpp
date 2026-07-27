@@ -297,6 +297,9 @@ std::atomic<std::uint64_t> g_service_request_repairs_scheduled{0};
 std::atomic<std::uint64_t> g_service_request_retries_sent{0};
 std::atomic<std::uint64_t> g_service_request_repairs_cancelled{0};
 std::atomic<std::uint64_t> g_service_request_repairs_exhausted{0};
+std::atomic<std::uint64_t> g_service_request_repair_global_admission_rejections{0};
+std::atomic<std::uint64_t> g_service_request_repair_client_admission_rejections{0};
+std::atomic<std::uint64_t> g_service_request_repair_pending_max_observed{0};
 std::atomic<std::uint64_t> g_service_request_queue_resource_drops{0};
 std::atomic<std::uint64_t> g_service_request_per_client_resource_drops{0};
 std::atomic<std::uint64_t> g_service_response_queue_resource_drops{0};
@@ -844,8 +847,38 @@ bool schedule_service_request_repair(
   }
   const int interval_ms = parse_nonnegative_int_env(
     "FLEETQOX_RMW_SERVICE_REQUEST_REPEAT_INTERVAL_MS", 100, 100);
+  const size_t pending_limit = service_resource_limit(
+    "FLEETQOX_RMW_SERVICE_REQUEST_REPAIR_PENDING_LIMIT", 4096);
+  const size_t per_client_pending_limit = service_resource_limit(
+    "FLEETQOX_RMW_SERVICE_REQUEST_REPAIR_PER_CLIENT_PENDING_LIMIT", 64);
   {
     std::lock_guard<std::mutex> lock(g_service_request_repair_mutex);
+    const size_t client_pending = static_cast<size_t>(std::count_if(
+        g_pending_service_request_repairs.begin(),
+        g_pending_service_request_repairs.end(),
+        [&client_endpoint_id](const PendingServiceRequestRepair & repair) {
+          return repair.client_endpoint_id == client_endpoint_id;
+        }));
+    if (client_pending >= per_client_pending_limit) {
+      g_service_request_repair_client_admission_rejections.fetch_add(
+        1, std::memory_order_relaxed);
+      trace_service_request_repair_event(
+        "client_admission_rejected",
+        client_endpoint_id,
+        sequence_id,
+        retries);
+      return false;
+    }
+    if (g_pending_service_request_repairs.size() >= pending_limit) {
+      g_service_request_repair_global_admission_rejections.fetch_add(
+        1, std::memory_order_relaxed);
+      trace_service_request_repair_event(
+        "global_admission_rejected",
+        client_endpoint_id,
+        sequence_id,
+        retries);
+      return false;
+    }
     if (!g_service_request_repair_thread.joinable()) {
       g_service_request_repair_stop = false;
       try {
@@ -862,6 +895,9 @@ bool schedule_service_request_repair(
         std::chrono::steady_clock::now() + std::chrono::milliseconds(interval_ms),
         retries,
         interval_ms});
+    update_max_observed(
+      &g_service_request_repair_pending_max_observed,
+      g_pending_service_request_repairs.size());
   }
   g_service_request_repairs_scheduled.fetch_add(1, std::memory_order_relaxed);
   trace_service_request_repair_event("scheduled", client_endpoint_id, sequence_id, retries);
@@ -3656,6 +3692,24 @@ std::uint64_t rmw_fleetqox_cpp_service_request_repairs_cancelled()
 std::uint64_t rmw_fleetqox_cpp_service_request_repairs_exhausted()
 {
   return g_service_request_repairs_exhausted.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_request_repair_global_admission_rejections()
+{
+  return g_service_request_repair_global_admission_rejections.load(
+    std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_request_repair_client_admission_rejections()
+{
+  return g_service_request_repair_client_admission_rejections.load(
+    std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_request_repair_pending_max_observed()
+{
+  return g_service_request_repair_pending_max_observed.load(
+    std::memory_order_relaxed);
 }
 
 std::uint64_t rmw_fleetqox_cpp_service_request_queue_resource_drops()

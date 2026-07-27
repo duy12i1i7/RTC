@@ -58,7 +58,10 @@ This repository starts with the part that should be proven first:
   direction rows, zero invalid frames); bounded request repair now runs
   asynchronously inside the middleware with five retries at 100 ms by default,
   is cancelled by the matching response, and needs no runner override to cover
-  asynchronous client/service graph convergence; a separate ROSIDL-generated
+  asynchronous client/service graph convergence; its pending-job pool has
+  configurable global/per-client caps, preserves the initial one-shot send
+  when repair admission is full, and cancels admitted jobs on client teardown;
+  a separate ROSIDL-generated
   `FleetShape` service passes another `5/5`/`10/10` matrix at maximum declared
   bounds for `string<=32`, `uint8[16]`, `float32[<=128]`, nested
   `PoseStamped[<=16]`, `Duration`, and `uint32[<=64]`; a service resource gate
