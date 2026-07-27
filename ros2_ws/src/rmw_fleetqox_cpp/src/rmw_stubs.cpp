@@ -10,6 +10,9 @@
 #include <cstdint>
 #include <deque>
 #include <dlfcn.h>
+#include <filesystem>
+#include <fstream>
+#include <fcntl.h>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -17,6 +20,7 @@
 #include <string>
 #include <thread>
 #include <unordered_set>
+#include <unistd.h>
 #include <vector>
 
 #include "rmw_fleetqox_cpp/data_frame.hpp"
@@ -240,6 +244,8 @@ struct FleetQoxServiceData
   std::uint64_t service_client_priority;
   std::uint64_t service_client_weight;
   std::uint64_t service_client_deadline_ns;
+  std::string durable_replay_path;
+  std::unordered_set<std::string> durable_response_keys;
 };
 
 struct FleetQoxEventData
@@ -325,6 +331,11 @@ std::atomic<std::uint64_t> g_service_aged_priority_dequeues{0};
 std::atomic<std::uint64_t> g_service_weighted_dequeues{0};
 std::atomic<std::uint64_t> g_service_deadline_dequeues{0};
 std::atomic<std::uint64_t> g_service_deadline_aged_dequeues{0};
+std::atomic<std::uint64_t> g_service_durable_replays_loaded{0};
+std::atomic<std::uint64_t> g_service_durable_replays_persisted{0};
+std::atomic<std::uint64_t> g_service_durable_replays_sent{0};
+std::atomic<std::uint64_t> g_service_durable_replay_failures{0};
+std::mutex g_service_durable_replay_mutex;
 ServiceRequestRepairShutdownGuard g_service_request_repair_shutdown_guard;
 std::mutex g_event_mutex;
 std::vector<rmw_event_t *> g_event_handles;
@@ -785,12 +796,204 @@ void store_bounded_service_response_replay(
     data->response_replay_order.push_back(key);
   }
   while (data->response_replay_order.size() > data->response_replay_limit) {
-    data->response_replay_cache.erase(data->response_replay_order.front());
+    const std::string evicted = data->response_replay_order.front();
+    data->response_replay_cache.erase(evicted);
+    data->durable_response_keys.erase(evicted);
     data->response_replay_order.pop_front();
     g_service_response_replay_evictions.fetch_add(1, std::memory_order_relaxed);
   }
   update_max_observed(
     &g_service_response_replay_max_observed, data->response_replay_cache.size());
+}
+
+std::string durable_service_replay_path(
+  const char * service_name,
+  const std::string & type_name,
+  std::size_t domain_id)
+{
+  const char * raw = std::getenv("FLEETQOX_RMW_SERVICE_DURABLE_REPLAY_DIR");
+  if (raw == nullptr || raw[0] == '\0' || service_name == nullptr) {
+    return {};
+  }
+  const std::filesystem::path directory(raw);
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  if (error || !std::filesystem::is_directory(directory, error)) {
+    g_service_durable_replay_failures.fetch_add(1, std::memory_order_relaxed);
+    return {};
+  }
+  const std::uint64_t identity = fnv1a64(
+    std::to_string(domain_id) + "|" + service_name + "|" + type_name,
+    1469598103934665603ULL);
+  return (directory / ("service-" + std::to_string(identity) + ".replay")).string();
+}
+
+std::string durable_service_replay_snapshot(const FleetQoxServiceData * data)
+{
+  if (data == nullptr) {
+    return {};
+  }
+  std::string snapshot = "FLEETQOX_SERVICE_REPLAY_V1\n";
+  static constexpr char kHex[] = "0123456789abcdef";
+  for (const std::string & key : data->response_replay_order) {
+    const auto found = data->response_replay_cache.find(key);
+    if (found == data->response_replay_cache.end() ||
+      key.find_first_of("\t\n") != std::string::npos)
+    {
+      continue;
+    }
+    snapshot += key;
+    snapshot.push_back('\t');
+    for (const unsigned char byte : found->second) {
+      snapshot.push_back(kHex[(byte >> 4) & 0x0Fu]);
+      snapshot.push_back(kHex[byte & 0x0Fu]);
+    }
+    snapshot.push_back('\n');
+  }
+  return snapshot;
+}
+
+int durable_replay_hex_value(char value)
+{
+  if (value >= '0' && value <= '9') {
+    return value - '0';
+  }
+  if (value >= 'a' && value <= 'f') {
+    return value - 'a' + 10;
+  }
+  if (value >= 'A' && value <= 'F') {
+    return value - 'A' + 10;
+  }
+  return -1;
+}
+
+bool decode_durable_replay_hex(
+  const std::string & encoded,
+  std::string * decoded)
+{
+  if (decoded == nullptr || encoded.size() % 2 != 0) {
+    return false;
+  }
+  decoded->clear();
+  decoded->reserve(encoded.size() / 2);
+  for (std::size_t index = 0; index < encoded.size(); index += 2) {
+    const int high = durable_replay_hex_value(encoded[index]);
+    const int low = durable_replay_hex_value(encoded[index + 1]);
+    if (high < 0 || low < 0) {
+      decoded->clear();
+      return false;
+    }
+    decoded->push_back(static_cast<char>((high << 4) | low));
+  }
+  return true;
+}
+
+bool persist_durable_service_replay(
+  const std::string & path,
+  const std::string & snapshot)
+{
+  if (path.empty() || snapshot.empty()) {
+    return false;
+  }
+  const std::string temporary =
+    path + ".tmp." + std::to_string(static_cast<long long>(::getpid()));
+  const int descriptor = ::open(
+    temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (descriptor < 0) {
+    return false;
+  }
+  std::size_t offset = 0;
+  bool ok = true;
+  while (offset < snapshot.size()) {
+    const ssize_t written = ::write(
+      descriptor, snapshot.data() + offset, snapshot.size() - offset);
+    if (written < 0 && errno == EINTR) {
+      continue;
+    }
+    if (written <= 0) {
+      ok = false;
+      break;
+    }
+    offset += static_cast<std::size_t>(written);
+  }
+  if (ok && ::fsync(descriptor) != 0) {
+    ok = false;
+  }
+  if (::close(descriptor) != 0) {
+    ok = false;
+  }
+  if (ok && ::rename(temporary.c_str(), path.c_str()) != 0) {
+    ok = false;
+  }
+  if (!ok) {
+    (void)::unlink(temporary.c_str());
+    return false;
+  }
+  const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+  const int directory_descriptor = ::open(parent.c_str(), O_RDONLY);
+  if (directory_descriptor >= 0) {
+    if (::fsync(directory_descriptor) != 0) {
+      ok = false;
+    }
+    (void)::close(directory_descriptor);
+  }
+  return ok;
+}
+
+std::size_t load_durable_service_replays(FleetQoxServiceData * data)
+{
+  if (data == nullptr || data->durable_replay_path.empty() ||
+    data->service_name == nullptr)
+  {
+    return 0;
+  }
+  std::ifstream input(data->durable_replay_path, std::ios::binary);
+  if (!input) {
+    return 0;
+  }
+  std::string line;
+  if (!std::getline(input, line) || line != "FLEETQOX_SERVICE_REPLAY_V1") {
+    g_service_durable_replay_failures.fetch_add(1, std::memory_order_relaxed);
+    return 0;
+  }
+  std::size_t loaded = 0;
+  while (loaded < data->response_replay_limit && std::getline(input, line)) {
+    const std::size_t separator = line.find('\t');
+    if (separator == std::string::npos) {
+      continue;
+    }
+    const std::string key = line.substr(0, separator);
+    std::string encoded;
+    if (!decode_durable_replay_hex(line.substr(separator + 1), &encoded)) {
+      continue;
+    }
+    const auto frame = rmw_fleetqox_cpp::decode_service_frame(encoded);
+    if (!frame || frame->role != "response" ||
+      frame->domain_id != data->domain_id ||
+      frame->service_name != data->service_name ||
+      frame->type_name != data->type_name ||
+      key != service_response_replay_key(
+        frame->client_endpoint_id, frame->sequence_id))
+    {
+      continue;
+    }
+    rmw_fleetqox_cpp::ServiceFrame rebound = *frame;
+    rebound.service_endpoint_id = data->endpoint_id;
+    const std::string rebound_encoded =
+      rmw_fleetqox_cpp::encode_service_frame(rebound);
+    store_bounded_service_response_replay(data, key, rebound_encoded);
+    data->durable_response_keys.insert(key);
+    remember_bounded_service_key(
+      &data->seen_request_keys,
+      &data->seen_request_order,
+      rebound.client_endpoint_id + "||request|" +
+      std::to_string(rebound.sequence_id),
+      data->dedupe_history_limit,
+      &g_service_request_dedupe_evictions);
+    ++loaded;
+  }
+  g_service_durable_replays_loaded.fetch_add(loaded, std::memory_order_relaxed);
+  return loaded;
 }
 
 std::uint64_t effective_service_priority(
@@ -1198,12 +1401,19 @@ FleetQoxServiceData * allocate_service_data(
     std::map<std::string, std::int64_t>{},
     static_cast<std::uint64_t>(client_priority),
     static_cast<std::uint64_t>(client_weight),
-    static_cast<std::uint64_t>(std::max<std::int64_t>(0, client_deadline_ns))};
+    static_cast<std::uint64_t>(std::max<std::int64_t>(0, client_deadline_ns)),
+    std::string{},
+    std::unordered_set<std::string>{}};
   data->service_name = rcutils_strdup(service_name, allocator);
   if (data->service_name == nullptr) {
     data->~FleetQoxServiceData();
     allocator.deallocate(memory, allocator.state);
     return nullptr;
+  }
+  if (is_service) {
+    data->durable_replay_path = durable_service_replay_path(
+      service_name, type_name, domain_id);
+    (void)load_durable_service_replays(data);
   }
   return data;
 }
@@ -1693,7 +1903,7 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
     return true;
   }
   std::vector<std::pair<rmw_event_callback_t, const void *>> callbacks;
-  std::vector<std::string> replay_responses;
+  std::vector<std::pair<std::string, bool>> replay_responses;
   bool matched_response = false;
   {
     std::lock_guard<std::mutex> lock(g_service_bus_mutex);
@@ -1724,7 +1934,10 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
               service_response_replay_key(frame->client_endpoint_id, frame->sequence_id);
             const auto replay = data->response_replay_cache.find(replay_key);
             if (replay != data->response_replay_cache.end()) {
-              replay_responses.push_back(replay->second);
+              replay_responses.emplace_back(
+                replay->second,
+                data->durable_response_keys.find(replay_key) !=
+                data->durable_response_keys.end());
             }
             trace_service_event("drop_duplicate_request", data, &*frame, data->request_queue.size());
             continue;
@@ -1815,12 +2028,14 @@ bool rmw_fleetqox_cpp_handle_service_frame(const char * encoded_frame, size_t si
     cancel_service_request_repair(
       frame->client_endpoint_id, frame->sequence_id, "response_received");
   }
-  for (const std::string & response : replay_responses) {
+  for (const auto & response : replay_responses) {
     const rmw_ret_t replay_ret = send_service_frame_with_repeats(
-      response,
+      response.first,
       "FLEETQOX_RMW_SERVICE_RESPONSE_REPEATS",
       "FLEETQOX_RMW_SERVICE_RESPONSE_REPEAT_INTERVAL_MS");
-    (void)replay_ret;
+    if (replay_ret == RMW_RET_OK && response.second) {
+      g_service_durable_replays_sent.fetch_add(1, std::memory_order_relaxed);
+    }
   }
   for (const auto & callback : callbacks) {
     callback.first(callback.second, 1);
@@ -3023,12 +3238,46 @@ rmw_ret_t rmw_send_response(
     data->domain_id};
   trace_service_event("send_response", data, &frame);
   const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(frame);
+  const std::string replay_key =
+    service_response_replay_key(client_endpoint_id, request_header->sequence_number);
+  std::string durable_snapshot;
+  std::string durable_path;
+  std::unique_lock<std::mutex> durable_lock(
+    g_service_durable_replay_mutex, std::defer_lock);
+  if (!data->durable_replay_path.empty()) {
+    durable_lock.lock();
+  }
   {
     std::lock_guard<std::mutex> lock(g_service_bus_mutex);
     store_bounded_service_response_replay(
       data,
-      service_response_replay_key(client_endpoint_id, request_header->sequence_number),
+      replay_key,
       encoded);
+    if (!data->durable_replay_path.empty()) {
+      durable_path = data->durable_replay_path;
+      durable_snapshot = durable_service_replay_snapshot(data);
+    }
+  }
+  if (!durable_path.empty()) {
+    if (persist_durable_service_replay(durable_path, durable_snapshot)) {
+      std::lock_guard<std::mutex> lock(g_service_bus_mutex);
+      data->durable_response_keys.clear();
+      for (const std::string & key : data->response_replay_order) {
+        if (data->response_replay_cache.find(key) !=
+          data->response_replay_cache.end())
+        {
+          data->durable_response_keys.insert(key);
+        }
+      }
+      g_service_durable_replays_persisted.fetch_add(1, std::memory_order_relaxed);
+      trace_service_event("durable_response_persisted", data, &frame);
+    } else {
+      g_service_durable_replay_failures.fetch_add(1, std::memory_order_relaxed);
+      trace_service_event("durable_response_persist_failed", data, &frame);
+    }
+  }
+  if (durable_lock.owns_lock()) {
+    durable_lock.unlock();
   }
   return send_service_frame_with_repeats(
     encoded,
@@ -3984,6 +4233,26 @@ std::uint64_t rmw_fleetqox_cpp_service_deadline_dequeues()
 std::uint64_t rmw_fleetqox_cpp_service_deadline_aged_dequeues()
 {
   return g_service_deadline_aged_dequeues.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_durable_replays_loaded()
+{
+  return g_service_durable_replays_loaded.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_durable_replays_persisted()
+{
+  return g_service_durable_replays_persisted.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_durable_replays_sent()
+{
+  return g_service_durable_replays_sent.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_durable_replay_failures()
+{
+  return g_service_durable_replay_failures.load(std::memory_order_relaxed);
 }
 
 }  // extern "C"

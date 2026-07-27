@@ -518,6 +518,21 @@ ament_target_dependencies(fleetrmw_service_deadline_scheduler_probe
   std_srvs
 )
 
+add_executable(fleetrmw_service_durable_replay_probe
+  src/service_durable_replay_probe.cpp
+)
+target_compile_features(fleetrmw_service_durable_replay_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_service_durable_replay_probe
+  ${PROJECT_NAME}
+  std_srvs::std_srvs__rosidl_typesupport_introspection_c
+)
+ament_target_dependencies(fleetrmw_service_durable_replay_probe
+  rcutils
+  rmw
+  rosidl_runtime_c
+  std_srvs
+)
+
 add_executable(fleetrmw_reliability_probe
   src/reliability_probe.cpp
 )
@@ -1213,6 +1228,7 @@ install(
     fleetrmw_service_priority_probe
     fleetrmw_service_weighted_fairness_probe
     fleetrmw_service_deadline_scheduler_probe
+    fleetrmw_service_durable_replay_probe
     fleetrmw_reliability_probe
     fleetrmw_wait_for_all_acked_probe
     fleetrmw_remote_wait_for_all_acked_probe

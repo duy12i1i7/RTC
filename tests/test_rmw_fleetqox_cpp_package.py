@@ -1631,6 +1631,43 @@ int main()
             "fleetrmw_service_deadline_scheduler_probe",
             cmake_source,
         )
+        durable_service_probe = (
+            PKG / "src" / "service_durable_replay_probe.cpp"
+        )
+        self.assertTrue(durable_service_probe.exists())
+        durable_service_source = durable_service_probe.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_service_durable_replay_probe.v1",
+            durable_service_source,
+        )
+        self.assertIn("server-crash", durable_service_source)
+        docker_durable_service_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_service_durable_replay_probe.py"
+        )
+        self.assertTrue(docker_durable_service_script.exists())
+        docker_durable_service_source = (
+            docker_durable_service_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_docker_service_durable_replay_probe.v1",
+            docker_durable_service_source,
+        )
+        self.assertIn(
+            "crash_persistent_completed_service_deduplication_claim",
+            docker_durable_service_source,
+        )
+        self.assertIn(
+            "fleetrmw_service_durable_replay_probe",
+            cmake_source,
+        )
+        self.assertIn(
+            "FLEETQOX_RMW_SERVICE_DURABLE_REPLAY_DIR",
+            stub_source,
+        )
+        self.assertIn("persist_durable_service_replay", stub_source)
+        self.assertIn("g_service_durable_replay_mutex", stub_source)
         self.assertIn("malformed_response_error", docker_service_error_source)
         self.assertIn("after_invalid_response_taken", docker_service_error_source)
         action_probe = PKG / "src" / "action_frame_probe.cpp"
@@ -4377,6 +4414,9 @@ int main()
             manifest["supported"]["service_earliest_deadline_first"]
         )
         self.assertTrue(
+            manifest["supported"]["service_process_crash_replay"]
+        )
+        self.assertTrue(
             manifest["claim_boundaries"][
                 "docker_router_cpp_python_path_5run_netem"
             ]
@@ -4444,6 +4484,14 @@ int main()
             manifest["claim_boundaries"][
                 "deadline_aware_service_scheduling_claim"
             ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "crash_persistent_completed_service_deduplication_claim"
+            ]
+        )
+        self.assertFalse(
+            manifest["claim_boundaries"]["power_loss_durability_claim"]
         )
         self.assertFalse(
             manifest["claim_boundaries"]["full_exactly_once_service_semantics_claim"]

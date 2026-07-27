@@ -153,8 +153,12 @@ project. It is ordered by dependency and regression value.
   gate. An opt-in EDF scheduler now carries relative request deadlines, orders
   them from server-local enqueue time, and gives no-deadline requests a
   configurable synthetic aging deadline; its 5/5 end-to-end gate proves
-  20 ms before 200 ms and the aging escape path. Remaining service work is
-  crash-persistent deduplication and exactly-once semantics.
+  20 ms before 200 ms and the aging escape path. Completed responses now have
+  opt-in crash-persistent dedupe/replay: a mode-0600 atomic-fsync ledger is
+  loaded by a replacement process, and a 5/5 Docker/netem SIGKILL gate proves
+  no duplicate application delivery after persistence. Remaining service work
+  is the pre-persistence crash ambiguity window and application-transactional
+  exactly-once semantics; host power-loss durability is also unclaimed.
 - Harden action transport on top of pub/sub plus service reliability:
   goal, result, feedback, cancel, status, deadlines, and larger concurrent
   action/client counts.

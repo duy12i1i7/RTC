@@ -205,6 +205,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker/loopback-netem service priority and aging matrix | `results_rmw_socket/docker_service_priority_probe_summary.json` |
 | Docker/loopback-netem smooth weighted service matrix | `results_rmw_socket/docker_service_weighted_fairness_probe_summary.json` |
 | Docker/loopback-netem deadline-aware service matrix | `results_rmw_socket/docker_service_deadline_scheduler_probe_summary.json` |
+| Docker/netem SIGKILL durable completed-service replay matrix | `results_rmw_socket/docker_service_durable_replay_probe_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -669,6 +670,18 @@ synthetic 100 ms aging deadline and, after waiting 150 ms, is selected before a
 new 20 ms request. Standard bidirectional ROS service QoS compatibility remains
 unchanged; heterogeneous per-client scheduling deadlines are explicitly a
 FleetQoX extension.
+
+The durable service artifact passes `5/5` with distinct server containers.
+After the first server executes one request and persists its completed response
+through file `fsync`, atomic rename, directory `fsync`, and mode `0600`, the
+runner sends SIGKILL and requires exit code 137. A replacement server loads one
+record. A fresh client reuses the original fixed endpoint and sequence; the
+replacement reports `request_taken=false`, sends no application response, and
+replays the durable response successfully through the router under netem.
+There are zero replacement application executions across the five runs. This
+closes completed-response crash replay only: a crash before persistence,
+application side effects without a shared transaction, host power loss, and
+full exactly-once semantics remain unclaimed.
 
 The local transport artifact reports `status=ok` for a separate two-container
 POSIX shared-memory run. Publisher and subscriber have zero UDP peers and both

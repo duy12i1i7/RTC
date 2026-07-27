@@ -90,7 +90,12 @@ This repository starts with the part that should be proven first:
   `FLEETQOX_RMW_SERVICE_CLIENT_WEIGHT=1..64`; deadline mode uses
   `FLEETQOX_RMW_SERVICE_SCHEDULER=deadline`,
   `FLEETQOX_RMW_SERVICE_CLIENT_DEADLINE_MS`, and
-  `FLEETQOX_RMW_SERVICE_DEADLINE_AGING_MS`; a separate two-container POSIX
+  `FLEETQOX_RMW_SERVICE_DEADLINE_AGING_MS`. Completed responses can opt into a
+  bounded mode-0600 durable ledger with
+  `FLEETQOX_RMW_SERVICE_DURABLE_REPLAY_DIR`; a `5/5` multi-container gate
+  SIGKILLs the first server, then proves its replacement suppresses duplicate
+  application delivery and replays the persisted response. This is not a full
+  exactly-once or power-loss guarantee; a separate two-container POSIX
   shared-memory gate transfers a 100 KB payload with no UDP peer or slot
   overwrite, reports zero network-flow endpoints in SHM mode, and proves an
   explicit UDP fallback path under injected SHM initialization failure; a

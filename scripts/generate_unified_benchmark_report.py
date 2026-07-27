@@ -120,6 +120,17 @@ METRIC_KEYS = (
     "service_earliest_deadline_first_claim",
     "service_deadline_aging_starvation_bound_claim",
     "deadline_aware_service_scheduling_claim",
+    "server_sigkill_count",
+    "durable_replays_loaded",
+    "durable_replays_sent",
+    "application_reexecutions",
+    "client_replay_successes",
+    "durable_state_mode_0600_all",
+    "service_completed_response_durable_replay_claim",
+    "service_process_crash_replay_claim",
+    "service_duplicate_application_suppression_after_restart_claim",
+    "crash_persistent_completed_service_deduplication_claim",
+    "power_loss_durability_claim",
     "token_size",
     "range_count",
     "waypoint_count",
@@ -1207,6 +1218,11 @@ CLAIM_BOUNDARY_KEYS = (
     "service_earliest_deadline_first_claim",
     "service_deadline_aging_starvation_bound_claim",
     "deadline_aware_service_scheduling_claim",
+    "service_completed_response_durable_replay_claim",
+    "service_process_crash_replay_claim",
+    "service_duplicate_application_suppression_after_restart_claim",
+    "crash_persistent_completed_service_deduplication_claim",
+    "power_loss_durability_claim",
     "full_exactly_once_service_semantics_claim",
     "production_quic_backend_claim",
     "full_bidirectional_quic_backend_claim",
@@ -1906,6 +1922,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         or "service_priority" in text
         or "service_weighted" in text
         or "service_deadline" in text
+        or "service_durable_replay" in text
     ):
         return "rmw-abi"
     if "wait_for_all_acked" in text or "wait-for-all-acked" in text:
