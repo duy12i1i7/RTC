@@ -206,8 +206,10 @@ This repository starts with the part that should be proven first:
   `IS NOT NULL` on key-value/std_msgs-style text payloads. Missing fields stay
   SQL `unknown` through negation; malformed expressions and missing
   parameter references fail closed; both the base and SQL-subset artifacts
-  repeat `5/5`. Typed-field reflection and the full DDS SQL dialect remain out
-  of scope;
+  repeat `5/5`. A third `5/5` artifact filters real ROSIDL typed messages through
+  introspection C/C++ nested scalar paths and C++ sequence index/length plus
+  nested sequence-message paths. The full DDS SQL dialect and vendor-specific
+  expression functions remain out of scope;
 - a middleware-owned loaned-message lifecycle for introspection C/C++ where
   publisher borrow/publish-or-return and subscription take/return pass in
   Docker; this is explicitly a lifecycle/allocation claim, not zero-copy;

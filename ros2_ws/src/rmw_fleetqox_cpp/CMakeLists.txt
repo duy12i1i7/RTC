@@ -392,6 +392,22 @@ ament_target_dependencies(fleetrmw_content_filter_sql_probe
   rmw
 )
 
+add_executable(fleetrmw_content_filter_typed_probe
+  src/content_filter_typed_probe.cpp
+)
+target_compile_features(fleetrmw_content_filter_typed_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_content_filter_typed_probe
+  ${PROJECT_NAME}
+)
+ament_target_dependencies(fleetrmw_content_filter_typed_probe
+  geometry_msgs
+  rcutils
+  rmw
+  rosidl_typesupport_c
+  rosidl_typesupport_cpp
+  std_msgs
+)
+
 add_executable(fleetrmw_service_qos_probe
   src/service_qos_probe.cpp
 )
@@ -1219,6 +1235,7 @@ install(
     fleetrmw_remote_deadline_event_probe
     fleetrmw_content_filter_probe
     fleetrmw_content_filter_sql_probe
+    fleetrmw_content_filter_typed_probe
     fleetrmw_service_qos_probe
     fleetrmw_domain_isolation_probe
     fleetrmw_service_error_probe

@@ -110,7 +110,10 @@ surfaces; prose and benchmark claims must not exceed that manifest.
   `AND/OR/NOT`, parentheses, comparisons, `LIKE`, `BETWEEN`, `IN/NOT IN`, and
   `IS NULL`/`IS NOT NULL`; missing fields remain SQL `unknown` under negation,
   and parameterized data-plane plus invalid-expression controls repeat `5/5`
-  in Docker while the full DDS dialect remains scoped;
+  in Docker. Direct ROSIDL introspection C/C++ reflection exposes nested scalar
+  paths plus C++ sequence index/length and nested sequence-message paths without
+  constructing an application message; its typed data-plane probe also repeats
+  `5/5`, while the full DDS dialect remains scoped;
 - expose waitable unread status for every non-invalid Jazzy `rmw_event_type_t`,
   proven by a `5/5` aggregate Docker matrix over seven production probes and
   `35/35` component executions;

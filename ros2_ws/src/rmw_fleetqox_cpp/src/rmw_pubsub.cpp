@@ -12,6 +12,7 @@
 #include <deque>
 #include <cerrno>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -328,6 +329,7 @@ std::atomic<std::uint64_t> g_content_filters_got{0};
 std::atomic<std::uint64_t> g_content_filters_evaluated{0};
 std::atomic<std::uint64_t> g_content_filters_matched{0};
 std::atomic<std::uint64_t> g_content_filters_dropped{0};
+std::atomic<std::uint64_t> g_content_filter_typed_reflections{0};
 std::atomic<std::uint64_t> g_security_policy_denied{0};
 std::atomic<std::uint64_t> g_sros2_permissions_xml_allowed{0};
 std::atomic<std::uint64_t> g_sros2_permissions_xml_denied{0};
@@ -6272,6 +6274,407 @@ bool deserialize_introspection_cpp_message(
   return true;
 }
 
+template<typename T>
+bool read_content_filter_primitive(
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  T * value)
+{
+  return value != nullptr && read_bytes(payload, offset, value, sizeof(T));
+}
+
+template<typename T>
+std::string content_filter_floating_text(T value)
+{
+  std::ostringstream out;
+  out << std::setprecision(std::numeric_limits<T>::max_digits10) << value;
+  return out.str();
+}
+
+bool content_filter_primitive_text(
+  uint8_t type_id,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  std::string * text)
+{
+  if (offset == nullptr || text == nullptr) {
+    return false;
+  }
+  switch (type_id) {
+    case rosidl_typesupport_introspection_c__ROS_TYPE_FLOAT:
+      {
+        float value = 0.0F;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = content_filter_floating_text(value);
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_DOUBLE:
+      {
+        double value = 0.0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = content_filter_floating_text(value);
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_LONG_DOUBLE:
+      {
+        long double value = 0.0L;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = content_filter_floating_text(value);
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_BOOLEAN:
+      {
+        bool value = false;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = value ? "true" : "false";
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_CHAR:
+      {
+        char value = 0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = std::to_string(static_cast<unsigned int>(static_cast<unsigned char>(value)));
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_WCHAR:
+      {
+        char16_t value = 0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = std::to_string(static_cast<unsigned int>(value));
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_OCTET:
+    case rosidl_typesupport_introspection_c__ROS_TYPE_UINT8:
+      {
+        std::uint8_t value = 0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = std::to_string(static_cast<unsigned int>(value));
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_INT8:
+      {
+        std::int8_t value = 0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = std::to_string(static_cast<int>(value));
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_UINT16:
+      {
+        std::uint16_t value = 0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = std::to_string(value);
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_INT16:
+      {
+        std::int16_t value = 0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = std::to_string(value);
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_UINT32:
+      {
+        std::uint32_t value = 0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = std::to_string(value);
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_INT32:
+      {
+        std::int32_t value = 0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = std::to_string(value);
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_UINT64:
+      {
+        std::uint64_t value = 0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = std::to_string(value);
+        return true;
+      }
+    case rosidl_typesupport_introspection_c__ROS_TYPE_INT64:
+      {
+        std::int64_t value = 0;
+        if (!read_content_filter_primitive(payload, offset, &value)) {
+          return false;
+        }
+        *text = std::to_string(value);
+        return true;
+      }
+    default:
+      return false;
+  }
+}
+
+std::string nested_content_filter_path(
+  const std::string & prefix,
+  const char * member_name)
+{
+  if (member_name == nullptr || member_name[0] == '\0') {
+    return {};
+  }
+  return prefix.empty() ? member_name : prefix + "." + member_name;
+}
+
+bool reflect_introspection_c_message(
+  const rosidl_typesupport_introspection_c__MessageMembers * members,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  const std::string & prefix,
+  std::unordered_map<std::string, std::string> * fields);
+
+bool reflect_introspection_c_member(
+  const rosidl_typesupport_introspection_c__MessageMember & member,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  const std::string & path,
+  std::unordered_map<std::string, std::string> * fields)
+{
+  if (offset == nullptr || fields == nullptr || path.empty()) {
+    return false;
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_c__ROS_TYPE_STRING) {
+    std::uint64_t size = 0;
+    if (!read_u64(payload, offset, &size) ||
+      size > std::numeric_limits<size_t>::max() ||
+      size > payload.size() - *offset ||
+      (member.string_upper_bound_ > 0 && size > member.string_upper_bound_))
+    {
+      return false;
+    }
+    (*fields)[path] = std::string(
+      reinterpret_cast<const char *>(payload.data() + *offset),
+      static_cast<size_t>(size));
+    *offset += static_cast<size_t>(size);
+    return true;
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_c__ROS_TYPE_MESSAGE) {
+    return reflect_introspection_c_message(
+      introspection_c_members(member.members_), payload, offset, path, fields);
+  }
+  std::string text;
+  if (!content_filter_primitive_text(member.type_id_, payload, offset, &text)) {
+    return false;
+  }
+  (*fields)[path] = std::move(text);
+  return true;
+}
+
+bool reflect_introspection_c_field(
+  const rosidl_typesupport_introspection_c__MessageMember & member,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  const std::string & prefix,
+  std::unordered_map<std::string, std::string> * fields)
+{
+  const std::string path = nested_content_filter_path(prefix, member.name_);
+  if (path.empty()) {
+    return false;
+  }
+  if (!member.is_array_) {
+    return reflect_introspection_c_member(member, payload, offset, path, fields);
+  }
+  std::uint64_t element_count = 0;
+  if (!read_u64(payload, offset, &element_count) ||
+    element_count > std::numeric_limits<size_t>::max() ||
+    element_count > payload.size() - *offset ||
+    (member.is_upper_bound_ && element_count > member.array_size_) ||
+    (member.resize_function == nullptr && element_count != member.array_size_))
+  {
+    return false;
+  }
+  (*fields)[path + "._length"] = std::to_string(element_count);
+  for (size_t index = 0; index < static_cast<size_t>(element_count); ++index) {
+    if (!reflect_introspection_c_member(
+        member, payload, offset, path + "[" + std::to_string(index) + "]", fields))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool reflect_introspection_c_message(
+  const rosidl_typesupport_introspection_c__MessageMembers * members,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  const std::string & prefix,
+  std::unordered_map<std::string, std::string> * fields)
+{
+  if (members == nullptr || offset == nullptr || fields == nullptr) {
+    return false;
+  }
+  std::uint64_t member_count = 0;
+  if (!read_u64(payload, offset, &member_count) || member_count != members->member_count_) {
+    return false;
+  }
+  for (uint32_t index = 0; index < members->member_count_; ++index) {
+    if (!reflect_introspection_c_field(
+        members->members_[index], payload, offset, prefix, fields))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool reflect_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  const std::string & prefix,
+  std::unordered_map<std::string, std::string> * fields);
+
+bool reflect_introspection_cpp_member(
+  const rosidl_typesupport_introspection_cpp::MessageMember & member,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  const std::string & path,
+  std::unordered_map<std::string, std::string> * fields)
+{
+  if (offset == nullptr || fields == nullptr || path.empty()) {
+    return false;
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING) {
+    std::uint64_t size = 0;
+    if (!read_u64(payload, offset, &size) ||
+      size > std::numeric_limits<size_t>::max() ||
+      size > payload.size() - *offset ||
+      (member.string_upper_bound_ > 0 && size > member.string_upper_bound_))
+    {
+      return false;
+    }
+    (*fields)[path] = std::string(
+      reinterpret_cast<const char *>(payload.data() + *offset),
+      static_cast<size_t>(size));
+    *offset += static_cast<size_t>(size);
+    return true;
+  }
+  if (member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
+    return reflect_introspection_cpp_message(
+      introspection_cpp_members(member.members_), payload, offset, path, fields);
+  }
+  std::string text;
+  if (!content_filter_primitive_text(member.type_id_, payload, offset, &text)) {
+    return false;
+  }
+  (*fields)[path] = std::move(text);
+  return true;
+}
+
+bool reflect_introspection_cpp_field(
+  const rosidl_typesupport_introspection_cpp::MessageMember & member,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  const std::string & prefix,
+  std::unordered_map<std::string, std::string> * fields)
+{
+  const std::string path = nested_content_filter_path(prefix, member.name_);
+  if (path.empty()) {
+    return false;
+  }
+  if (!member.is_array_) {
+    return reflect_introspection_cpp_member(member, payload, offset, path, fields);
+  }
+  std::uint64_t element_count = 0;
+  if (!read_u64(payload, offset, &element_count) ||
+    element_count > std::numeric_limits<size_t>::max() ||
+    element_count > payload.size() - *offset ||
+    (member.is_upper_bound_ && element_count > member.array_size_) ||
+    (member.resize_function == nullptr && element_count != member.array_size_))
+  {
+    return false;
+  }
+  (*fields)[path + "._length"] = std::to_string(element_count);
+  for (size_t index = 0; index < static_cast<size_t>(element_count); ++index) {
+    if (!reflect_introspection_cpp_member(
+        member, payload, offset, path + "[" + std::to_string(index) + "]", fields))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool reflect_introspection_cpp_message(
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members,
+  const std::vector<std::uint8_t> & payload,
+  size_t * offset,
+  const std::string & prefix,
+  std::unordered_map<std::string, std::string> * fields)
+{
+  if (members == nullptr || offset == nullptr || fields == nullptr) {
+    return false;
+  }
+  std::uint64_t member_count = 0;
+  if (!read_u64(payload, offset, &member_count) || member_count != members->member_count_) {
+    return false;
+  }
+  for (uint32_t index = 0; index < members->member_count_; ++index) {
+    if (!reflect_introspection_cpp_field(
+        members->members_[index], payload, offset, prefix, fields))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<std::unordered_map<std::string, std::string>>
+content_filter_typed_fields(
+  const rosidl_message_type_support_t * type_support,
+  const std::vector<std::uint8_t> & payload)
+{
+  const rosidl_message_type_support_t * effective =
+    resolve_effective_type_support(type_support);
+  std::unordered_map<std::string, std::string> fields;
+  size_t offset = 0;
+  const auto * c_members = introspection_c_members(effective);
+  if (c_members != nullptr) {
+    if (reflect_introspection_c_message(c_members, payload, &offset, "", &fields) &&
+      offset == payload.size())
+    {
+      return fields;
+    }
+    return std::nullopt;
+  }
+  const auto * cpp_members = introspection_cpp_members(effective);
+  if (cpp_members != nullptr &&
+    reflect_introspection_cpp_message(cpp_members, payload, &offset, "", &fields) &&
+    offset == payload.size())
+  {
+    return fields;
+  }
+  return std::nullopt;
+}
+
 std::string trim_text(const std::string & value)
 {
   const auto begin = std::find_if_not(
@@ -6892,12 +7295,22 @@ private:
 };
 
 bool content_filter_matches_payload(
+  const rosidl_message_type_support_t * type_support,
   const std::string & expression,
   const std::vector<std::string> & parameters,
   const std::vector<std::uint8_t> & payload)
 {
   if (expression.empty()) {
     return true;
+  }
+  const auto typed_fields = content_filter_typed_fields(type_support, payload);
+  if (typed_fields.has_value()) {
+    g_content_filter_typed_reflections.fetch_add(1, std::memory_order_relaxed);
+    bool valid = false;
+    ContentFilterExpressionParser parser(*typed_fields, parameters, expression);
+    if (parser.evaluate(&valid) && valid) {
+      return true;
+    }
   }
   for (const std::string & text : content_filter_payload_texts(payload)) {
     const auto fields = parse_content_filter_fields(text);
@@ -6935,6 +7348,7 @@ bool subscription_content_filter_matches_locked(
     return true;
   }
   return content_filter_matches_payload(
+    subscription->type_support,
     subscription->content_filter_expression,
     subscription->content_filter_parameters,
     payload);
@@ -10838,6 +11252,11 @@ std::uint64_t rmw_fleetqox_cpp_content_filters_matched()
 std::uint64_t rmw_fleetqox_cpp_content_filters_dropped()
 {
   return g_content_filters_dropped.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_content_filter_typed_reflections()
+{
+  return g_content_filter_typed_reflections.load(std::memory_order_relaxed);
 }
 
 std::uint64_t rmw_fleetqox_cpp_security_policy_denied()

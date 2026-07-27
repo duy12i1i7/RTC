@@ -432,9 +432,13 @@ and parentheses for `AND`, `OR`, and `NOT`, plus parameterized `LIKE`,
 `BETWEEN`, `IN`/`NOT IN`, `IS NULL`, and `IS NOT NULL`. It evaluates eleven
 payloads per run with exact four-match/seven-drop outcomes and keeps missing
 fields under negation at SQL `unknown`; malformed syntax and a missing parameter
-reference fail closed without replacing the active filter. The remaining gap
-is typed-field reflection and the full DDS SQL content-filter dialect, not
-basic dynamic key-value/std_msgs text enforcement.
+reference fail closed without replacing the active filter. A third `5/5`
+artifact closes typed-field reflection for real introspection C/C++ nested
+scalars and C++ sequence index/length plus nested sequence-message paths, with
+twelve exact reflections plus one malformed-payload fail-closed control per run
+and no application-message construction.
+The remaining gap is the full DDS SQL content-filter dialect and
+vendor-specific functions/semantics, not typed or text data-plane enforcement.
 
 The bounded standalone serialization-size slice is complete:
 `rmw_get_serialized_message_size` recursively computes exact sizes for

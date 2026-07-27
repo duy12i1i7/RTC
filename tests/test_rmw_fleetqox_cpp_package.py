@@ -56,6 +56,7 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertIn("fleetrmw_liveliness_default_lease_probe", cmake)
         self.assertIn("fleetrmw_content_filter_probe", cmake)
         self.assertIn("fleetrmw_content_filter_sql_probe", cmake)
+        self.assertIn("fleetrmw_content_filter_typed_probe", cmake)
         self.assertIn("fleetrmw_service_qos_probe", cmake)
         self.assertIn("fleetrmw_domain_isolation_probe", cmake)
         self.assertIn("fleetrmw_domain_isolation_smoke", cmake)
@@ -1116,6 +1117,10 @@ int main()
         self.assertIn("ContentFilterTokenKind::between", pubsub_source)
         self.assertIn("content_filter_like", pubsub_source)
         self.assertIn("ContentFilterTruth::unknown", pubsub_source)
+        self.assertIn("content_filter_typed_fields", pubsub_source)
+        self.assertIn("reflect_introspection_c_message", pubsub_source)
+        self.assertIn("reflect_introspection_cpp_message", pubsub_source)
+        self.assertIn("g_content_filter_typed_reflections", pubsub_source)
         self.assertIn("rmw_take_dynamic_message", stub_source)
         self.assertIn("rmw_serialization_support_init", stub_source)
         self.assertIn("RMW_RET_UNSUPPORTED", stub_source)
@@ -3652,6 +3657,53 @@ int main()
             "content_filter_sql_subset_repeated_claim",
             content_filter_sql_runner_source,
         )
+        content_filter_typed_probe = (
+            PKG / "src" / "content_filter_typed_probe.cpp"
+        )
+        self.assertTrue(content_filter_typed_probe.exists())
+        content_filter_typed_probe_source = content_filter_typed_probe.read_text()
+        self.assertIn(
+            "fleetrmw.content_filter_typed_probe.v1",
+            content_filter_typed_probe_source,
+        )
+        self.assertIn("linear.x >= %0", content_filter_typed_probe_source)
+        self.assertIn("position.x BETWEEN %0", content_filter_typed_probe_source)
+        self.assertIn("data._length = %0", content_filter_typed_probe_source)
+        self.assertIn("layout.dim[0].label", content_filter_typed_probe_source)
+        self.assertIn("typed_reflections", content_filter_typed_probe_source)
+        self.assertIn(
+            "malformed_typed_payload_fail_closed",
+            content_filter_typed_probe_source,
+        )
+        content_filter_typed_runner = (
+            ROOT / "scripts" / "run_rmw_docker_content_filter_typed_probe.py"
+        )
+        self.assertTrue(content_filter_typed_runner.exists())
+        content_filter_typed_runner_source = content_filter_typed_runner.read_text()
+        self.assertIn(
+            "fleetrmw.docker_content_filter_typed_probe.v1",
+            content_filter_typed_runner_source,
+        )
+        self.assertIn(
+            "content_filter_introspection_cpp_nested_fields_claim",
+            content_filter_typed_runner_source,
+        )
+        self.assertIn(
+            "content_filter_introspection_c_nested_fields_claim",
+            content_filter_typed_runner_source,
+        )
+        self.assertIn(
+            "content_filter_introspection_cpp_array_fields_claim",
+            content_filter_typed_runner_source,
+        )
+        self.assertIn(
+            "content_filter_malformed_typed_payload_fail_closed_claim",
+            content_filter_typed_runner_source,
+        )
+        self.assertIn(
+            "content_filter_typed_reflection_repeated_claim",
+            content_filter_typed_runner_source,
+        )
         loan_runner = ROOT / "scripts" / "run_rmw_docker_loaned_message_probe.py"
         self.assertTrue(loan_runner.exists())
         self.assertIn("zero_copy_claim_allowed", loan_runner.read_text())
@@ -4118,6 +4170,10 @@ int main()
         self.assertIn("content_filter_sql_subset_claim", unified_report_source)
         self.assertIn(
             "content_filter_invalid_expression_fail_closed_claim",
+            unified_report_source,
+        )
+        self.assertIn(
+            "content_filter_typed_reflection_repeated_claim",
             unified_report_source,
         )
         self.assertIn("quic_gateway_take_path_download", unified_report_source)
@@ -4765,6 +4821,29 @@ int main()
         )
         self.assertTrue(
             manifest["supported"]["content_filter_sql_subset_repeated_5run"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "content_filter_introspection_cpp_nested_field_reflection"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "content_filter_introspection_c_nested_field_reflection"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "content_filter_introspection_cpp_array_field_reflection"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "content_filter_malformed_typed_payload_fail_closed"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"]["content_filter_typed_reflection_repeated_5run"]
         )
         self.assertTrue(manifest["supported"]["same_host_posix_shared_memory_pubsub"])
         self.assertTrue(manifest["supported"]["shared_memory_to_udp_fallback"])
@@ -5467,6 +5546,20 @@ int main()
             claims["content_filter_invalid_expression_fail_closed_claim"]
         )
         self.assertTrue(claims["content_filter_sql_subset_repeated_claim"])
+        self.assertTrue(claims["docker_content_filter_typed_reflection_5run_probe"])
+        self.assertTrue(
+            claims["content_filter_introspection_cpp_nested_fields_claim"]
+        )
+        self.assertTrue(
+            claims["content_filter_introspection_c_nested_fields_claim"]
+        )
+        self.assertTrue(
+            claims["content_filter_introspection_cpp_array_fields_claim"]
+        )
+        self.assertTrue(
+            claims["content_filter_malformed_typed_payload_fail_closed_claim"]
+        )
+        self.assertTrue(claims["content_filter_typed_reflection_repeated_claim"])
         self.assertFalse(claims["full_dds_content_filter_expression_claim"])
         self.assertTrue(claims["docker_security_options_lifecycle_probe"])
         self.assertTrue(claims["docker_security_options_lifecycle_5run_probe"])

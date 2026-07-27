@@ -236,6 +236,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker ROS default/non-expiring liveliness lifecycle and unresolved-policy controls | `results_rmw_socket/docker_liveliness_default_lease_probe_summary.json` |
 | Docker ROS content-filter ABI and key-value/std_msgs enforcement | `results_rmw_socket/docker_content_filter_probe_summary.json` |
 | Docker ROS SQL-like content-filter subset, precedence, and invalid-expression controls | `results_rmw_socket/docker_content_filter_sql_probe_summary.json` |
+| Docker ROS typed content-filter reflection over introspection C/C++ nested and sequence fields | `results_rmw_socket/docker_content_filter_typed_probe_summary.json` |
 | Docker ROS security-options lifecycle ABI | `results_rmw_socket/docker_security_options_probe_summary.json` |
 | Docker ROS FleetQoX security allow/deny policy enforcement | `results_rmw_socket/docker_security_policy_probe_summary.json` |
 | Docker ROS SROS2-generated permissions XML publish/subscribe enforcement | `results_rmw_socket/docker_sros2_permissions_probe_summary.json` |
@@ -910,7 +911,19 @@ missing fields under `NOT` remain SQL `unknown` and cannot fail open. A malforme
 predicate and an out-of-range parameter reference both return
 `RMW_RET_INVALID_ARGUMENT`, leave the active filter intact, and the subsequent
 empty-expression disable succeeds. This remains a scoped text-field subset,
-not full typed DDS SQL reflection.
+not the full DDS SQL dialect.
+
+A third `5/5` artifact executes filters against real typed ROSIDL messages.
+`geometry_msgs/Twist` through introspection C++ and `geometry_msgs/Pose` through
+introspection C each evaluate four nested-field samples and deliver exactly two.
+The C++ `std_msgs/Float64MultiArray` case additionally resolves `data._length`,
+`data[1]`, `layout.dim._length`, and `layout.dim[0].label`, delivering one of
+four samples. Every run records exactly twelve successful typed reflections,
+plus a thirteenth evaluation where a serialized message with an invalid
+member-count is dropped without being counted as a successful reflection.
+Reflection parses the FleetRMW serialized payload directly rather than
+constructing an application message; arbitrary DDS SQL functions and
+vendor-specific semantics remain unclaimed.
 
 The security-options artifact verifies the `rmw_init_options` lifecycle for
 default security options, custom enclave configuration, deep-copy behavior,
