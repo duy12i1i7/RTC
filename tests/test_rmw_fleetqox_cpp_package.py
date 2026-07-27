@@ -4845,6 +4845,19 @@ int main()
         self.assertTrue(
             manifest["supported"]["content_filter_typed_reflection_repeated_5run"]
         )
+        self.assertTrue(
+            manifest["supported"]["fleetqox_generic_serialized_direct_peer_relay"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "fleetqox_generic_serialized_middle_termination_republish"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_fleetqox_generic_serialized_relay_8robot_5run_netem"
+            ]
+        )
         self.assertTrue(manifest["supported"]["same_host_posix_shared_memory_pubsub"])
         self.assertTrue(manifest["supported"]["shared_memory_to_udp_fallback"])
         self.assertTrue(manifest["supported"]["shared_memory_udp_remote_hybrid"])
@@ -5560,6 +5573,12 @@ int main()
             claims["content_filter_malformed_typed_payload_fail_closed_claim"]
         )
         self.assertTrue(claims["content_filter_typed_reflection_repeated_claim"])
+        self.assertTrue(claims["fleetqox_generic_serialized_middle_relay_claim"])
+        self.assertTrue(
+            claims["fleetqox_middle_rmw_termination_republish_claim"]
+        )
+        self.assertTrue(claims["fleetqox_direct_peer_topology_claim"])
+        self.assertTrue(claims["fleetqox_generic_relay_repeated_netem_claim"])
         self.assertFalse(claims["full_dds_content_filter_expression_claim"])
         self.assertTrue(claims["docker_security_options_lifecycle_probe"])
         self.assertTrue(claims["docker_security_options_lifecycle_5run_probe"])

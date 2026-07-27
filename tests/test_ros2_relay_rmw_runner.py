@@ -66,6 +66,10 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
         self.assertIn('"rclcpp_generic_serialized_passthrough"', source)
         self.assertIn('"middle_payload_remains_serialized":', source)
         self.assertIn("generic_serialized_relay_command", source)
+        self.assertIn("fleetqox_static_addresses", source)
+        self.assertIn('"middle_rmw_termination_republish":', source)
+        self.assertIn('"fleetqox_direct_peer_transport":', source)
+        self.assertIn("FLEETQOX_RMW_RELIABLE_ACK_TIMEOUT_MS", source)
         self.assertIn("netem_shell_prefix", source)
         self.assertIn("publisher_linger_s", source)
 
@@ -77,6 +81,21 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
         self.assertIn("publisher->publish(*message)", source)
         self.assertIn('"application_deserialization\\":false', source)
         self.assertIn("fleetrmw_generic_serialized_relay_probe", cmake)
+
+    def test_fleetqox_repeat_runner_preserves_broad_claim_boundary(self):
+        runner = (
+            ROOT / "scripts" /
+            "run_rmw_docker_fleetqox_generic_relay_probe.py"
+        )
+        self.assertTrue(runner.exists())
+        source = runner.read_text()
+        self.assertIn(
+            "fleetrmw.docker_fleetqox_generic_relay_probe.v1",
+            source,
+        )
+        self.assertIn("fleetqox_middle_rmw_termination_republish_claim", source)
+        self.assertIn('"same_hop_middle_processing_equivalence_claim": False', source)
+        self.assertIn('"same_hop_latency_superiority_claim": False', source)
 
 
 if __name__ == "__main__":

@@ -1647,6 +1647,17 @@ serialized messages through an RMW endpoint. Therefore delivery/reliability
 comparison remains allowed, while latency and architectural superiority remain
 disallowed.
 
+The follow-on FleetRMW middle-equivalence prerequisite replaces its raw router
+with the same C++ generic serialized relay. Three direct FleetRMW UDP peers use
+static per-network addresses to avoid startup-order DNS races; publisher and
+relay ACK timeout/retry settings are derived from the same roaming netem
+profile. An 8-robot, 16-topic, five-sample row under 7% source loss delivers
+and relays `80/80`, preserves `application_deserialization=false`, and completes
+the publisher ACK horizon. The repeated artifact runs this row `5/5`. This
+proves FleetRMW can execute RMW termination/republish with the common middle;
+the historical full matrix still uses raw routing, so full matrix equivalence
+and latency claims remain false until all nine FleetRMW rows are replaced.
+
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK
 through a dropped sequence 1. ACK feedback now carries

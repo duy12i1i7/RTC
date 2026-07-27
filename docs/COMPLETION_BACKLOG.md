@@ -1367,6 +1367,14 @@ superiority, full middle-hop equivalence, and broad cross-RMW superiority
 remain false because raw FleetRMW frame forwarding still differs from RMW
 endpoint termination/republish.
 
+The common-middle prerequisite is now executable for FleetRMW itself. A direct
+publisher-relay-subscriber peer topology runs the same C++ generic serialized
+subscription/publisher used by all three baselines, terminates and republishes
+through FleetRMW, derives ACK timeout/retry settings from roaming netem, and
+delivers `80/80` payloads for an 8-robot row. Its repeated Docker gate passes
+`5/5`. The broad equivalence claim remains false until the old raw-router
+FleetRMW rows in the full 8/16/32-by-three-seed matrix are replaced.
+
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
 sequence 1 even when sequence 1 was dropped. ACK feedback now carries the

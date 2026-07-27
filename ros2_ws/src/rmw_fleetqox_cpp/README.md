@@ -424,6 +424,8 @@ Current verification:
   `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v1_summary.json`;
 - current generic-serialized matched-hop four-system Docker/netem smoke:
   `results_rmw_socket/same_hop_generic_serialized_smoke_summary.json`;
+- FleetRMW direct-peer generic serialized terminate/republish `5/5` gate:
+  `results_rmw_socket/docker_fleetqox_generic_serialized_relay_probe_summary.json`;
 - full `8/16/32`-robot, three-seed generic-serialized matched-hop matrix:
   `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v2_summary.json`;
 - deterministic middle-sequence NACK and initial-sequence timeout-repair

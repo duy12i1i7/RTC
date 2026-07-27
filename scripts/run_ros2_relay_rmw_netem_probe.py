@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -53,6 +55,7 @@ SERIALIZED_RELAY_EXECUTABLE = (
     "/work/.tmp_fleetrmw_matched_install/rmw_fleetqox_cpp/lib/"
     "rmw_fleetqox_cpp/fleetrmw_generic_serialized_relay_probe"
 )
+FLEETQOX_RMW = "rmw_fleetqox_cpp"
 
 
 def ingress_specs(specs: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -60,6 +63,32 @@ def ingress_specs(specs: list[dict[str, str]]) -> list[dict[str, str]]:
         {**spec, "topic": f"{spec['topic']}/_fleetqox_ingress"}
         for spec in specs
     ]
+
+
+def fleetqox_static_addresses(network: str) -> dict[str, str]:
+    inspected = json.loads(run(["docker", "network", "inspect", network]).stdout)
+    if not inspected or not isinstance(inspected[0], dict):
+        raise RuntimeError("Docker network inspection returned no network")
+    ipam = inspected[0].get("IPAM", {})
+    configurations = ipam.get("Config", []) if isinstance(ipam, dict) else []
+    for configuration in configurations:
+        if not isinstance(configuration, dict) or not configuration.get("Subnet"):
+            continue
+        subnet = ipaddress.ip_network(str(configuration["Subnet"]), strict=False)
+        if subnet.version != 4:
+            continue
+        addresses = [
+            ipaddress.ip_address(int(subnet.network_address) + offset)
+            for offset in (10, 11, 12)
+        ]
+        if any(address not in subnet or address == subnet.broadcast_address for address in addresses):
+            continue
+        return {
+            "publisher": str(addresses[0]),
+            "relay": str(addresses[1]),
+            "subscriber": str(addresses[2]),
+        }
+    raise RuntimeError("Docker network has no usable IPv4 subnet for FleetRMW peers")
 
 
 def write_relay_probe_scripts(
@@ -167,12 +196,22 @@ def generic_serialized_relay_command(
     samples: int,
     timeout_s: float,
     linger_s: float,
+    environment: dict[str, str] | None = None,
 ) -> str:
+    exported_environment = {
+        "RMW_IMPLEMENTATION": rmw,
+        "ROS_DOMAIN_ID": str(domain_id),
+        **(environment or {}),
+    }
     command = (
         "source /opt/ros/jazzy/setup.bash && "
         f"source /work/{SERIALIZED_RELAY_INSTALL}/setup.bash && "
-        f"export RMW_IMPLEMENTATION={shlex.quote(rmw)} "
-        f"ROS_DOMAIN_ID={domain_id} && "
+        "export "
+        + " ".join(
+            f"{key}={shlex.quote(value)}"
+            for key, value in exported_environment.items()
+        )
+        + " && "
     )
     if zenoh_session_config_uri:
         command += (
@@ -227,11 +266,35 @@ def run_probe(
         raise ValueError("netem_loss_scale must be non-negative")
     if relay_mode not in {"generic_serialized", "rclpy_typed"}:
         raise ValueError("unsupported relay_mode")
+    if rmw == FLEETQOX_RMW and relay_mode != "generic_serialized":
+        raise ValueError("FleetRMW matched-middle mode requires the generic serialized relay")
     destinations = topic_specs_for_robot_count(robot_count)
     sources = ingress_specs(destinations)
     expected_control = samples * robot_count
     expected_state = samples * robot_count
-    availability = probe_rmw_available(image, rmw)
+    if rmw == FLEETQOX_RMW:
+        try:
+            ensure_generic_serialized_relay(root=root, image=image)
+        except subprocess.CalledProcessError as exc:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "status": "failed",
+                "reason": "fleetqox_workspace_build_failed",
+                "image": image,
+                "rmw": rmw,
+                "profile": profile,
+                "robot_count": robot_count,
+                "returncode": exc.returncode,
+                "stdout_excerpt": excerpt(exc.stdout),
+                "stderr_excerpt": excerpt(exc.stderr),
+            }
+        availability = {
+            "available": True,
+            "source": "workspace_colcon_install",
+            "install": f"/work/{SERIALIZED_RELAY_INSTALL}",
+        }
+    else:
+        availability = probe_rmw_available(image, rmw)
     if not availability["available"]:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -263,12 +326,23 @@ def run_probe(
     zenoh_config = work_dir / "zenoh-session-router.json5"
     zenoh_config_container = f"/work/{zenoh_config.relative_to(root)}"
     use_zenoh_router = rmw == "rmw_zenoh_cpp"
+    use_fleetqox_direct_peers = rmw == FLEETQOX_RMW
+    fleetqox_environments: dict[str, dict[str, str]] = {}
+    fleetqox_addresses: dict[str, str] = {}
     netem = netem_config_for_path(
         profile_by_name(profile),
         path_id="primary_wifi",
         loss_scale=netem_loss_scale,
         repetition_seed=repetition_seed,
     )
+    fleetqox_one_way_budget_ms = (
+        float(netem["delay_ms"]) + 2.0 * float(netem["jitter_ms"])
+    )
+    fleetqox_reliable_ack_timeout_ms = max(
+        100,
+        int(math.ceil(2.0 * fleetqox_one_way_budget_ms + 50.0)),
+    )
+    fleetqox_reliable_max_retransmissions = 3
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
         if relay_mode == "generic_serialized":
@@ -285,6 +359,36 @@ def run_probe(
             publisher_linger_s=publisher_linger_s,
         )
         run(["docker", "network", "create", network])
+        if use_fleetqox_direct_peers:
+            fleetqox_addresses = fleetqox_static_addresses(network)
+            fleetqox_environments = {
+                "publisher": {
+                    "FLEETQOX_RMW_BIND": "0.0.0.0:49811",
+                    "FLEETQOX_RMW_PEERS":
+                        f"{fleetqox_addresses['relay']}:49812",
+                },
+                "relay": {
+                    "FLEETQOX_RMW_BIND": "0.0.0.0:49812",
+                    "FLEETQOX_RMW_PEERS": (
+                        f"{fleetqox_addresses['publisher']}:49811,"
+                        f"{fleetqox_addresses['subscriber']}:49813"
+                    ),
+                },
+                "subscriber": {
+                    "FLEETQOX_RMW_BIND": "0.0.0.0:49813",
+                    "FLEETQOX_RMW_PEERS":
+                        f"{fleetqox_addresses['relay']}:49812",
+                },
+            }
+            for environment in fleetqox_environments.values():
+                environment.update(
+                    {
+                        "FLEETQOX_RMW_RELIABLE_ACK_TIMEOUT_MS":
+                            str(fleetqox_reliable_ack_timeout_ms),
+                        "FLEETQOX_RMW_RELIABLE_MAX_RETRANSMISSIONS":
+                            str(fleetqox_reliable_max_retransmissions),
+                    }
+                )
         if use_zenoh_router:
             write_zenoh_session_config(zenoh_config, router_host=zenoh_router_name)
             start_container(
@@ -299,7 +403,23 @@ def run_probe(
             )
             wait_for_container_tcp(zenoh_router_name, port=7447, timeout_s=15.0)
 
-        def command_for(script: Path) -> str:
+        def command_for(script: Path, *, role: str) -> str:
+            if use_fleetqox_direct_peers:
+                environment = {
+                    "RMW_IMPLEMENTATION": rmw,
+                    "ROS_DOMAIN_ID": str(domain_id),
+                    **fleetqox_environments[role],
+                }
+                exports = " ".join(
+                    f"{key}={shlex.quote(value)}"
+                    for key, value in environment.items()
+                )
+                return (
+                    "source /opt/ros/jazzy/setup.bash && "
+                    f"source /work/{SERIALIZED_RELAY_INSTALL}/setup.bash && "
+                    f"export {exports} && "
+                    f"python3 /work/{script.relative_to(root)}"
+                )
             return ros_command(
                 rmw=rmw,
                 domain_id=domain_id,
@@ -314,7 +434,11 @@ def run_probe(
             image=image,
             name=subscriber_name,
             network=network,
-            command=command_for(subscriber_script),
+            command=command_for(subscriber_script, role="subscriber"),
+            extra_args=(
+                ("--ip", fleetqox_addresses["subscriber"])
+                if use_fleetqox_direct_peers else ()
+            ),
         )
         time.sleep(0.5)
         start_container(
@@ -334,9 +458,17 @@ def run_probe(
                     samples=samples,
                     timeout_s=timeout_s,
                     linger_s=publisher_linger_s + 0.5,
+                    environment=(
+                        fleetqox_environments["relay"]
+                        if use_fleetqox_direct_peers else None
+                    ),
                 )
                 if relay_mode == "generic_serialized"
-                else command_for(relay_script)
+                else command_for(relay_script, role="relay")
+            ),
+            extra_args=(
+                ("--ip", fleetqox_addresses["relay"])
+                if use_fleetqox_direct_peers else ()
             ),
         )
         time.sleep(1.0)
@@ -348,9 +480,17 @@ def run_probe(
             command=(
                 f"export FLEETQOX_PROBE_READY_FILE={publisher_ready_container} "
                 f"FLEETQOX_PROBE_START_FILE={publisher_start_container} && "
-                + command_for(publisher_script)
+                + command_for(publisher_script, role="publisher")
             ),
-            extra_args=("--cap-add", "NET_ADMIN") if enable_netem else (),
+            extra_args=(
+                (
+                    "--ip",
+                    fleetqox_addresses["publisher"],
+                    *(("--cap-add", "NET_ADMIN") if enable_netem else ()),
+                )
+                if use_fleetqox_direct_peers
+                else (("--cap-add", "NET_ADMIN") if enable_netem else ())
+            ),
         )
         wait_for_container_path(
             publisher_name, publisher_ready_container, timeout_s=12.0
@@ -412,6 +552,19 @@ def run_probe(
                 relay_mode == "generic_serialized",
             "middle_application_deserialization":
                 relay_mode != "generic_serialized",
+            "middle_rmw_termination_republish":
+                relay_mode == "generic_serialized",
+            "fleetqox_direct_peer_transport": use_fleetqox_direct_peers,
+            "fleetqox_static_peer_addresses":
+                fleetqox_addresses if use_fleetqox_direct_peers else {},
+            "fleetqox_reliable_ack_timeout_ms": (
+                fleetqox_reliable_ack_timeout_ms
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_reliable_max_retransmissions": (
+                fleetqox_reliable_max_retransmissions
+                if use_fleetqox_direct_peers else None
+            ),
             "image": image,
             "rmw": rmw,
             "profile": profile,
