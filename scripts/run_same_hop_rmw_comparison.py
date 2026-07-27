@@ -33,6 +33,18 @@ from scripts.run_ros2_relay_rmw_netem_probe import run_probe as run_relay  # noq
 SCHEMA_VERSION = "fleetrmw.same_hop_rmw_comparison.v2"
 
 
+def should_reuse_prior_row(
+    row: dict[str, Any] | None,
+    *,
+    rerun_failed_rows: bool,
+) -> bool:
+    return (
+        row is not None
+        and not (rerun_failed_rows and row.get("status") == "failed")
+        and not row_needs_infrastructure_rerun(row)
+    )
+
+
 def run_comparison(
     *,
     root: Path,
@@ -46,6 +58,7 @@ def run_comparison(
     publish_interval_ms: int,
     timeout_s: float,
     prior_rows: list[dict[str, Any]] | None = None,
+    rerun_failed_rows: bool = False,
 ) -> dict[str, Any]:
     cleanup_reusable_build(root=root, image=image)
     rows: list[dict[str, Any]] = []
@@ -59,8 +72,9 @@ def run_comparison(
             for seed in seeds:
                 fleet_key = ("rmw_fleetqox_cpp_router", robot_count, seed)
                 prior_fleet = prior_index.get(fleet_key)
-                if prior_fleet is not None and not row_needs_infrastructure_rerun(
-                    prior_fleet
+                if should_reuse_prior_row(
+                    prior_fleet,
+                    rerun_failed_rows=rerun_failed_rows,
                 ):
                     rows.append(prior_fleet)
                     print(f"reuse {fleet_key}", file=sys.stderr, flush=True)
@@ -84,7 +98,10 @@ def run_comparison(
                 for rmw in rmws:
                     key = (rmw, robot_count, seed)
                     prior = prior_index.get(key)
-                    if prior is not None and not row_needs_infrastructure_rerun(prior):
+                    if should_reuse_prior_row(
+                        prior,
+                        rerun_failed_rows=rerun_failed_rows,
+                    ):
                         rows.append(prior)
                         print(f"reuse {key}", file=sys.stderr, flush=True)
                         continue
@@ -186,6 +203,8 @@ def run_comparison(
         "publisher_reliability_horizon_s": 6.0,
         "publisher_reliability_horizon_mode":
             "bounded_wait_for_all_acked",
+        "prior_row_count": len(prior_rows or []),
+        "rerun_failed_rows": rerun_failed_rows,
         "publisher_ack_wait_supported_count":
             publisher_ack_wait_supported_count,
         "publisher_ack_wait_complete_count":
@@ -293,6 +312,14 @@ def main() -> int:
         default="results_rmw_socket/same_hop_rmw_comparison_report.md",
     )
     parser.add_argument("--resume-summary", type=Path)
+    parser.add_argument(
+        "--rerun-failed",
+        action="store_true",
+        help=(
+            "rerun measured failed rows from --resume-summary after an "
+            "implementation change; failures are retained by default"
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     summary = run_comparison(
@@ -307,6 +334,7 @@ def main() -> int:
         publish_interval_ms=max(args.publish_interval_ms, 0),
         timeout_s=max(args.timeout_s, 1.0),
         prior_rows=load_prior_rows(args.resume_summary),
+        rerun_failed_rows=args.rerun_failed,
     )
     summary_path = ROOT / args.summary_json
     markdown_path = ROOT / args.markdown

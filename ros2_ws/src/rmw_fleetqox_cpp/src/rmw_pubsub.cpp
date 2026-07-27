@@ -4573,13 +4573,10 @@ bool handle_ack_nack_feedback(const std::string & encoded_frame)
       {
         continue;
       }
-      const bool exact_ack =
-        state.source_sequence_number == ack_nack->ack_sequence_number;
-      const bool bounded_cumulative_ack =
-        ack_nack->lowest_observed_sequence > 0 &&
-        state.source_sequence_number >= ack_nack->lowest_observed_sequence &&
-        state.source_sequence_number <= ack_nack->highest_contiguous_sequence;
-      if (exact_ack || bounded_cumulative_ack)
+      const bool sequence_acknowledged =
+        rmw_fleetqox_cpp::ack_nack_acknowledges_sequence(
+        *ack_nack, state.source_sequence_number);
+      if (sequence_acknowledged)
       {
         const size_t pending_before = state.pending_subscriber_ids.size();
         if (!ack_nack->subscriber_id.empty()) {
@@ -8340,11 +8337,8 @@ void enqueue_received_frame(const std::string & encoded_frame)
         if (establish_reception_baseline) {
           // Without a writer heartbeat carrying its current sequence, samples
           // published before this reader's first observation are not provable losses.
-          sequence_state.reception_sequence_baseline_initialized = true;
-          sequence_state.highest_contiguous_sequence =
-            sequence_state.highest_observed_sequence;
-          sequence_state.pending_missing_ranges.clear();
-          feedback = rmw_fleetqox_cpp::feedback_from_sequence_state(sequence_state);
+          feedback =
+            rmw_fleetqox_cpp::establish_reception_sequence_baseline(sequence_state);
         }
         if (subscription->qos.reliability == RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT) {
           track_best_effort_sequence_gaps_locked(&sequence_state, feedback, receive_ns);

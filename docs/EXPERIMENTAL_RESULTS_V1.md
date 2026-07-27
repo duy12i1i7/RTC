@@ -206,6 +206,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker/loopback-netem smooth weighted service matrix | `results_rmw_socket/docker_service_weighted_fairness_probe_summary.json` |
 | Docker/loopback-netem deadline-aware service matrix | `results_rmw_socket/docker_service_deadline_scheduler_probe_summary.json` |
 | Docker/netem SIGKILL durable completed-service replay matrix | `results_rmw_socket/docker_service_durable_replay_probe_summary.json` |
+| Same-hop generic-serialized 8/16/32 three-seed v3 post-fix matrix | `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v3_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -1640,6 +1641,21 @@ through a dropped sequence 1. ACK feedback now carries
 that observed floor. A deterministic Docker probe preserves the sequence-2
 NACK-repair path and separately drops sequence 1; timeout retransmission
 recovers it and both phases receive all three payloads.
+
+The retained v2 `319/320` row exposed a second, subtler reorder case. If the
+first observed sample was sequence 4, the old code established a baseline at
+4 but later recomputed the lower cumulative-ACK bound from reordered sequence
+1. An ACK could then cover `1..4` even though sequence 3 had never arrived.
+The reader now stores an immutable `cumulative_ack_floor` when establishing
+its reception baseline. The production writer and deterministic frame
+regression share one `ack_nack_acknowledges_sequence` predicate; order
+`4,1,5,2` does not acknowledge 3, and sequence 3 is accepted only by its later
+exact ACK. The repaired 32-robot/seed-29 Docker/netem row delivers `320/320`.
+The v3 comparison records `prior_row_count=36`,
+`rerun_failed_rows=true`, preserves the other 35 rows, and passes `36/36`;
+FleetRMW, Fast DDS, Cyclone DDS, and Zenoh each pass `9/9`, while baseline
+relays remain `5040/5040`. This closes the measured delivery failure, not the
+middle-processing or latency-equivalence caveat.
 
 The latest budgeted fleet-plan actuation closes the gap between the Python
 optimizer and the C++ RMW data plane. Four concurrent robot control topics run

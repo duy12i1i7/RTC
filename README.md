@@ -672,9 +672,16 @@ This repository starts with the part that should be proven first:
   typed relay. The current v2 harness replaces it with an `rclcpp` generic relay
   that forwards opaque serialized `std_msgs/String` payloads without
   application deserialization and uses bounded `wait_for_all_acked` publisher
-  horizons. Its fresh full-scale run passes `35/36`: Fast DDS, Cyclone DDS, and
-  Zenoh pass `9/9`, FleetRMW passes `8/9`, and the baseline relays forward
-  `5040/5040` payloads. The retained FleetRMW failure delivers `319/320`.
+  horizons. Its original fresh full-scale run retained one FleetRMW
+  `319/320` failure at `35/36`. That row exposed a cumulative-ACK bug after a
+  reordered first observation: a later low sequence could move the ACK floor
+  backwards and falsely acknowledge an unseen sample. The floor is now fixed
+  at the initial reception baseline; a deterministic `4,1,5,2` frame
+  regression proves unseen sequence 3 remains pending until its exact ACK.
+  The v3 artifact explicitly reruns only the failed 32-robot/seed-29 row after
+  this implementation change and preserves the other 35 rows. It passes
+  `36/36`: FleetRMW, Fast DDS, Cyclone DDS, and Zenoh each pass `9/9`, and the
+  baseline relays forward `5040/5040` payloads.
   Serialized-payload state is matched (byte-identical cross-RMW serialization
   is not claimed), but FleetRMW raw-frame forwarding still differs from
   baseline RMW endpoint termination/republish;

@@ -6,9 +6,10 @@ project. It is ordered by dependency and regression value.
 
 ## Current Baseline
 
-- The full repository suite passes in the pinned ROS 2 Jazzy Docker image:
-  `622/622` unit/contract tests. The unified report currently indexes `323`
-  retained artifacts (`264` ok, `16` partial, `39` historical failed, and `4`
+- The full repository suite passes `653/653` unit/contract tests; ROS-facing
+  runtime probes use the pinned ROS 2 Jazzy Docker image. The unified report
+  currently indexes `353`
+  retained artifacts (`292` ok, `17` partial, `40` historical failed, and `4`
   unknown); its overall `partial` status deliberately includes old debug,
   negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
@@ -77,9 +78,14 @@ project. It is ordered by dependency and regression value.
   delivery/reliability comparison. Its historical 36-row artifact used a
   typed rclpy relay. The current harness instead uses a common `rclcpp` generic
   serialized relay with no application deserialization plus bounded
-  `wait_for_all_acked` publisher horizons. A fresh full-scale run passes
-  `35/36`: all three baselines pass `9/9` and relay `5040/5040` payloads;
-  FleetRMW passes `8/9` with one retained `319/320` row. FleetRMW raw-frame
+  `wait_for_all_acked` publisher horizons. The original fresh run retained
+  one FleetRMW `319/320` row at `35/36`. It exposed an ACK-baseline bug: after
+  first observing a high sequence, a later lower reordered sequence could
+  falsely widen the cumulative ACK below the baseline. The baseline floor is
+  now immutable, a deterministic `4,1,5,2` regression keeps unseen sequence 3
+  pending, and the explicitly resumed v3 artifact reruns only that failed row
+  after the code change. V3 passes `36/36`; all four systems pass `9/9` and
+  baseline relays retain `5040/5040` payloads. FleetRMW raw-frame
   forwarding and baseline RMW endpoint termination/republish are still not
   latency-equivalent middle processing.
 - Native ns-3 3.41 now runs in the project Docker image. The first repeated
@@ -1343,10 +1349,13 @@ The v2 harness replaces that typed middle with a C++ `rclcpp`
 generic-subscription/generic-publisher relay. The relay republishes
 `rclcpp::SerializedMessage` directly, reports serialized byte/count evidence,
 and explicitly reports `application_deserialization=false`. A fresh full
-`8/16/32`-robot, seed `7/13/29` Docker/netem matrix passes `35/36`. Fast DDS,
-Cyclone DDS, and Zenoh pass `9/9` each and relay `5040/5040` payloads. FleetRMW
-passes `8/9`; its retained 32-robot seed-29 row delivers `319/320`. All 36
-publishers report supported/completed ACK waits and zero unacked topics. The
+`8/16/32`-robot, seed `7/13/29` Docker/netem matrix originally passed `35/36`.
+Fast DDS, Cyclone DDS, and Zenoh each passed `9/9` with `5040/5040` relay
+payloads; FleetRMW retained a 32-robot seed-29 `319/320` row. That row exposed
+the cumulative-ACK reception-baseline bug fixed below. The v3 artifact records
+`prior_row_count=36` and `rerun_failed_rows=true`, reruns only the failed row
+after the implementation change, and passes `36/36`; every system is `9/9`.
+All 36 publishers report supported/completed ACK waits and zero unacked topics. The
 machine-readable contract sets hop/profile/RELIABLE and serialized-payload
 state matching true. It does not claim byte-identical serialization across
 RMWs. Delivery/reliability comparison remains allowed, while latency
@@ -1369,10 +1378,10 @@ Next continue P0/P2 in this order:
    boundary. Then push beyond the proven unwindowed total-4096 upstream request
    workload without presenting request completion as simultaneous physical
    navigation.
-2. Preserve both completed comparison contracts, increase beyond the current
-   five samples and three independent repetitions, and investigate the one
-   retained FleetRMW `319/320` delivery row. Match transport-envelope middle
-   semantics before any latency-superiority claim.
+2. Preserve both completed comparison contracts and the repaired `36/36`
+   same-hop delivery result, then increase beyond the current five samples and
+   three independent repetitions. Match transport-envelope middle semantics
+   before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.
 4. Increase frontier repetitions so the `32`-robot latency-mean confidence

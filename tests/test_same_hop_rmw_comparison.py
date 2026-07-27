@@ -27,6 +27,34 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             "rmw_fastrtps_cpp,rmw_cyclonedds_cpp,rmw_zenoh_cpp",
         )
 
+    def test_failed_resume_rows_require_explicit_rerun(self):
+        module = load_runner()
+        row = {
+            "status": "failed",
+            "reason": "",
+            "result": {
+                "control_expected_count": 160,
+                "state_expected_count": 160,
+                "control_payload_count": 159,
+                "state_payload_count": 160,
+                "publisher_returncode": 0,
+                "subscriber_returncode": 1,
+                "router_returncode": 0,
+            },
+        }
+        self.assertTrue(
+            module.should_reuse_prior_row(
+                row,
+                rerun_failed_rows=False,
+            )
+        )
+        self.assertFalse(
+            module.should_reuse_prior_row(
+                row,
+                rerun_failed_rows=True,
+            )
+        )
+
     def test_claim_boundary_matches_relay_semantics(self):
         source = RUNNER.read_text()
         self.assertIn('"comparison_design": "matched_one_middle_hop_caveated"', source)
@@ -45,6 +73,8 @@ class SameHopRmwComparisonTest(unittest.TestCase):
         self.assertIn("publisher_linger_s=6.0", source)
         self.assertIn('"publisher_reliability_horizon_s": 6.0', source)
         self.assertIn('"publisher_ack_horizon_contract_ok":', source)
+        self.assertIn("--rerun-failed", source)
+        self.assertIn('"rerun_failed_rows": rerun_failed_rows', source)
 
     def test_old_resume_rows_cannot_satisfy_serialized_relay_contract(self):
         module = load_runner()

@@ -814,11 +814,25 @@ AckNackFeedback observe_frame(SequenceState & state, const DataFrame & frame)
   return feedback;
 }
 
+AckNackFeedback establish_reception_sequence_baseline(SequenceState & state)
+{
+  state.reception_sequence_baseline_initialized = true;
+  state.cumulative_ack_floor = state.highest_observed_sequence;
+  state.highest_contiguous_sequence = state.highest_observed_sequence;
+  state.pending_missing_ranges.clear();
+  return feedback_from_sequence_state(state);
+}
+
 AckNackFeedback feedback_from_sequence_state(const SequenceState & state)
 {
   AckNackFeedback feedback;
   if (!state.observed_sequences.empty()) {
     feedback.lowest_observed_sequence = *state.observed_sequences.begin();
+    if (state.cumulative_ack_floor > 0) {
+      feedback.lowest_observed_sequence = std::max(
+        feedback.lowest_observed_sequence,
+        state.cumulative_ack_floor);
+    }
   }
   feedback.highest_contiguous_sequence = state.highest_contiguous_sequence;
   feedback.highest_observed_sequence = state.highest_observed_sequence;
@@ -929,6 +943,19 @@ std::optional<AckNackFrame> decode_ack_nack(const std::string & payload)
   frame.out_of_order = body.find("\"out_of_order\":true") != std::string::npos;
   frame.domain_id = json_uint_value(body, "domain_id").value_or(0);
   return frame;
+}
+
+bool ack_nack_acknowledges_sequence(
+  const AckNackFrame & frame,
+  std::uint64_t sequence)
+{
+  if (sequence == frame.ack_sequence_number) {
+    return true;
+  }
+  return frame.lowest_observed_sequence > 0 &&
+         frame.lowest_observed_sequence <= frame.highest_contiguous_sequence &&
+         sequence >= frame.lowest_observed_sequence &&
+         sequence <= frame.highest_contiguous_sequence;
 }
 
 std::string encode_unrecoverable_loss_notice(const UnrecoverableLossNotice & notice)

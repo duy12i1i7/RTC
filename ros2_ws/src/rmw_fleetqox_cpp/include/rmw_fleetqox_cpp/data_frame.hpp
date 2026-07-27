@@ -85,6 +85,7 @@ struct SequenceState
 {
   bool initialized = false;
   bool reception_sequence_baseline_initialized = false;
+  std::uint64_t cumulative_ack_floor = 0;
   std::uint64_t highest_contiguous_sequence = 0;
   std::uint64_t highest_observed_sequence = 0;
   std::int64_t last_repair_request_ns = 0;
@@ -232,6 +233,8 @@ bool action_frame_expired(const ActionFrame & frame, std::int64_t now_ns);
 
 AckNackFeedback observe_frame(SequenceState & state, const DataFrame & frame);
 
+AckNackFeedback establish_reception_sequence_baseline(SequenceState & state);
+
 AckNackFeedback feedback_from_sequence_state(const SequenceState & state);
 
 std::string encode_ack_nack(
@@ -240,6 +243,10 @@ std::string encode_ack_nack(
   const std::string & subscriber_id = "");
 
 std::optional<AckNackFrame> decode_ack_nack(const std::string & payload);
+
+bool ack_nack_acknowledges_sequence(
+  const AckNackFrame & frame,
+  std::uint64_t sequence);
 
 std::string encode_unrecoverable_loss_notice(const UnrecoverableLossNotice & notice);
 

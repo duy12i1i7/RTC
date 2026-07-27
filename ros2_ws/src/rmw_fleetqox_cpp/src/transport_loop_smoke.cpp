@@ -34,6 +34,8 @@ struct Summary
   int ack_nack_feedback = 0;
   int missing_sequence_range_count = 0;
   int late_out_of_order_count = 0;
+  bool baseline_reorder_ack_safe = false;
+  bool delayed_missing_sequence_exactly_acked = false;
 };
 
 int parse_int_arg(char ** argv, int argc, const std::string & name, int default_value)
@@ -158,8 +160,57 @@ std::string json_summary(const Summary & summary)
   out << "\"retransmitted\":" << summary.retransmitted << ",";
   out << "\"ack_nack_feedback\":" << summary.ack_nack_feedback << ",";
   out << "\"missing_sequence_range_count\":" << summary.missing_sequence_range_count << ",";
-  out << "\"late_out_of_order_count\":" << summary.late_out_of_order_count << "}";
+  out << "\"late_out_of_order_count\":" << summary.late_out_of_order_count << ",";
+  out << "\"baseline_reorder_ack_safe\":" <<
+    (summary.baseline_reorder_ack_safe ? "true" : "false") << ",";
+  out << "\"delayed_missing_sequence_exactly_acked\":" <<
+    (summary.delayed_missing_sequence_exactly_acked ? "true" : "false") << "}";
   return out.str();
+}
+
+bool feedback_acknowledges_sequence(
+  const AckNackFeedback & feedback,
+  std::uint64_t observed_sequence,
+  std::uint64_t target_sequence)
+{
+  const auto decoded = rmw_fleetqox_cpp::decode_ack_nack(
+    rmw_fleetqox_cpp::encode_ack_nack(
+      sample_frame("baseline", observed_sequence),
+      feedback,
+      "baseline-subscriber"));
+  return decoded.has_value() &&
+         rmw_fleetqox_cpp::ack_nack_acknowledges_sequence(
+    *decoded, target_sequence);
+}
+
+void run_baseline_reorder_regression(Summary * summary)
+{
+  if (summary == nullptr) {
+    return;
+  }
+  SequenceState state;
+  const std::vector<std::uint64_t> reordered{4, 1, 5, 2};
+  bool sequence_three_acknowledged = false;
+  for (std::size_t index = 0; index < reordered.size(); ++index) {
+    const std::uint64_t sequence = reordered[index];
+    AckNackFeedback feedback =
+      rmw_fleetqox_cpp::observe_frame(state, sample_frame("baseline", sequence));
+    if (index == 0) {
+      feedback =
+        rmw_fleetqox_cpp::establish_reception_sequence_baseline(state);
+    }
+    sequence_three_acknowledged = sequence_three_acknowledged ||
+      feedback_acknowledges_sequence(feedback, sequence, 3);
+  }
+  summary->baseline_reorder_ack_safe =
+    !sequence_three_acknowledged &&
+    state.cumulative_ack_floor == 4 &&
+    state.highest_contiguous_sequence == 5;
+
+  const AckNackFeedback delayed =
+    rmw_fleetqox_cpp::observe_frame(state, sample_frame("baseline", 3));
+  summary->delayed_missing_sequence_exactly_acked =
+    feedback_acknowledges_sequence(delayed, 3, 3);
 }
 
 void process_listener_once(
@@ -200,6 +251,7 @@ int main(int argc, char ** argv)
     summary.skip_every = parse_int_arg(argv, argc, "--skip-every", 0);
     summary.skip_first = has_flag(argv, argc, "--skip-first");
     const bool json = has_flag(argv, argc, "--json");
+    run_baseline_reorder_regression(&summary);
 
     const int talker_fd = udp_socket();
     const int listener_fd = udp_socket();
@@ -254,7 +306,8 @@ int main(int argc, char ** argv)
       std::cout << "  retransmitted: " << summary.retransmitted << std::endl;
       std::cout << "  missing_sequence_range_count: " << summary.missing_sequence_range_count << std::endl;
     }
-    return 0;
+    return summary.baseline_reorder_ack_safe &&
+      summary.delayed_missing_sequence_exactly_acked ? 0 : 1;
   } catch (const std::exception & exc) {
     std::cerr << "error: " << exc.what() << std::endl;
     return 1;

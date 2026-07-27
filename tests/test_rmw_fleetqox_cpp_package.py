@@ -306,6 +306,10 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertEqual(first_loss_summary["retransmitted"], 1)
         self.assertEqual(first_loss_summary["missing_sequence_range_count"], 1)
         self.assertEqual(first_loss_summary["late_out_of_order_count"], 1)
+        self.assertTrue(summary["baseline_reorder_ack_safe"])
+        self.assertTrue(summary["delayed_missing_sequence_exactly_acked"])
+        self.assertTrue(first_loss_summary["baseline_reorder_ack_safe"])
+        self.assertTrue(first_loss_summary["delayed_missing_sequence_exactly_acked"])
 
     def test_cpp_frame_probe_decodes_python_data_frame(self) -> None:
         compiler = shutil.which("c++")
@@ -3937,8 +3941,11 @@ int main()
         data_frame_source = (PKG / "src" / "data_frame.cpp").read_text()
         pubsub_source = (PKG / "src" / "rmw_pubsub.cpp").read_text()
         self.assertIn("lowest_observed_sequence", data_frame_header)
+        self.assertIn("cumulative_ack_floor", data_frame_header)
+        self.assertIn("establish_reception_sequence_baseline", data_frame_source)
+        self.assertIn("ack_nack_acknowledges_sequence", data_frame_source)
         self.assertIn('"lowest_observed_sequence\\":', data_frame_source)
-        self.assertIn("bounded_cumulative_ack", pubsub_source)
+        self.assertIn("sequence_acknowledged", pubsub_source)
 
         comparison_script = ROOT / "scripts" / "run_large_scale_rmw_comparison.py"
         self.assertTrue(comparison_script.exists())
@@ -5201,6 +5208,15 @@ int main()
             ]
         )
         self.assertTrue(
+            manifest["supported"]["reception_baseline_cumulative_ack_floor"]
+        )
+        self.assertTrue(manifest["supported"]["ack_baseline_reorder_safety"])
+        self.assertTrue(
+            manifest["supported"][
+                "docker_same_hop_generic_serialized_rmw_comparison_36of36_postfix"
+            ]
+        )
+        self.assertTrue(
             manifest["supported"]["initial_source_sequence_timeout_repair"]
         )
         self.assertTrue(
@@ -5223,6 +5239,15 @@ int main()
         self.assertTrue(
             claims[
                 "docker_same_hop_generic_serialized_rmw_comparison_8_16_32_3seed"
+            ]
+        )
+        self.assertTrue(
+            claims["reception_baseline_cumulative_ack_floor_claim"]
+        )
+        self.assertTrue(claims["ack_baseline_reorder_safety_claim"])
+        self.assertTrue(
+            claims[
+                "docker_same_hop_generic_serialized_rmw_comparison_36of36_postfix"
             ]
         )
         self.assertTrue(
