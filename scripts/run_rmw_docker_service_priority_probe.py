@@ -151,7 +151,6 @@ def run_probe(*, root: Path, image: str, iterations: int) -> dict[str, Any]:
             "service_priority_wire_metadata_claim": status == "ok",
             "service_strict_priority_dequeue_claim": status == "ok",
             "service_priority_aging_starvation_bound_claim": status == "ok",
-            "weighted_service_ratio_claim": False,
             "runs": runs,
         }
     except subprocess.CalledProcessError as exc:

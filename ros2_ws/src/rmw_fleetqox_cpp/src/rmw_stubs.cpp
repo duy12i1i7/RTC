@@ -233,6 +233,10 @@ struct FleetQoxServiceData
   size_t dedupe_history_limit;
   size_t response_replay_limit;
   std::int64_t service_priority_aging_ns;
+  bool weighted_service_scheduler;
+  std::map<std::string, std::int64_t> weighted_service_current;
+  std::uint64_t service_client_priority;
+  std::uint64_t service_client_weight;
 };
 
 struct FleetQoxEventData
@@ -315,6 +319,7 @@ std::atomic<std::uint64_t> g_service_pending_response_max_observed{0};
 std::atomic<std::uint64_t> g_service_response_replay_max_observed{0};
 std::atomic<std::uint64_t> g_service_priority_dequeues{0};
 std::atomic<std::uint64_t> g_service_aged_priority_dequeues{0};
+std::atomic<std::uint64_t> g_service_weighted_dequeues{0};
 ServiceRequestRepairShutdownGuard g_service_request_repair_shutdown_guard;
 std::mutex g_event_mutex;
 std::vector<rmw_event_t *> g_event_handles;
@@ -403,12 +408,13 @@ void trace_service_event(
   if (frame != nullptr) {
     std::fprintf(
       stderr,
-      " role=%s client=%s service_endpoint=%s seq=%ld priority=%lu payload=%zu queue=%zu",
+      " role=%s client=%s service_endpoint=%s seq=%ld priority=%lu weight=%lu payload=%zu queue=%zu",
       frame->role.c_str(),
       frame->client_endpoint_id.c_str(),
       frame->service_endpoint_id.c_str(),
       static_cast<long>(frame->sequence_id),
       static_cast<unsigned long>(frame->client_priority),
+      static_cast<unsigned long>(frame->client_weight),
       frame->serialized_payload.size(),
       queue_size);
   }
@@ -694,6 +700,14 @@ int parse_nonnegative_int_env(const char * name, int default_value, int max_valu
     return default_value;
   }
   return static_cast<int>(std::min<long>(parsed, max_value));
+}
+
+bool weighted_service_scheduler_enabled()
+{
+  const char * raw = std::getenv("FLEETQOX_RMW_SERVICE_SCHEDULER");
+  return raw != nullptr &&
+         (std::strcmp(raw, "weighted") == 0 ||
+         std::strcmp(raw, "weighted_fair") == 0);
 }
 
 size_t service_resource_limit(
@@ -1090,6 +1104,11 @@ FleetQoxServiceData * allocate_service_data(
     std::max(configured_replay_limit, dedupe_history_limit);
   const int priority_aging_ms = parse_nonnegative_int_env(
     "FLEETQOX_RMW_SERVICE_PRIORITY_AGING_MS", 100, 60000);
+  const int client_priority = parse_nonnegative_int_env(
+    "FLEETQOX_RMW_SERVICE_CLIENT_PRIORITY", 0, 255);
+  const int client_weight = std::max(
+    1, parse_nonnegative_int_env(
+      "FLEETQOX_RMW_SERVICE_CLIENT_WEIGHT", 1, 64));
   auto * data = new (memory) FleetQoxServiceData{
     allocator,
     context,
@@ -1131,7 +1150,11 @@ FleetQoxServiceData * allocate_service_data(
     pending_response_limit,
     dedupe_history_limit,
     response_replay_limit,
-    static_cast<std::int64_t>(priority_aging_ms) * 1000000};
+    static_cast<std::int64_t>(priority_aging_ms) * 1000000,
+    weighted_service_scheduler_enabled(),
+    std::map<std::string, std::int64_t>{},
+    static_cast<std::uint64_t>(client_priority),
+    static_cast<std::uint64_t>(client_weight)};
   data->service_name = rcutils_strdup(service_name, allocator);
   if (data->service_name == nullptr) {
     data->~FleetQoxServiceData();
@@ -2495,8 +2518,8 @@ rmw_ret_t rmw_send_request(
     payload,
     data->domain_id};
   rmw_fleetqox_cpp::ServiceFrame prioritized_frame = frame;
-  prioritized_frame.client_priority = static_cast<std::uint64_t>(
-    parse_nonnegative_int_env("FLEETQOX_RMW_SERVICE_CLIENT_PRIORITY", 0, 255));
+  prioritized_frame.client_priority = data->service_client_priority;
+  prioritized_frame.client_weight = data->service_client_weight;
   trace_service_event("send_request", data, &prioritized_frame);
   const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(prioritized_frame);
   if (!schedule_service_request_repair(data->endpoint_id, next_sequence, encoded)) {
@@ -2755,47 +2778,86 @@ rmw_ret_t rmw_take_request(
       return RMW_RET_OK;
     }
     while (!data->request_queue.empty()) {
-      const std::int64_t now_ns = monotonic_timestamp_ns();
-      std::uint64_t maximum_priority = 0;
-      std::uint64_t minimum_priority = std::numeric_limits<std::uint64_t>::max();
-      for (const auto & candidate : data->request_queue) {
-        const std::uint64_t priority = effective_service_priority(
-          candidate, now_ns, data->service_priority_aging_ns);
-        maximum_priority = std::max(maximum_priority, priority);
-        minimum_priority = std::min(minimum_priority, priority);
-      }
-      auto selected = std::find_if(
-        data->request_queue.begin(),
-        data->request_queue.end(),
-        [data, now_ns, maximum_priority](
-          const rmw_fleetqox_cpp::ServiceFrame & candidate)
+      std::map<
+        std::string,
+        std::deque<rmw_fleetqox_cpp::ServiceFrame>::iterator> client_heads;
+      for (auto candidate = data->request_queue.begin();
+        candidate != data->request_queue.end(); ++candidate)
+      {
+        const auto existing = client_heads.find(candidate->client_endpoint_id);
+        if (existing == client_heads.end() ||
+          candidate->sequence_id < existing->second->sequence_id)
         {
-          return effective_service_priority(
-            candidate, now_ns, data->service_priority_aging_ns) == maximum_priority;
-        });
-      if (!data->last_dequeued_client_endpoint_id.empty()) {
-        const auto different_client = std::find_if(
-          data->request_queue.begin(),
-          data->request_queue.end(),
-          [data, now_ns, maximum_priority](
-            const rmw_fleetqox_cpp::ServiceFrame & candidate)
-          {
-            return candidate.client_endpoint_id !=
-                   data->last_dequeued_client_endpoint_id &&
-                   effective_service_priority(
-              candidate, now_ns, data->service_priority_aging_ns) == maximum_priority;
-          });
-        if (different_client != data->request_queue.end()) {
-          selected = different_client;
+          client_heads[candidate->client_endpoint_id] = candidate;
         }
       }
-      const std::uint64_t selected_effective_priority =
-        effective_service_priority(*selected, now_ns, data->service_priority_aging_ns);
-      if (maximum_priority > minimum_priority) {
-        g_service_priority_dequeues.fetch_add(1, std::memory_order_relaxed);
-      }
-      if (selected_effective_priority > selected->client_priority) {
-        g_service_aged_priority_dequeues.fetch_add(1, std::memory_order_relaxed);
+      auto selected = data->request_queue.end();
+      if (data->weighted_service_scheduler) {
+        std::int64_t total_weight = 0;
+        std::int64_t best_current = std::numeric_limits<std::int64_t>::min();
+        for (const auto & client_head : client_heads) {
+          const auto candidate = client_head.second;
+          const std::int64_t weight = static_cast<std::int64_t>(
+            std::max<std::uint64_t>(
+              1, std::min<std::uint64_t>(candidate->client_weight, 64)));
+          std::int64_t & current =
+            data->weighted_service_current[candidate->client_endpoint_id];
+          current += weight;
+          total_weight += weight;
+          if (selected == data->request_queue.end() || current > best_current) {
+            selected = candidate;
+            best_current = current;
+          }
+        }
+        for (auto state = data->weighted_service_current.begin();
+          state != data->weighted_service_current.end();)
+        {
+          if (client_heads.find(state->first) == client_heads.end()) {
+            state = data->weighted_service_current.erase(state);
+          } else {
+            ++state;
+          }
+        }
+        if (selected != data->request_queue.end()) {
+          data->weighted_service_current[selected->client_endpoint_id] -= total_weight;
+          g_service_weighted_dequeues.fetch_add(1, std::memory_order_relaxed);
+        }
+      } else {
+        const std::int64_t now_ns = monotonic_timestamp_ns();
+        std::uint64_t maximum_priority = 0;
+        std::uint64_t minimum_priority = std::numeric_limits<std::uint64_t>::max();
+        for (const auto & client_head : client_heads) {
+          const auto & candidate = *client_head.second;
+          const std::uint64_t priority = effective_service_priority(
+            candidate, now_ns, data->service_priority_aging_ns);
+          maximum_priority = std::max(maximum_priority, priority);
+          minimum_priority = std::min(minimum_priority, priority);
+        }
+        for (const auto & client_head : client_heads) {
+          const auto candidate = client_head.second;
+          if (effective_service_priority(
+              *candidate, now_ns, data->service_priority_aging_ns) != maximum_priority)
+          {
+            continue;
+          }
+          if (selected == data->request_queue.end()) {
+            selected = candidate;
+          }
+          if (!data->last_dequeued_client_endpoint_id.empty() &&
+            candidate->client_endpoint_id != data->last_dequeued_client_endpoint_id)
+          {
+            selected = candidate;
+            break;
+          }
+        }
+        const std::uint64_t selected_effective_priority =
+          effective_service_priority(*selected, now_ns, data->service_priority_aging_ns);
+        if (maximum_priority > minimum_priority) {
+          g_service_priority_dequeues.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (selected_effective_priority > selected->client_priority) {
+          g_service_aged_priority_dequeues.fetch_add(1, std::memory_order_relaxed);
+        }
       }
       frame = std::move(*selected);
       data->request_queue.erase(selected);
@@ -3839,6 +3901,11 @@ std::uint64_t rmw_fleetqox_cpp_service_priority_dequeues()
 std::uint64_t rmw_fleetqox_cpp_service_aged_priority_dequeues()
 {
   return g_service_aged_priority_dequeues.load(std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_service_weighted_dequeues()
+{
+  return g_service_weighted_dequeues.load(std::memory_order_relaxed);
 }
 
 }  // extern "C"

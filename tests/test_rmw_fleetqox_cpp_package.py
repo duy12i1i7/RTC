@@ -558,6 +558,7 @@ int main()
     {0x01, 0x02, 0x03}};
   frame.domain_id = 31;
   frame.client_priority = 7;
+  frame.client_weight = 3;
   const std::string encoded = rmw_fleetqox_cpp::encode_service_frame(frame);
   const auto decoded = rmw_fleetqox_cpp::decode_service_frame(encoded);
   if (!decoded || decoded->role != frame.role ||
@@ -567,6 +568,7 @@ int main()
     decoded->lifespan_ns != frame.lifespan_ns ||
     decoded->domain_id != frame.domain_id ||
     decoded->client_priority != frame.client_priority ||
+    decoded->client_weight != frame.client_weight ||
     decoded->serialized_payload != frame.serialized_payload)
   {
     return 1;
@@ -587,6 +589,7 @@ int main()
   if (!legacy_decoded || legacy_decoded->lifespan_ns != 0 ||
     legacy_decoded->domain_id != 0 ||
     legacy_decoded->client_priority != 0 ||
+    legacy_decoded->client_weight != 1 ||
     rmw_fleetqox_cpp::service_frame_expired(*legacy_decoded, 999999999))
   {
     return 4;
@@ -1557,6 +1560,42 @@ int main()
             docker_service_priority_source,
         )
         self.assertIn("fleetrmw_service_priority_probe", cmake_source)
+        weighted_service_probe = (
+            PKG / "src" / "service_weighted_fairness_probe.cpp"
+        )
+        self.assertTrue(weighted_service_probe.exists())
+        weighted_service_source = weighted_service_probe.read_text()
+        self.assertIn(
+            "fleetrmw.rmw_service_weighted_fairness_probe.v1",
+            weighted_service_source,
+        )
+        self.assertIn("weighted_service_ratio_claim", weighted_service_source)
+        self.assertIn("rmw_send_request", weighted_service_source)
+        docker_weighted_service_script = (
+            ROOT
+            / "scripts"
+            / "run_rmw_docker_service_weighted_fairness_probe.py"
+        )
+        self.assertTrue(docker_weighted_service_script.exists())
+        docker_weighted_service_source = (
+            docker_weighted_service_script.read_text()
+        )
+        self.assertIn(
+            "fleetrmw.rmw_docker_service_weighted_fairness_probe.v1",
+            docker_weighted_service_source,
+        )
+        self.assertIn(
+            "weighted_service_starvation_bound_claim",
+            docker_weighted_service_source,
+        )
+        self.assertIn(
+            '"request_path": "rmw_send_request"',
+            docker_weighted_service_source,
+        )
+        self.assertIn(
+            "fleetrmw_service_weighted_fairness_probe",
+            cmake_source,
+        )
         self.assertIn("malformed_response_error", docker_service_error_source)
         self.assertIn("after_invalid_response_taken", docker_service_error_source)
         action_probe = PKG / "src" / "action_frame_probe.cpp"
@@ -4297,6 +4336,9 @@ int main()
             manifest["supported"]["service_priority_aging_starvation_bound"]
         )
         self.assertTrue(
+            manifest["supported"]["service_smooth_weighted_round_robin"]
+        )
+        self.assertTrue(
             manifest["claim_boundaries"][
                 "docker_router_cpp_python_path_5run_netem"
             ]
@@ -4356,6 +4398,9 @@ int main()
             manifest["claim_boundaries"][
                 "service_strict_priority_dequeue_claim"
             ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"]["weighted_service_ratio_claim"]
         )
         self.assertFalse(
             manifest["claim_boundaries"]["full_exactly_once_service_semantics_claim"]

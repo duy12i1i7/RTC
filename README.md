@@ -76,7 +76,15 @@ This repository starts with the part that should be proven first:
   per-client FIFO, and all ten calls still receive responses; optional service
   priority metadata is backward-compatible with legacy priority zero, strict
   priority ordering is combined with local enqueue-time aging to prevent
-  starvation, and a `5/5` Docker gate proves both paths; a separate two-container POSIX
+  starvation, and a `5/5` Docker gate proves both paths; optional client
+  weights likewise default to one, while an opt-in smooth weighted
+  round-robin mode passes a separate `5/5` Docker/netem gate at an exact
+  `3:1` split over each saturated 40-request window without breaking
+  per-client source-sequence FIFO under reordered arrival. Strict mode uses
+  `FLEETQOX_RMW_SERVICE_CLIENT_PRIORITY=0..255` and
+  `FLEETQOX_RMW_SERVICE_PRIORITY_AGING_MS`; weighted mode uses
+  `FLEETQOX_RMW_SERVICE_SCHEDULER=weighted` and per-client
+  `FLEETQOX_RMW_SERVICE_CLIENT_WEIGHT=1..64`; a separate two-container POSIX
   shared-memory gate transfers a 100 KB payload with no UDP peer or slot
   overwrite, reports zero network-flow endpoints in SHM mode, and proves an
   explicit UDP fallback path under injected SHM initialization failure; a

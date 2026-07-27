@@ -203,6 +203,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker/loopback-netem noisy/quiet service-client isolation matrix | `results_rmw_socket/docker_service_client_isolation_probe_summary.json` |
 | Docker/loopback-netem bounded service-repair admission matrix | `results_rmw_socket/docker_service_repair_admission_probe_summary.json` |
 | Docker/loopback-netem service priority and aging matrix | `results_rmw_socket/docker_service_priority_probe_summary.json` |
+| Docker/loopback-netem smooth weighted service matrix | `results_rmw_socket/docker_service_weighted_fairness_probe_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -641,8 +642,22 @@ phase uses a 10 ms aging quantum: after 120 ms in the local receive queue, a
 priority-zero sequence 2 request is selected before a newly arrived
 priority-ten sequence 201 request. Aging uses the server's local enqueue time,
 not incomparable monotonic clocks from different robots. This proves strict
-priority plus a bounded anti-starvation mechanism, not arbitrary weighted
-shares or deadline-aware service scheduling.
+priority plus a bounded anti-starvation mechanism. Weighted shares are
+evaluated separately below; deadline-aware service scheduling remains outside
+this artifact.
+
+The opt-in weighted scheduler artifact separately passes `5/5`. Service frames
+carry a bounded client weight with a backward-compatible default of one, and
+the server uses smooth weighted round-robin over active client heads while
+preserving FIFO within each client. The probe creates each client with a
+different configured weight and sends through `rmw_send_request`, rather than
+injecting internal frames. With both clients continuously backlogged at
+weights 1 and 3, every 40-request measurement window contains exactly 10
+low-weight and 30 high-weight dequeues; the low-weight client is served at
+least once every four dequeues. Per-client heads are chosen by source sequence,
+so the same runs retain FIFO despite reordered netem arrival. This is a
+measured 3:1 fairness boundary, not deadline-aware scheduling or a proof for
+every workload distribution.
 
 The local transport artifact reports `status=ok` for a separate two-container
 POSIX shared-memory run. Publisher and subscriber have zero UDP peers and both

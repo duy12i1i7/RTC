@@ -1,4 +1,4 @@
-"""Run FleetRMW noisy/quiet service-client isolation in Docker/netem."""
+"""Run FleetRMW smooth weighted service scheduling in Docker/netem."""
 
 from __future__ import annotations
 
@@ -17,11 +17,12 @@ if str(ROOT) not in sys.path:
 from scripts.run_rmw_docker_router_service_call_probe import parse_last_json
 
 
-SCHEMA_VERSION = "fleetrmw.rmw_docker_service_client_isolation_probe.v1"
+SCHEMA_VERSION = "fleetrmw.rmw_docker_service_weighted_fairness_probe.v1"
 DEFAULT_IMAGE = "localhost/fleetrmw/rmw-netem:jazzy"
 NETEM_PROFILE = "delay 8ms 2ms"
-REQUEST_QUEUE_LIMIT = 4
-PER_CLIENT_REQUEST_QUEUE_LIMIT = 2
+LOW_WEIGHT = 1
+HIGH_WEIGHT = 3
+MEASURED_REQUESTS = 40
 
 
 def run_command(
@@ -63,9 +64,9 @@ def docker_shell(
 
 def run_probe(*, root: Path, image: str, iterations: int) -> dict[str, Any]:
     suffix = str(os.getpid())
-    build_base = f"/work/.tmp_fleetrmw_service_isolation_build_{suffix}"
-    install_base = f"/work/.tmp_fleetrmw_service_isolation_install_{suffix}"
-    log_base = f"/work/.tmp_fleetrmw_service_isolation_log_{suffix}"
+    build_base = f"/work/.tmp_fleetrmw_service_weighted_build_{suffix}"
+    install_base = f"/work/.tmp_fleetrmw_service_weighted_install_{suffix}"
+    log_base = f"/work/.tmp_fleetrmw_service_weighted_log_{suffix}"
     try:
         docker_shell(
             root=root,
@@ -91,47 +92,35 @@ def run_probe(*, root: Path, image: str, iterations: int) -> dict[str, Any]:
                     f"source {install_base}/setup.bash && "
                     "export RMW_IMPLEMENTATION=rmw_fleetqox_cpp && "
                     "export FLEETQOX_RMW_TRACE_SERVICE=1 && "
-                    "export FLEETQOX_RMW_SERVICE_REQUEST_QUEUE_LIMIT="
-                    f"{REQUEST_QUEUE_LIMIT} && "
-                    "export FLEETQOX_RMW_SERVICE_PER_CLIENT_REQUEST_QUEUE_LIMIT="
-                    f"{PER_CLIENT_REQUEST_QUEUE_LIMIT} && "
-                    "export FLEETQOX_RMW_SERVICE_RESPONSE_QUEUE_LIMIT=4 && "
-                    "export FLEETQOX_RMW_SERVICE_PENDING_RESPONSE_LIMIT=16 && "
-                    "export FLEETQOX_RMW_SERVICE_DEDUPE_HISTORY_LIMIT=16 && "
-                    "export FLEETQOX_RMW_SERVICE_RESPONSE_REPLAY_LIMIT=16 && "
+                    "export FLEETQOX_RMW_SERVICE_SCHEDULER=weighted && "
+                    "export FLEETQOX_RMW_SERVICE_REQUEST_QUEUE_LIMIT=256 && "
+                    "export FLEETQOX_RMW_SERVICE_PENDING_RESPONSE_LIMIT=64 && "
+                    "export FLEETQOX_RMW_SERVICE_DEDUPE_HISTORY_LIMIT=256 && "
                     f"tc qdisc replace dev lo root netem {NETEM_PROFILE} && "
                     f"{install_base}/rmw_fleetqox_cpp/lib/rmw_fleetqox_cpp/"
-                    "fleetrmw_service_client_isolation_probe"
+                    "fleetrmw_service_weighted_fairness_probe"
                 ),
             )
             logs = result.stdout + result.stderr
             probe = parse_last_json(logs)
-            per_client_drop_traces = logs.count(
-                "event=request_client_resource_limit"
-            )
+            weight_trace_count = logs.count("weight=3")
             ok = (
                 result.returncode == 0
                 and probe.get("status") == "ok"
-                and int(probe.get("noisy_request_count", 0)) == 8
-                and int(probe.get("quiet_request_count", 0)) == 2
-                and int(probe.get("request_queue_limit", 0)) == REQUEST_QUEUE_LIMIT
-                and int(probe.get("per_client_request_queue_limit", 0))
-                == PER_CLIENT_REQUEST_QUEUE_LIMIT
-                and int(probe.get("global_resource_drops", -1)) == 0
-                and int(probe.get("per_client_resource_drops", 0)) == 12
-                and int(probe.get("request_queue_max_observed", 0))
-                == REQUEST_QUEUE_LIMIT
-                and int(probe.get("per_client_max_observed", 0))
-                == PER_CLIENT_REQUEST_QUEUE_LIMIT
-                and int(probe.get("first_wave_request_count", 0)) == 4
-                and probe.get("quiet_admitted_first_wave") is True
-                and probe.get("first_wave_round_robin") is True
-                and int(probe.get("unique_requests_taken", 0)) == 10
-                and int(probe.get("noisy_responses_taken", 0)) == 8
-                and int(probe.get("quiet_responses_taken", 0)) == 2
-                and probe.get("exact_delivery") is True
+                and probe.get("request_path") == "rmw_send_request"
+                and int(probe.get("low_weight", 0)) == LOW_WEIGHT
+                and int(probe.get("high_weight", 0)) == HIGH_WEIGHT
+                and int(probe.get("measured_requests", 0)) == MEASURED_REQUESTS
+                and int(probe.get("low_dequeues", 0)) == 10
+                and int(probe.get("high_dequeues", 0)) == 30
+                and int(probe.get("maximum_high_streak", 0)) <= HIGH_WEIGHT
+                and int(probe.get("weighted_dequeues", 0))
+                == MEASURED_REQUESTS
+                and probe.get("weighted_service_ratio_claim") is True
+                and probe.get("per_client_fifo_claim") is True
+                and probe.get("bounded_weighted_starvation_claim") is True
                 and probe.get("cleanup_ok") is True
-                and per_client_drop_traces == 12
+                and weight_trace_count >= 64
             )
             runs.append(
                 {
@@ -140,7 +129,7 @@ def run_probe(*, root: Path, image: str, iterations: int) -> dict[str, Any]:
                     "returncode": result.returncode,
                     "netem_applied": result.returncode == 0,
                     "netem_profile": NETEM_PROFILE,
-                    "per_client_drop_trace_count": per_client_drop_traces,
+                    "weight_trace_count": weight_trace_count,
                     "probe": probe,
                     "stdout": result.stdout,
                     "stderr": result.stderr,
@@ -154,31 +143,33 @@ def run_probe(*, root: Path, image: str, iterations: int) -> dict[str, Any]:
             "image": image,
             "run_count": iterations,
             "ok_run_count": ok_run_count,
-            "noisy_request_count": 8,
-            "quiet_request_count": 2,
-            "request_queue_limit": REQUEST_QUEUE_LIMIT,
-            "per_client_request_queue_limit": PER_CLIENT_REQUEST_QUEUE_LIMIT,
-            "per_client_resource_drops": sum(
-                int(run["probe"].get("per_client_resource_drops", 0))
-                for run in runs
+            "scheduler": "smooth_weighted_round_robin",
+            "request_path": "rmw_send_request",
+            "low_weight": LOW_WEIGHT,
+            "high_weight": HIGH_WEIGHT,
+            "measured_requests_per_run": MEASURED_REQUESTS,
+            "low_dequeues": sum(
+                int(run["probe"].get("low_dequeues", 0)) for run in runs
             ),
-            "unique_requests_taken": sum(
-                int(run["probe"].get("unique_requests_taken", 0))
-                for run in runs
+            "high_dequeues": sum(
+                int(run["probe"].get("high_dequeues", 0)) for run in runs
             ),
-            "noisy_responses_taken": sum(
-                int(run["probe"].get("noisy_responses_taken", 0))
-                for run in runs
+            "weighted_dequeues": sum(
+                int(run["probe"].get("weighted_dequeues", 0)) for run in runs
             ),
-            "quiet_responses_taken": sum(
-                int(run["probe"].get("quiet_responses_taken", 0))
-                for run in runs
+            "maximum_high_streak": max(
+                (
+                    int(run["probe"].get("maximum_high_streak", 0))
+                    for run in runs
+                ),
+                default=0,
             ),
             "netem_applied_all": all(run["netem_applied"] for run in runs),
-            "quiet_client_first_wave_admission_claim": status == "ok",
-            "per_client_service_pending_isolation_claim": status == "ok",
-            "service_noisy_neighbor_bounded_fairness_claim": status == "ok",
-            "service_inter_client_round_robin_claim": status == "ok",
+            "service_weight_wire_metadata_claim": status == "ok",
+            "weighted_service_fairness_claim": status == "ok",
+            "weighted_service_ratio_claim": status == "ok",
+            "weighted_service_per_client_fifo_claim": status == "ok",
+            "weighted_service_starvation_bound_claim": status == "ok",
             "runs": runs,
         }
     except subprocess.CalledProcessError as exc:
@@ -209,7 +200,7 @@ def main() -> int:
         "--summary-json",
         default=(
             "results_rmw_socket/"
-            "docker_service_client_isolation_probe_summary.json"
+            "docker_service_weighted_fairness_probe_summary.json"
         ),
     )
     parser.add_argument("--json", action="store_true")

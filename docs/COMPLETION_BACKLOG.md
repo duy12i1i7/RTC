@@ -145,8 +145,12 @@ project. It is ordered by dependency and regression value.
   while preserving each client's FIFO order, and all deferred requests are
   later delivered. Optional priority metadata, strict priority dequeue, and
   local enqueue-time aging are covered by a separate 5/5 Docker gate; legacy
-  frames default to priority zero. Remaining service work is arbitrary
-  weighted-share/deadline-aware fairness,
+  frames default to priority zero. Optional weight metadata defaults to one;
+  an opt-in smooth weighted round-robin scheduler preserves per-client FIFO,
+  including reordered wire arrival, reaches an exact 3:1 saturated dequeue
+  split, and bounds the tested
+  lower-weight client's wait to four dequeues in a separate 5/5 Docker/netem
+  gate. Remaining service work is deadline-aware fairness,
   crash-persistent deduplication, and exactly-once semantics.
 - Harden action transport on top of pub/sub plus service reliability:
   goal, result, feedback, cancel, status, deadlines, and larger concurrent
