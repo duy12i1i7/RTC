@@ -5327,7 +5327,26 @@ int main()
             ]
         )
         self.assertFalse(claims["same_hop_latency_superiority_claim"])
-        self.assertFalse(claims["same_hop_middle_processing_equivalence_claim"])
+        self.assertTrue(claims["same_hop_middle_processing_equivalence_claim"])
+        self.assertTrue(
+            claims["same_hop_latency_distribution_comparison_claim"]
+        )
+        self.assertTrue(
+            claims["same_hop_common_middle_termination_republish_claim"]
+        )
+        self.assertTrue(
+            claims["docker_same_hop_common_generic_middle_36of36_claim"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_same_hop_common_generic_middle_8_16_32_3seed"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "same_hop_common_middle_application_processing"
+            ]
+        )
         self.assertTrue(
             claims[
                 "docker_same_hop_generic_serialized_rmw_comparison_8_16_32_3seed"

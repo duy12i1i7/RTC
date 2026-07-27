@@ -207,6 +207,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker/loopback-netem deadline-aware service matrix | `results_rmw_socket/docker_service_deadline_scheduler_probe_summary.json` |
 | Docker/netem SIGKILL durable completed-service replay matrix | `results_rmw_socket/docker_service_durable_replay_probe_summary.json` |
 | Same-hop generic-serialized 8/16/32 three-seed v3 post-fix matrix | `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v3_summary.json` |
+| Same-hop common generic-middle 8/16/32 three-seed v4 matrix | `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v4_common_middle_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -1655,8 +1656,23 @@ profile. An 8-robot, 16-topic, five-sample row under 7% source loss delivers
 and relays `80/80`, preserves `application_deserialization=false`, and completes
 the publisher ACK horizon. The repeated artifact runs this row `5/5`. This
 proves FleetRMW can execute RMW termination/republish with the common middle;
-the historical full matrix still uses raw routing, so full matrix equivalence
-and latency claims remain false until all nine FleetRMW rows are replaced.
+the historical full matrix still records the earlier raw-routing boundary.
+
+The v4 common-middle matrix replaces all nine historical FleetRMW raw-router
+rows with direct-peer FleetRMW rows that use the same C++ generic serialized
+subscription/publisher relay as Fast DDS, Cyclone DDS, and Zenoh. It preserves
+the 27 successful baseline rows, runs the nine new FleetRMW rows, and passes
+all `36/36` cells across `8/16/32` robots and seeds `7,13,29`. The relay count
+is `6720/6720`; all 36 publisher ACK horizons are supported and complete.
+Nine new rows state RMW termination/republish explicitly. The 27
+earlier-schema baseline rows provide equivalent strict evidence through
+generic subscription, generic publisher, serialized passthrough, and
+`application_deserialization=false`. Within this matched envelope,
+delivery/reliability and latency-distribution comparison are allowed.
+Broad latency superiority, architectural superiority, byte-identical
+cross-RMW serialization, and production superiority remain disallowed: three
+repetitions per cell and one roaming profile are insufficient for those
+claims.
 
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK

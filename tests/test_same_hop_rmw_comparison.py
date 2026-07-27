@@ -57,15 +57,47 @@ class SameHopRmwComparisonTest(unittest.TestCase):
 
     def test_claim_boundary_matches_relay_semantics(self):
         source = RUNNER.read_text()
-        self.assertIn('"comparison_design": "matched_one_middle_hop_caveated"', source)
+        self.assertIn(
+            '"comparison_design": "matched_generic_serialized_rmw_middle"',
+            source,
+        )
         self.assertIn('"hop_count_matched": True', source)
         self.assertIn('"delivery_reliability_comparison_allowed": True', source)
+        self.assertIn('"latency_comparison_allowed": middle_processing_equivalent', source)
         self.assertIn('"latency_superiority_claim_allowed": False', source)
         self.assertIn('"direct_claim_allowed": False', source)
-        self.assertIn('"middle_hop_processing_equivalent": False', source)
+        self.assertIn(
+            '"middle_hop_processing_equivalent": middle_processing_equivalent',
+            source,
+        )
         self.assertIn('"serialized_relay_contract_ok": serialized_relay_contract_ok', source)
+        self.assertIn(
+            '"middle_rmw_termination_republish_contract_ok":',
+            source,
+        )
         self.assertIn('"middle_payload_serialization_state_matched":', source)
-        self.assertIn("RMW termination/republish", source)
+        self.assertIn("same rclcpp generic", source)
+
+    def test_legacy_generic_relay_fields_are_strict_contract_evidence(self):
+        module = load_runner()
+        result = {
+            "relay_scope": "rclcpp_generic_serialized_passthrough",
+            "middle_payload_remains_serialized": True,
+            "middle_application_deserialization": False,
+            "relay": {
+                "schema_version": "fleetrmw.generic_serialized_relay_probe.v1",
+                "relay_scope": "rclcpp_generic_serialized_passthrough",
+                "generic_subscription": True,
+                "generic_publisher": True,
+                "application_deserialization": False,
+            },
+        }
+        self.assertEqual(
+            module.middle_termination_republish_evidence(result),
+            "strict_generic_relay_contract",
+        )
+        result["relay"]["generic_publisher"] = False
+        self.assertIsNone(module.middle_termination_republish_evidence(result))
 
     def test_runner_uses_same_profile_and_reliability_horizon(self):
         source = RUNNER.read_text()
@@ -85,8 +117,17 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                     "status": "ok",
                     "robot_count": 2,
                     "repetition_seed": 7,
+                    "relay_scope": "rclcpp_generic_serialized_passthrough",
+                    "middle_payload_remains_serialized": True,
+                    "middle_application_deserialization": False,
+                    "middle_rmw_termination_republish": True,
+                    "publisher": {
+                        "ack_wait_supported": True,
+                        "ack_wait_complete": True,
+                        "unacked_topic_count": 0,
+                    },
                 },
-                system="rmw_fleetqox_cpp_router",
+                system="rmw_fleetqox_cpp",
             ),
             module.normalize_row(
                 {
@@ -124,8 +165,8 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             artifact.write_text(
                 json.dumps(
                     {
-                        "schema_version": "fleetrmw.same_hop_rmw_comparison.v2",
-                        "status": "partial",
+                        "schema_version": "fleetrmw.same_hop_rmw_comparison.v3",
+                        "status": "ok",
                         "run_count": 36,
                         "ok_run_count": 32,
                         "failed_run_count": 4,
@@ -139,13 +180,15 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                         "serialized_relay_contract_ok": True,
                         "middle_payload_serialization_state_matched": True,
                         "middle_application_deserialization": False,
-                        "relay_expected_count": 5040,
-                        "relay_payload_count": 5030,
-                        "middle_hop_processing_equivalent": False,
+                        "middle_rmw_termination_republish_contract_ok": True,
+                        "relay_expected_count": 6720,
+                        "relay_payload_count": 6720,
+                        "middle_hop_processing_equivalent": True,
                         "delivery_reliability_comparison_allowed": True,
+                        "latency_comparison_allowed": True,
                         "latency_superiority_claim_allowed": False,
                         "aggregates": [
-                            {"system": "rmw_fleetqox_cpp_router"},
+                            {"system": "rmw_fleetqox_cpp"},
                             {"system": "rmw_cyclonedds_cpp"},
                         ],
                     }
@@ -156,7 +199,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             summary = summarize_artifact(path=artifact, root=root)
 
             self.assertEqual(summary["category"], "comparison/dds-cyclone-zenoh")
-            self.assertEqual(summary["metrics"]["relay_payload_count"], 5030)
+            self.assertEqual(summary["metrics"]["relay_payload_count"], 6720)
             self.assertTrue(summary["metrics"]["serialized_relay_contract_ok"])
             self.assertTrue(
                 summary["metrics"]["middle_payload_serialization_state_matched"]
@@ -170,6 +213,8 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             self.assertTrue(
                 summary["metrics"]["delivery_reliability_comparison_allowed"]
             )
+            self.assertTrue(summary["metrics"]["latency_comparison_allowed"])
+            self.assertTrue(summary["metrics"]["middle_hop_processing_equivalent"])
             self.assertFalse(summary["metrics"]["latency_superiority_claim_allowed"])
             self.assertEqual(summary["metrics"]["aggregate_system_count"], 2)
 

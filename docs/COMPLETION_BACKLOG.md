@@ -1372,8 +1372,16 @@ publisher-relay-subscriber peer topology runs the same C++ generic serialized
 subscription/publisher used by all three baselines, terminates and republishes
 through FleetRMW, derives ACK timeout/retry settings from roaming netem, and
 delivers `80/80` payloads for an 8-robot row. Its repeated Docker gate passes
-`5/5`. The broad equivalence claim remains false until the old raw-router
-FleetRMW rows in the full 8/16/32-by-three-seed matrix are replaced.
+`5/5`.
+
+The v4 full matrix has now replaced all nine raw-router FleetRMW rows with that
+common generic middle while preserving the 27 successful baseline rows. It
+passes `36/36`, relays `6720/6720`, and completes all 36 publisher ACK
+horizons. Middle application processing is equivalent within this benchmark,
+so scoped latency-distribution comparison is now allowed. Broad latency,
+architectural, or production superiority remains false pending more
+repetitions, profile sensitivity, payload-size sensitivity, and host-resource
+sensitivity.
 
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
@@ -1391,9 +1399,10 @@ Next continue P0/P2 in this order:
    workload without presenting request completion as simultaneous physical
    navigation.
 2. Preserve both completed comparison contracts and the repaired `36/36`
-   same-hop delivery result, then increase beyond the current five samples and
-   three independent repetitions. Match transport-envelope middle semantics
-   before any latency-superiority claim.
+   same-hop common-middle result, then increase beyond the current five samples
+   and three independent repetitions across loss, delay, jitter, payload size,
+   CPU quota, and memory-pressure sensitivity before any latency-superiority
+   claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.
 4. Increase frontier repetitions so the `32`-robot latency-mean confidence

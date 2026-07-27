@@ -428,6 +428,9 @@ Current verification:
   `results_rmw_socket/docker_fleetqox_generic_serialized_relay_probe_summary.json`;
 - full `8/16/32`-robot, three-seed generic-serialized matched-hop matrix:
   `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v2_summary.json`;
+- current `8/16/32`-robot, three-seed common generic-middle matrix, with all
+  four systems terminating and republishing through the same relay:
+  `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v4_common_middle_summary.json`;
 - deterministic middle-sequence NACK and initial-sequence timeout-repair
   regression:
   `results_rmw_socket/docker_rmw_initial_sequence_reliability_probe_summary.json`;
