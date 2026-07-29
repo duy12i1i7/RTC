@@ -339,7 +339,27 @@ int main(int argc, char ** argv)
   std::cout << "\"fragment_queue_admission_wait_ns\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_queue_admission_wait_ns", nullptr) << ",";
   std::cout << "\"fragment_repair_queue_deferrals\":" << fleetqox_metric(
-    "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals", nullptr) << "},";
+    "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals", nullptr) << ",";
+  std::cout << "\"fragment_active_assemblies\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_active_assemblies", nullptr) << ",";
+  std::cout << "\"fragment_active_missing_indexes\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_active_missing_indexes", nullptr) << ",";
+  std::cout << "\"fragment_nack_exhausted_assemblies\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_nack_exhausted_assemblies", nullptr) << ",";
+  std::cout << "\"fragment_oldest_assembly_age_ms\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_oldest_assembly_age_ms", nullptr) << ",";
+  std::cout << "\"fragment_history_request_exhausted\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_history_request_exhausted", nullptr) << ",";
+  std::cout << "\"fragment_observed_timeout_retransmissions_suppressed\":" <<
+    fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_observed_timeout_retransmissions_suppressed",
+    nullptr) << ",";
+  std::cout << "\"fragment_whole_fallback_pacing_deferrals\":" <<
+    fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_whole_fallback_pacing_deferrals",
+    nullptr) << ",";
+  std::cout << "\"nack_retransmissions\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_nack_retransmissions", nullptr) << "},";
   std::cout << "\"per_source_count\":{";
   for (std::size_t index = 0; index < routes.size(); ++index) {
     if (index > 0) {

@@ -716,6 +716,14 @@ def fleetqox_transport_metrics():
         "fragment_queue_admission_timeouts",
         "fragment_queue_admission_wait_ns",
         "fragment_repair_queue_deferrals",
+        "fragment_active_assemblies",
+        "fragment_active_missing_indexes",
+        "fragment_nack_exhausted_assemblies",
+        "fragment_oldest_assembly_age_ms",
+        "fragment_history_request_exhausted",
+        "fragment_observed_timeout_retransmissions_suppressed",
+        "fragment_whole_fallback_pacing_deferrals",
+        "nack_retransmissions",
     )
     metrics = {"available": True}
     for name in names:
@@ -883,6 +891,14 @@ def fleetqox_transport_metrics():
         "fragment_queue_admission_timeouts",
         "fragment_queue_admission_wait_ns",
         "fragment_repair_queue_deferrals",
+        "fragment_active_assemblies",
+        "fragment_active_missing_indexes",
+        "fragment_nack_exhausted_assemblies",
+        "fragment_oldest_assembly_age_ms",
+        "fragment_history_request_exhausted",
+        "fragment_observed_timeout_retransmissions_suppressed",
+        "fragment_whole_fallback_pacing_deferrals",
+        "nack_retransmissions",
         "reliable_timeout_retransmissions",
     )
     metrics = {"available": True}

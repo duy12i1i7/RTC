@@ -66,6 +66,7 @@ DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_THRESHOLD = 0
 DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_TIMEOUT_MS = 0
 DEFAULT_FLEETQOX_FRAGMENT_REPAIR_QUEUE_LIMIT = 64
 DEFAULT_FLEETQOX_FRAGMENT_REPAIR_COOLDOWN_MS = 100
+DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_INTERVAL_MS = 250
 
 
 def ingress_specs(specs: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -303,6 +304,9 @@ def run_probe(
     fleetqox_fragment_repair_cooldown_ms: int = (
         DEFAULT_FLEETQOX_FRAGMENT_REPAIR_COOLDOWN_MS
     ),
+    fleetqox_fragment_whole_fallback_interval_ms: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_INTERVAL_MS
+    ),
     fleetqox_publisher_test_drop_fragment_indexes: str = "",
 ) -> dict[str, Any]:
     if samples <= 0 or robot_count <= 0:
@@ -357,6 +361,10 @@ def run_probe(
     if not 0 <= fleetqox_fragment_repair_cooldown_ms <= 60000:
         raise ValueError(
             "fleetqox_fragment_repair_cooldown_ms is outside 0..60000"
+        )
+    if not 0 <= fleetqox_fragment_whole_fallback_interval_ms <= 60000:
+        raise ValueError(
+            "fleetqox_fragment_whole_fallback_interval_ms is outside 0..60000"
         )
     if fleetqox_publisher_test_drop_fragment_indexes:
         try:
@@ -525,6 +533,8 @@ def run_probe(
                             str(fleetqox_fragment_repair_queue_limit),
                         "FLEETQOX_RMW_FRAGMENT_REPAIR_COOLDOWN_MS":
                             str(fleetqox_fragment_repair_cooldown_ms),
+                        "FLEETQOX_RMW_FRAGMENT_WHOLE_FALLBACK_INTERVAL_MS":
+                            str(fleetqox_fragment_whole_fallback_interval_ms),
                     }
                 )
             if fleetqox_publisher_test_drop_fragment_indexes:
@@ -759,6 +769,10 @@ def run_probe(
                 fleetqox_fragment_repair_cooldown_ms
                 if use_fleetqox_direct_peers else None
             ),
+            "fleetqox_fragment_whole_fallback_interval_ms": (
+                fleetqox_fragment_whole_fallback_interval_ms
+                if use_fleetqox_direct_peers else None
+            ),
             "fleetqox_publisher_test_drop_fragment_indexes": (
                 fleetqox_publisher_test_drop_fragment_indexes
                 if use_fleetqox_direct_peers else None
@@ -954,6 +968,11 @@ def main() -> int:
         default=DEFAULT_FLEETQOX_FRAGMENT_REPAIR_QUEUE_LIMIT,
     )
     parser.add_argument(
+        "--fleetqox-fragment-whole-fallback-interval-ms",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_INTERVAL_MS,
+    )
+    parser.add_argument(
         "--fleetqox-publisher-test-drop-fragment-indexes",
         default="",
         help=argparse.SUPPRESS,
@@ -1034,6 +1053,10 @@ def main() -> int:
         ),
         fleetqox_fragment_repair_queue_limit=max(
             min(args.fleetqox_fragment_repair_queue_limit, 262144),
+            0,
+        ),
+        fleetqox_fragment_whole_fallback_interval_ms=max(
+            min(args.fleetqox_fragment_whole_fallback_interval_ms, 60000),
             0,
         ),
         fleetqox_publisher_test_drop_fragment_indexes=(

@@ -1458,7 +1458,13 @@ strict ACK claim remains limited to the deterministic gate above. The
 repair admission bounds observed queue high-water to `320` (initial 256 +
 repair 64) and improves one measured relay count from `74/160` to `95/160`.
 Disabling competing whole-sample retries reaches `119/160`; a larger bounded
-repair queue reaches `126/160`. Netem records that the configured seed does
+repair queue reaches `126/160`. Fragment-NACK observation now suppresses
+competing timeout retry for partially observed frames, while never-observed
+frames use a separately paced whole-sample fallback. Reassembly diagnostics
+export active assembly/missing-index counts, oldest age, NACK/history
+exhaustion, selective suppression, fallback deferral, and message-level NACK
+retransmission counts. The coordinated delayed-fallback trial reaches
+`135/160`, still below the complete contract. Netem records that the configured seed does
 not control its random-loss RNG, so these are negative individual frontier
 measurements rather than deterministic seed comparisons or fleet-scale
 claims. Same-hop resume provenance now also locks initial admission threshold
@@ -1485,8 +1491,8 @@ Next continue P0/P2 in this order:
    same-hop common-middle result plus the completed 108-cell profile-by-scale
    campaign plus the complete exact-payload frontier. Next increase beyond
    five samples and three repetitions, rerun the large-sample frontier with
-   the completed fragment-specific NACK/selective resend path, separate
-   selective repair from whole-sample fallback, and add adaptive
+   the completed fragment-specific NACK/selective resend path and coordinated
+   observed/selective versus unseen/whole fallback, and add adaptive
    link-capacity pacing/admission, CPU quota, memory-pressure, secure-fragment, and
    finer burst sensitivity before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly

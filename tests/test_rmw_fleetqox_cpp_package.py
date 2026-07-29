@@ -1085,6 +1085,25 @@ int main()
             "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals",
             source,
         )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_nack_exhausted_assemblies",
+            source,
+        )
+        self.assertIn("fragment_observed_by_reader", source)
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_"
+            "fragment_observed_timeout_retransmissions_suppressed",
+            source,
+        )
+        self.assertIn(
+            "FLEETQOX_RMW_FRAGMENT_WHOLE_FALLBACK_INTERVAL_MS",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_"
+            "fragment_whole_fallback_pacing_deferrals",
+            source,
+        )
         self.assertIn("rmw_fleetqox_cpp_shutdown_pubsub_runtime", source)
         stubs_source = (PKG / "src" / "rmw_stubs.cpp").read_text()
         self.assertIn("FLEETQOX_RMW_SERVICE_REQUEST_REPEATS", stubs_source)

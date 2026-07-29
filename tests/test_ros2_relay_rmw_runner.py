@@ -137,6 +137,15 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
             "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals",
             source,
         )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_active_missing_indexes",
+            source,
+        )
+        self.assertIn(
+            "fragment_observed_timeout_retransmissions_suppressed",
+            source,
+        )
+        self.assertIn("fragment_whole_fallback_pacing_deferrals", source)
         self.assertIn("fleetrmw_generic_serialized_relay_probe", cmake)
 
     def test_fleetqox_repeat_runner_preserves_broad_claim_boundary(self):
