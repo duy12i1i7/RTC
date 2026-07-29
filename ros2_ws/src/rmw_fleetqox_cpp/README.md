@@ -440,6 +440,9 @@ Current verification:
   `results_rmw_socket/same_hop_rmw_comparison_resume_profile_mismatch_docker_summary.json`;
 - 16-robot, Wi-Fi/WAN/roaming, three-seed common-middle sensitivity campaign:
   `results_rmw_socket/same_hop_profile_sensitivity_16robot_3profile_3seed_summary.json`;
+- full-factorial 8/16/32-robot × Wi-Fi/WAN/roaming × three-seed
+  common-middle sensitivity campaign:
+  `results_rmw_socket/same_hop_profile_scale_sensitivity_8_16_32_3profile_3seed_summary.json`;
 - deterministic middle-sequence NACK and initial-sequence timeout-repair
   regression:
   `results_rmw_socket/docker_rmw_initial_sequence_reliability_probe_summary.json`;

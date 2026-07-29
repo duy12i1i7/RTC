@@ -211,6 +211,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Same-hop exact-configuration 36-row resume-provenance control | `results_rmw_socket/same_hop_rmw_comparison_8_16_32_3seed_v5_resume_provenance_summary.json` |
 | Same-hop roaming-to-Wi-Fi resume mismatch Docker control | `results_rmw_socket/same_hop_rmw_comparison_resume_profile_mismatch_docker_summary.json` |
 | Same-hop 16-robot Wi-Fi/WAN/roaming three-seed profile sensitivity | `results_rmw_socket/same_hop_profile_sensitivity_16robot_3profile_3seed_summary.json` |
+| Same-hop 8/16/32-robot × Wi-Fi/WAN/roaming full-factorial sensitivity | `results_rmw_socket/same_hop_profile_scale_sensitivity_8_16_32_3profile_3seed_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -1704,6 +1705,17 @@ allows profile-scoped delivery/reliability and latency-distribution
 comparison. It still forbids broad latency, cross-RMW, architectural, or
 production superiority; only one robot scale, three repetitions per profile,
 and one payload/sample schedule are represented.
+
+The follow-on full-factorial campaign closes the robot-scale-by-profile gap.
+It covers `8/16/32` robots, Wi-Fi/WAN/roaming, seeds `7,13,29`, and all four
+RMWs. Wi-Fi and WAN contribute 72 fresh Docker/netem rows; roaming contributes
+36 configuration-matched rows. Every one of the `108/108` cells passes and
+the common relay forwards `20160/20160` payloads. The v2 aggregator rejects
+duplicate or missing profile/robot/system/seed cells and requires all common
+middle, ACK horizon, configuration-provenance, and relay-count contracts.
+Profile/scale-scoped delivery/reliability and latency-distribution comparison
+is now allowed. Broad superiority remains disallowed because each cell still
+has only three repetitions and one payload/sample/resource schedule.
 
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK

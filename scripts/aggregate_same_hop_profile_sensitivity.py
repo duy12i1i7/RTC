@@ -9,7 +9,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = "fleetrmw.same_hop_profile_sensitivity.v1"
+SCHEMA_VERSION = "fleetrmw.same_hop_profile_sensitivity.v2"
 EXPECTED_PROFILES = ("wifi", "wan", "roaming")
 EXPECTED_SYSTEMS = (
     "rmw_fleetqox_cpp",
@@ -17,6 +17,7 @@ EXPECTED_SYSTEMS = (
     "rmw_cyclonedds_cpp",
     "rmw_zenoh_cpp",
 )
+EXPECTED_SEEDS = (7, 13, 29)
 
 
 def load_summary(path: Path) -> dict[str, Any]:
@@ -28,29 +29,62 @@ def load_summary(path: Path) -> dict[str, Any]:
 
 def aggregate_summaries(
     summaries: list[tuple[Path, dict[str, Any]]],
+    *,
+    expected_robot_counts: tuple[int, ...] = (16,),
 ) -> dict[str, Any]:
-    if len(summaries) != len(EXPECTED_PROFILES):
-        raise ValueError("exactly wifi, wan, and roaming summaries are required")
-    by_profile = {str(summary.get("profile")): (path, summary) for path, summary in summaries}
-    if set(by_profile) != set(EXPECTED_PROFILES):
-        raise ValueError("profiles must be exactly wifi, wan, and roaming")
+    if not summaries:
+        raise ValueError("at least one source summary is required")
+    if (
+        not expected_robot_counts
+        or any(count <= 0 for count in expected_robot_counts)
+        or len(set(expected_robot_counts)) != len(expected_robot_counts)
+    ):
+        raise ValueError("expected robot counts must be positive and unique")
+    expected_robot_set = set(expected_robot_counts)
 
     reference: dict[str, Any] | None = None
     rows: list[dict[str, Any]] = []
     aggregates: list[dict[str, Any]] = []
     source_artifacts: list[dict[str, Any]] = []
-    for profile in EXPECTED_PROFILES:
-        path, summary = by_profile[profile]
+    row_keys: set[tuple[str, str, int, int]] = set()
+    aggregate_keys: set[tuple[str, str, int]] = set()
+    covered_robots_by_profile = {
+        profile: set() for profile in EXPECTED_PROFILES
+    }
+    for path, summary in sorted(
+        summaries,
+        key=lambda item: (str(item[1].get("profile")), str(item[0])),
+    ):
+        profile = str(summary.get("profile"))
+        if profile not in EXPECTED_PROFILES:
+            raise ValueError(f"{path}: unexpected profile {profile!r}")
         if summary.get("schema_version") != "fleetrmw.same_hop_rmw_comparison.v4":
             raise ValueError(f"{path}: unsupported same-hop schema")
         if summary.get("status") != "ok":
             raise ValueError(f"{path}: source status is not ok")
-        if summary.get("robot_counts") != [16]:
-            raise ValueError(f"{path}: expected only the 16-robot cell")
+        source_robot_counts = summary.get("robot_counts")
+        if (
+            not isinstance(source_robot_counts, list)
+            or not source_robot_counts
+            or any(int(count) not in expected_robot_set for count in source_robot_counts)
+            or len({int(count) for count in source_robot_counts})
+            != len(source_robot_counts)
+        ):
+            raise ValueError(f"{path}: robot-count coverage is outside the campaign")
+        source_robot_set = {int(count) for count in source_robot_counts}
+        if covered_robots_by_profile[profile] & source_robot_set:
+            raise ValueError(f"{path}: duplicate profile/robot source coverage")
+        covered_robots_by_profile[profile].update(source_robot_set)
         if tuple(summary.get("systems", ())) != EXPECTED_SYSTEMS:
             raise ValueError(f"{path}: system set or order differs")
-        if summary.get("run_count") != 12 or summary.get("ok_run_count") != 12:
-            raise ValueError(f"{path}: expected 12/12 rows")
+        expected_source_runs = (
+            len(source_robot_set) * len(EXPECTED_SEEDS) * len(EXPECTED_SYSTEMS)
+        )
+        if (
+            summary.get("run_count") != expected_source_runs
+            or summary.get("ok_run_count") != expected_source_runs
+        ):
+            raise ValueError(f"{path}: source row count does not match its robot cells")
         if not all(
             summary.get(key) is True
             for key in (
@@ -80,17 +114,55 @@ def aggregate_summaries(
         elif configuration != reference:
             raise ValueError(f"{path}: non-profile configuration differs")
         source_rows = summary.get("runs")
-        if not isinstance(source_rows, list) or len(source_rows) != 12:
+        if not isinstance(source_rows, list) or len(source_rows) != expected_source_runs:
             raise ValueError(f"{path}: missing source rows")
         if any(row.get("profile") != profile for row in source_rows):
             raise ValueError(f"{path}: row profile does not match summary profile")
-        rows.extend(source_rows)
+        for row in source_rows:
+            try:
+                key = (
+                    profile,
+                    str(row["system"]),
+                    int(row["robot_count"]),
+                    int(row["seed"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"{path}: malformed row identity") from exc
+            if (
+                key[1] not in EXPECTED_SYSTEMS
+                or key[2] not in source_robot_set
+                or key[3] not in EXPECTED_SEEDS
+            ):
+                raise ValueError(f"{path}: row identity is outside source coverage")
+            if key in row_keys:
+                raise ValueError(f"{path}: duplicate profile/system/robot/seed row")
+            row_keys.add(key)
+            rows.append(row)
         for aggregate in summary.get("aggregates", []):
+            try:
+                aggregate_key = (
+                    profile,
+                    str(aggregate["system"]),
+                    int(aggregate["robot_count"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"{path}: malformed aggregate identity") from exc
+            if (
+                aggregate_key[1] not in EXPECTED_SYSTEMS
+                or aggregate_key[2] not in source_robot_set
+            ):
+                raise ValueError(
+                    f"{path}: aggregate identity is outside source coverage"
+                )
+            if aggregate_key in aggregate_keys:
+                raise ValueError(f"{path}: duplicate profile/system/robot aggregate")
+            aggregate_keys.add(aggregate_key)
             aggregates.append({"profile": profile, **aggregate})
         source_artifacts.append(
             {
                 "path": str(path),
                 "profile": profile,
+                "robot_counts": sorted(source_robot_set),
                 "run_count": summary["run_count"],
                 "reused_row_count": summary.get("reused_row_count", 0),
                 "executed_row_count": summary.get("executed_row_count", 0),
@@ -100,6 +172,11 @@ def aggregate_summaries(
         )
 
     assert reference is not None
+    if any(
+        covered_robots_by_profile[profile] != expected_robot_set
+        for profile in EXPECTED_PROFILES
+    ):
+        raise ValueError("every profile must cover every requested robot count")
     run_count = len(rows)
     ok_run_count = sum(row.get("status") == "ok" for row in rows)
     relay_expected_count = sum(
@@ -118,14 +195,43 @@ def aggregate_summaries(
         int(summary.get("executed_row_count", 0))
         for _, summary in summaries
     )
+    expected_run_count = (
+        len(EXPECTED_PROFILES)
+        * len(expected_robot_counts)
+        * len(EXPECTED_SEEDS)
+        * len(EXPECTED_SYSTEMS)
+    )
+    expected_relay_count = (
+        len(EXPECTED_PROFILES)
+        * sum(expected_robot_counts)
+        * 2
+        * int(reference["samples"])
+        * len(EXPECTED_SEEDS)
+        * len(EXPECTED_SYSTEMS)
+    )
+    expected_row_keys = {
+        (profile, system, robot_count, seed)
+        for profile in EXPECTED_PROFILES
+        for system in EXPECTED_SYSTEMS
+        for robot_count in expected_robot_counts
+        for seed in EXPECTED_SEEDS
+    }
+    expected_aggregate_keys = {
+        (profile, system, robot_count)
+        for profile in EXPECTED_PROFILES
+        for system in EXPECTED_SYSTEMS
+        for robot_count in expected_robot_counts
+    }
     contract_ok = (
-        run_count == 36
+        run_count == expected_run_count
         and ok_run_count == run_count
-        and relay_expected_count == 5760
+        and relay_expected_count == expected_relay_count
         and relay_payload_count == relay_expected_count
-        and reused_row_count == 12
-        and executed_row_count == 24
-        and len(aggregates) == 12
+        and reused_row_count + executed_row_count == run_count
+        and len(aggregates)
+        == len(EXPECTED_PROFILES) * len(expected_robot_counts) * len(EXPECTED_SYSTEMS)
+        and row_keys == expected_row_keys
+        and aggregate_keys == expected_aggregate_keys
     )
     return {
         "schema_version": SCHEMA_VERSION,
@@ -133,7 +239,12 @@ def aggregate_summaries(
         "profiles": list(EXPECTED_PROFILES),
         "profile_count": len(EXPECTED_PROFILES),
         "systems": list(EXPECTED_SYSTEMS),
-        "robot_count": 16,
+        "robot_counts": list(expected_robot_counts),
+        "robot_count": (
+            expected_robot_counts[0]
+            if len(expected_robot_counts) == 1
+            else None
+        ),
         **reference,
         "run_count": run_count,
         "ok_run_count": ok_run_count,
@@ -143,6 +254,7 @@ def aggregate_summaries(
         "relay_expected_count": relay_expected_count,
         "relay_payload_count": relay_payload_count,
         "network_profile_contract_ok": contract_ok,
+        "profile_robot_scale_coverage_contract_ok": contract_ok,
         "common_middle_contract_ok": contract_ok,
         "profile_sensitivity_comparison_allowed": contract_ok,
         "latency_distribution_comparison_allowed": contract_ok,
@@ -150,8 +262,10 @@ def aggregate_summaries(
         "cross_rmw_superiority_claim_allowed": False,
         "claim_boundary": (
             "Compare delivery/reliability and scoped latency distributions across "
-            "the three tested profiles at 16 robots. Do not infer broad RMW, "
-            "latency, architectural, or production superiority."
+            f"the three tested profiles at robot counts "
+            f"{','.join(str(count) for count in expected_robot_counts)}. "
+            "Do not infer broad RMW, latency, architectural, or production "
+            "superiority."
         ),
         "source_artifacts": source_artifacts,
         "aggregates": aggregates,
@@ -165,12 +279,12 @@ def render_markdown(summary: dict[str, Any]) -> str:
         "",
         summary["claim_boundary"],
         "",
-        "| profile | system | runs OK | control delivery mean | state delivery mean | control p95 ms mean | state p95 ms mean |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| profile | robots | system | runs OK | control delivery mean | state delivery mean | control p95 ms mean | state p95 ms mean |",
+        "|---|---:|---|---:|---:|---:|---:|---:|",
     ]
     for row in summary["aggregates"]:
         lines.append(
-            f"| {row['profile']} | {row['system']} | "
+            f"| {row['profile']} | {row['robot_count']} | {row['system']} | "
             f"{row['ok_run_count']}/{row['run_count']} | "
             f"{row['control_delivery_ratio_mean']:.4f} | "
             f"{row['state_delivery_ratio_mean']:.4f} | "
@@ -191,13 +305,14 @@ def render_markdown(summary: dict[str, Any]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("summaries", nargs=3, type=Path)
+    parser.add_argument("summaries", nargs="+", type=Path)
+    parser.add_argument("--robot-counts", default="8,16,32")
     parser.add_argument(
         "--summary-json",
         type=Path,
         default=Path(
             "results_rmw_socket/"
-            "same_hop_profile_sensitivity_16robot_3profile_3seed_summary.json"
+            "same_hop_profile_scale_sensitivity_8_16_32_3profile_3seed_summary.json"
         ),
     )
     parser.add_argument(
@@ -205,12 +320,18 @@ def main() -> int:
         type=Path,
         default=Path(
             "results_rmw_socket/"
-            "same_hop_profile_sensitivity_16robot_3profile_3seed_report.md"
+            "same_hop_profile_scale_sensitivity_8_16_32_3profile_3seed_report.md"
         ),
     )
     args = parser.parse_args()
+    robot_counts = tuple(
+        int(value.strip())
+        for value in args.robot_counts.split(",")
+        if value.strip()
+    )
     summary = aggregate_summaries(
-        [(path, load_summary(ROOT / path)) for path in args.summaries]
+        [(path, load_summary(ROOT / path)) for path in args.summaries],
+        expected_robot_counts=robot_counts,
     )
     summary_path = ROOT / args.summary_json
     markdown_path = ROOT / args.markdown
