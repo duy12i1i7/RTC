@@ -212,6 +212,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Same-hop roaming-to-Wi-Fi resume mismatch Docker control | `results_rmw_socket/same_hop_rmw_comparison_resume_profile_mismatch_docker_summary.json` |
 | Same-hop 16-robot Wi-Fi/WAN/roaming three-seed profile sensitivity | `results_rmw_socket/same_hop_profile_sensitivity_16robot_3profile_3seed_summary.json` |
 | Same-hop 8/16/32-robot × Wi-Fi/WAN/roaming full-factorial sensitivity | `results_rmw_socket/same_hop_profile_scale_sensitivity_8_16_32_3profile_3seed_summary.json` |
+| Same-hop 16-robot exact 256/4096/32768-byte payload sensitivity | `results_rmw_socket/same_hop_payload_sensitivity_16robot_3size_3seed_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -1715,7 +1716,20 @@ duplicate or missing profile/robot/system/seed cells and requires all common
 middle, ACK horizon, configuration-provenance, and relay-count contracts.
 Profile/scale-scoped delivery/reliability and latency-distribution comparison
 is now allowed. Broad superiority remains disallowed because each cell still
-has only three repetitions and one payload/sample/resource schedule.
+has only three repetitions and one sample/resource schedule.
+
+The exact-payload campaign then fixes roaming, 16 robots, five samples per
+topic, a 50 ms batch interval, and all four common-middle RMW paths while
+varying UTF-8 message data over `256`, `4096`, and `32768` bytes. The
+fail-closed aggregator accepts measured delivery failures but rejects skipped,
+missing, duplicate, configuration-drifted, or byte-mismatched cells. All
+`36/36` cells are measured, `18/36` satisfy the complete row contract, and the
+relay forwards `3855/5760` payloads. At 256 bytes every RMW passes `3/3`; at
+4096 bytes Fast DDS and Cyclone DDS pass `3/3`, while FleetRMW and Zenoh pass
+`0/3`; at 32768 bytes every RMW passes `0/3` under the fixed 5 Mbit/s, 7% loss
+offered-load schedule. This permits payload-scoped delivery/reliability
+comparison, not latency superiority: the 32768-byte cells have no successful
+run, repetition remains three, and offered-load/CPU/memory sweeps are absent.
 
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK

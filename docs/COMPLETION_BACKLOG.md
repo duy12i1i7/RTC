@@ -6,10 +6,10 @@ project. It is ordered by dependency and regression value.
 
 ## Current Baseline
 
-- The full repository suite passes `661/661` unit/contract tests; ROS-facing
+- The full repository suite passes `667/667` unit/contract tests; ROS-facing
   runtime probes use the pinned ROS 2 Jazzy Docker image. The unified report
-  currently indexes `368`
-  retained artifacts (`307` ok, `17` partial, `40` historical failed, and `4`
+  currently indexes `373`
+  retained artifacts (`309` ok, `19` partial, `41` historical failed, and `4`
   unknown); its overall `partial` status deliberately includes old debug,
   negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
@@ -1403,8 +1403,19 @@ The full profile-by-scale interaction matrix is now complete as well:
 72 fresh rows, roaming contributes 36 configuration-matched rows, all
 `108/108` pass, and relay delivery is `20160/20160`. The aggregator fails
 closed on duplicate/missing cells or non-profile configuration drift. The
-remaining comparison gaps are repetition count, payload/sample schedule, CPU
-quota, and memory pressure rather than profile or robot-scale coverage.
+remaining comparison gaps are repetition count, offered-load/sample schedule,
+CPU quota, and memory pressure rather than profile or robot-scale coverage.
+
+Exact payload-size sensitivity is now measured at the representative
+16-robot roaming cell for `256/4096/32768` bytes, three seeds, and all four
+common-middle RMW paths. The complete matrix contains `36/36` measured rows,
+of which `18/36` satisfy the full delivery/ACK/process contract; aggregate
+relay delivery is `3855/5760`. All systems pass at 256 bytes, only Fast DDS
+and Cyclone DDS pass at 4096 bytes, and no system passes the fixed 50 ms,
+5 Mbit/s, 7% loss schedule at 32768 bytes. The campaign therefore closes the
+missing payload-size coverage for delivery/reliability but explicitly blocks
+payload-latency and superiority claims. Offered-load, CPU, memory, and larger
+repetition sweeps remain open.
 
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
@@ -1423,9 +1434,9 @@ Next continue P0/P2 in this order:
    navigation.
 2. Preserve both completed comparison contracts and the repaired `36/36`
    same-hop common-middle result plus the completed 108-cell profile-by-scale
-   campaign. Next increase beyond five samples and three repetitions, and add
-   payload size, CPU quota, and memory-pressure sensitivity before any
-   latency-superiority claim.
+   campaign plus the complete exact-payload frontier. Next increase beyond
+   five samples and three repetitions, sweep offered load, and add CPU quota
+   and memory-pressure sensitivity before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.
 4. Increase frontier repetitions so the `32`-robot latency-mean confidence

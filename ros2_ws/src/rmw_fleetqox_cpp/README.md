@@ -443,6 +443,9 @@ Current verification:
 - full-factorial 8/16/32-robot × Wi-Fi/WAN/roaming × three-seed
   common-middle sensitivity campaign:
   `results_rmw_socket/same_hop_profile_scale_sensitivity_8_16_32_3profile_3seed_summary.json`;
+- exact 256/4096/32768-byte, 16-robot, three-seed common-middle payload
+  sensitivity campaign:
+  `results_rmw_socket/same_hop_payload_sensitivity_16robot_3size_3seed_summary.json`;
 - deterministic middle-sequence NACK and initial-sequence timeout-repair
   regression:
   `results_rmw_socket/docker_rmw_initial_sequence_reliability_probe_summary.json`;

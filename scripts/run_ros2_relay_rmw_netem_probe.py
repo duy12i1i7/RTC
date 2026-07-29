@@ -99,6 +99,7 @@ def write_relay_probe_scripts(
     destination_specs: list[dict[str, str]],
     source_specs: list[dict[str, str]],
     samples: int,
+    payload_bytes: int,
     publish_interval_ms: int,
     timeout_s: float,
     publisher_linger_s: float,
@@ -114,6 +115,7 @@ def write_relay_probe_scripts(
     publisher_script.write_text(
         PUBLISHER_SCRIPT.replace("__SAMPLES__", str(samples))
         .replace("__PUBLISH_INTERVAL_S__", repr(publish_interval_ms / 1000.0))
+        .replace("__PAYLOAD_BYTES__", str(payload_bytes))
         .replace("__PUBLISHER_LINGER_S__", repr(publisher_linger_s))
         .replace("__TOPIC_SPECS_JSON__", source_json),
         encoding="utf-8",
@@ -253,6 +255,7 @@ def run_probe(
     repetition_seed: int | None,
     samples: int,
     robot_count: int,
+    payload_bytes: int = 0,
     publish_interval_ms: int,
     timeout_s: float,
     publisher_linger_s: float = 6.0,
@@ -260,6 +263,8 @@ def run_probe(
 ) -> dict[str, Any]:
     if samples <= 0 or robot_count <= 0:
         raise ValueError("samples and robot_count must be positive")
+    if payload_bytes < 0:
+        raise ValueError("payload_bytes must be non-negative")
     if publish_interval_ms < 0 or timeout_s <= 0 or publisher_linger_s < 0:
         raise ValueError("timing values are outside their valid range")
     if netem_loss_scale < 0:
@@ -354,6 +359,7 @@ def run_probe(
             destination_specs=destinations,
             source_specs=sources,
             samples=samples,
+            payload_bytes=payload_bytes,
             publish_interval_ms=publish_interval_ms,
             timeout_s=timeout_s,
             publisher_linger_s=publisher_linger_s,
@@ -532,6 +538,7 @@ def run_probe(
             and publisher.get("status") == "ok"
             and relay.get("status") == "ok"
             and subscriber.get("status") == "ok"
+            and publisher.get("payload_size_contract_ok") is True
             and relay_count >= expected_total
             and control_count >= expected_control
             and state_count >= expected_state
@@ -572,6 +579,16 @@ def run_probe(
             "robot_count": robot_count,
             "topic_count": len(destinations),
             "samples": samples,
+            "payload_bytes": payload_bytes,
+            "payload_size_contract_ok": (
+                publisher.get("payload_size_contract_ok") is True
+            ),
+            "payload_size_min_bytes": int(
+                publisher.get("payload_size_min_bytes", 0)
+            ),
+            "payload_size_max_bytes": int(
+                publisher.get("payload_size_max_bytes", 0)
+            ),
             "publish_interval_ms": publish_interval_ms,
             "timeout_s": timeout_s,
             "repetition_seed": repetition_seed,
@@ -668,6 +685,12 @@ def main() -> int:
     parser.add_argument("--repetition-seed", type=int, default=7)
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--robot-count", type=int, default=8)
+    parser.add_argument(
+        "--payload-bytes",
+        type=int,
+        default=0,
+        help="exact UTF-8 message data size; zero preserves the metadata-only payload",
+    )
     parser.add_argument("--publish-interval-ms", type=int, default=50)
     parser.add_argument("--timeout-s", type=float, default=25.0)
     parser.add_argument("--publisher-linger-s", type=float, default=6.0)
@@ -694,6 +717,7 @@ def main() -> int:
         repetition_seed=args.repetition_seed,
         samples=max(args.samples, 1),
         robot_count=max(args.robot_count, 1),
+        payload_bytes=max(args.payload_bytes, 0),
         publish_interval_ms=max(args.publish_interval_ms, 0),
         timeout_s=max(args.timeout_s, 1.0),
         publisher_linger_s=max(args.publisher_linger_s, 0.0),

@@ -43,6 +43,7 @@ def should_reuse_prior_row(
     profile: str,
     netem_loss_scale: float,
     samples: int,
+    payload_bytes: int,
     publish_interval_ms: int,
 ) -> bool:
     return (
@@ -53,6 +54,7 @@ def should_reuse_prior_row(
             profile=profile,
             netem_loss_scale=netem_loss_scale,
             samples=samples,
+            payload_bytes=payload_bytes,
             publish_interval_ms=publish_interval_ms,
         )
         and not (rerun_failed_rows and row.get("status") == "failed")
@@ -73,6 +75,7 @@ def load_same_hop_prior_rows(path: Path | None) -> list[dict[str, Any]]:
             "profile",
             "netem_loss_scale",
             "samples",
+            "payload_bytes",
             "publish_interval_ms",
             "timeout_s",
         )
@@ -97,6 +100,7 @@ def prior_row_matches_configuration(
     profile: str,
     netem_loss_scale: float,
     samples: int,
+    payload_bytes: int,
     publish_interval_ms: int,
 ) -> bool:
     result = row.get("result")
@@ -119,6 +123,7 @@ def prior_row_matches_configuration(
     try:
         recorded_loss_scale = float(recorded("netem_loss_scale"))
         recorded_samples = int(recorded("samples"))
+        recorded_payload_bytes = int(recorded("payload_bytes") or 0)
         recorded_publish_interval_ms = int(recorded("publish_interval_ms"))
         recorded_publisher_linger_s = float(
             result.get("publisher_linger_s", -1.0)
@@ -135,6 +140,7 @@ def prior_row_matches_configuration(
             abs_tol=1e-12,
         )
         and recorded_samples == samples
+        and recorded_payload_bytes == payload_bytes
         and recorded_publish_interval_ms == publish_interval_ms
         and result.get("relay_mode") == "generic_serialized"
         and result.get("relay_scope")
@@ -193,6 +199,7 @@ def run_comparison(
     profile: str,
     netem_loss_scale: float,
     samples: int,
+    payload_bytes: int = 0,
     publish_interval_ms: int,
     timeout_s: float,
     prior_rows: list[dict[str, Any]] | None = None,
@@ -220,6 +227,7 @@ def run_comparison(
                     profile=profile,
                     netem_loss_scale=netem_loss_scale,
                     samples=samples,
+                    payload_bytes=payload_bytes,
                     publish_interval_ms=publish_interval_ms,
                 ):
                     rows.append(clean_reused_row(prior_fleet))
@@ -232,6 +240,7 @@ def run_comparison(
                         profile=profile,
                         netem_loss_scale=netem_loss_scale,
                         samples=samples,
+                        payload_bytes=payload_bytes,
                         publish_interval_ms=publish_interval_ms,
                     ):
                         resume_configuration_mismatch_count += 1
@@ -247,6 +256,7 @@ def run_comparison(
                         repetition_seed=seed,
                         samples=samples,
                         robot_count=robot_count,
+                        payload_bytes=payload_bytes,
                         publish_interval_ms=publish_interval_ms,
                         timeout_s=timeout_s,
                         publisher_linger_s=6.0,
@@ -264,6 +274,7 @@ def run_comparison(
                         profile=profile,
                         netem_loss_scale=netem_loss_scale,
                         samples=samples,
+                        payload_bytes=payload_bytes,
                         publish_interval_ms=publish_interval_ms,
                     ):
                         rows.append(clean_reused_row(prior))
@@ -276,6 +287,7 @@ def run_comparison(
                         profile=profile,
                         netem_loss_scale=netem_loss_scale,
                         samples=samples,
+                        payload_bytes=payload_bytes,
                         publish_interval_ms=publish_interval_ms,
                     ):
                         resume_configuration_mismatch_count += 1
@@ -291,6 +303,7 @@ def run_comparison(
                         repetition_seed=seed,
                         samples=samples,
                         robot_count=robot_count,
+                        payload_bytes=payload_bytes,
                         publish_interval_ms=publish_interval_ms,
                         timeout_s=timeout_s,
                         publisher_linger_s=6.0,
@@ -370,11 +383,22 @@ def run_comparison(
         and publisher_ack_wait_supported_count == len(rows)
         and publisher_ack_wait_complete_count == len(rows)
     )
+    payload_size_contract_ok = (
+        len(relay_results) == len(rows)
+        and (
+            payload_bytes == 0
+            or all(
+                result.get("payload_size_contract_ok") is True
+                for result in relay_results
+            )
+        )
+    )
     status = "ok" if rows and failed_count == 0 and skipped_count == 0 else "partial"
     if status == "ok" and (
         not serialized_relay_contract_ok or
         not middle_termination_republish_contract_ok or
-        not publisher_ack_horizon_contract_ok
+        not publisher_ack_horizon_contract_ok or
+        not payload_size_contract_ok
     ):
         status = "partial"
     if rows and ok_count == 0:
@@ -389,6 +413,8 @@ def run_comparison(
         "profile": profile,
         "netem_loss_scale": netem_loss_scale,
         "samples": samples,
+        "payload_bytes": payload_bytes,
+        "payload_size_contract_ok": payload_size_contract_ok,
         "publish_interval_ms": publish_interval_ms,
         "timeout_s": timeout_s,
         "comparison_design": "matched_generic_serialized_rmw_middle",
@@ -411,6 +437,7 @@ def run_comparison(
             "profile",
             "netem_loss_scale",
             "samples",
+            "payload_bytes",
             "publish_interval_ms",
             "relay_mode",
             "relay_scope",
@@ -496,6 +523,16 @@ def render_markdown(summary: dict[str, Any]) -> str:
         "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summary["aggregates"]:
+        control_latency = (
+            format_ci(row, "control_latency_ms_p95", 3)
+            if row["ok_run_count"] > 0
+            else "n/a"
+        )
+        state_latency = (
+            format_ci(row, "state_latency_ms_p95", 3)
+            if row["ok_run_count"] > 0
+            else "n/a"
+        )
         lines.append(
             f"| {row['system']} | {row['robot_count']} | "
             f"{','.join(row['reliability_modes'])} | "
@@ -504,8 +541,8 @@ def render_markdown(summary: dict[str, Any]) -> str:
             f"{format_ci(row, 'control_delivery_ratio', 4)} | "
             f"{format_ci(row, 'state_delivery_ratio', 4)} | "
             f"{format_ci(row, 'min_topic_delivery_ratio', 4)} | "
-            f"{format_ci(row, 'control_latency_ms_p95', 3)} | "
-            f"{format_ci(row, 'state_latency_ms_p95', 3)} |"
+            f"{control_latency} | "
+            f"{state_latency} |"
         )
     lines.extend(
         [
@@ -528,6 +565,12 @@ def main() -> int:
     parser.add_argument("--profile", default="roaming")
     parser.add_argument("--netem-loss-scale", type=float, default=0.25)
     parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument(
+        "--payload-bytes",
+        type=int,
+        default=0,
+        help="exact UTF-8 message data size; zero preserves the metadata-only payload",
+    )
     parser.add_argument("--publish-interval-ms", type=int, default=50)
     parser.add_argument("--timeout-s", type=float, default=25.0)
     parser.add_argument(
@@ -558,6 +601,7 @@ def main() -> int:
         profile=args.profile,
         netem_loss_scale=max(args.netem_loss_scale, 0.0),
         samples=max(args.samples, 1),
+        payload_bytes=max(args.payload_bytes, 0),
         publish_interval_ms=max(args.publish_interval_ms, 0),
         timeout_s=max(args.timeout_s, 1.0),
         prior_rows=load_same_hop_prior_rows(args.resume_summary),

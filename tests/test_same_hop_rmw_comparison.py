@@ -25,6 +25,7 @@ def common_relay_result(
     profile: str = "roaming",
     loss_scale: float = 0.1,
     samples: int = 3,
+    payload_bytes: int = 0,
     publish_interval_ms: int = 30,
 ) -> dict:
     return {
@@ -36,6 +37,8 @@ def common_relay_result(
         "netem_enabled": True,
         "netem_required": True,
         "samples": samples,
+        "payload_bytes": payload_bytes,
+        "payload_size_contract_ok": True,
         "publish_interval_ms": publish_interval_ms,
         "publisher_linger_s": 6.0,
         "robot_count": 2,
@@ -99,6 +102,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                 profile="roaming",
                 netem_loss_scale=0.1,
                 samples=3,
+                payload_bytes=0,
                 publish_interval_ms=30,
             )
         )
@@ -110,6 +114,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                 profile="roaming",
                 netem_loss_scale=0.1,
                 samples=3,
+                payload_bytes=0,
                 publish_interval_ms=30,
             )
         )
@@ -125,6 +130,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             "profile": "roaming",
             "netem_loss_scale": 0.1,
             "samples": 3,
+            "payload_bytes": 0,
             "publish_interval_ms": 30,
         }
         self.assertTrue(
@@ -135,6 +141,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             ("profile", "wifi"),
             ("netem_loss_scale", 0.25),
             ("samples", 4),
+            ("payload_bytes", 4096),
             ("publish_interval_ms", 31),
         ):
             mismatched = dict(expected)
@@ -158,6 +165,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                         "profile": "roaming",
                         "netem_loss_scale": 0.1,
                         "samples": 3,
+                        "payload_bytes": 0,
                         "publish_interval_ms": 30,
                         "runs": [row],
                     }
@@ -173,9 +181,39 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                 profile="roaming",
                 netem_loss_scale=0.1,
                 samples=3,
+                payload_bytes=0,
                 publish_interval_ms=30,
             )
         )
+
+    def test_metadata_only_legacy_row_does_not_require_exact_size_evidence(self):
+        module = load_runner()
+        module.cleanup_reusable_build = lambda **_: None
+        legacy_result = common_relay_result()
+        legacy_result.pop("payload_bytes")
+        legacy_result.pop("payload_size_contract_ok")
+        summary = module.run_comparison(
+            root=ROOT,
+            image="unused",
+            robot_counts=[2],
+            seeds=[7],
+            rmws=[],
+            profile="roaming",
+            netem_loss_scale=0.1,
+            samples=3,
+            payload_bytes=0,
+            publish_interval_ms=30,
+            timeout_s=25.0,
+            prior_rows=[
+                module.normalize_row(
+                    legacy_result,
+                    system="rmw_fleetqox_cpp",
+                )
+            ],
+        )
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["reused_row_count"], 1)
+        self.assertTrue(summary["payload_size_contract_ok"])
 
     def test_claim_boundary_matches_relay_semantics(self):
         source = RUNNER.read_text()
@@ -273,6 +311,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             profile="roaming",
             netem_loss_scale=0.1,
             samples=3,
+            payload_bytes=0,
             publish_interval_ms=30,
             timeout_s=25.0,
             prior_rows=prior_rows,

@@ -50,6 +50,7 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
                 destination_specs=destination,
                 source_specs=source,
                 samples=5,
+                payload_bytes=4096,
                 publish_interval_ms=50,
                 timeout_s=25.0,
                 publisher_linger_s=6.0,
@@ -59,6 +60,7 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
             for spec in destination:
                 self.assertIn(f'"destination": "{spec["topic"]}"', relay_source)
             self.assertIn("ReliabilityPolicy.RELIABLE", relay_source)
+            self.assertIn("PAYLOAD_BYTES = 4096", publisher.read_text())
 
     def test_runner_declares_matched_hop_topology(self):
         source = RUNNER.read_text()

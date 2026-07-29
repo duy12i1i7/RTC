@@ -43,6 +43,12 @@ def main() -> int:
     parser.add_argument("--repetition-seed", type=int, default=None)
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--robot-count", type=int, default=1)
+    parser.add_argument(
+        "--payload-bytes",
+        type=int,
+        default=0,
+        help="exact UTF-8 message data size; zero preserves the metadata-only payload",
+    )
     parser.add_argument("--publish-interval-ms", type=int, default=500)
     parser.add_argument("--timeout-s", type=float, default=15.0)
     parser.add_argument(
@@ -70,6 +76,7 @@ def main() -> int:
         repetition_seed=args.repetition_seed,
         samples=args.samples,
         robot_count=args.robot_count,
+        payload_bytes=max(args.payload_bytes, 0),
         publish_interval_ms=args.publish_interval_ms,
         timeout_s=args.timeout_s,
         publisher_linger_s=max(args.publisher_linger_s, 0.0),
@@ -99,6 +106,7 @@ def run_probe(
     repetition_seed: int | None,
     samples: int,
     robot_count: int = 1,
+    payload_bytes: int = 0,
     publish_interval_ms: int,
     timeout_s: float,
     publisher_linger_s: float = 0.5,
@@ -107,6 +115,8 @@ def run_probe(
         raise ValueError("samples must be positive")
     if robot_count <= 0:
         raise ValueError("robot_count must be positive")
+    if payload_bytes < 0:
+        raise ValueError("payload_bytes must be non-negative")
     if publish_interval_ms < 0:
         raise ValueError("publish_interval_ms must be non-negative")
     if timeout_s <= 0:
@@ -162,6 +172,7 @@ def run_probe(
             publisher_script=publisher_script,
             samples=samples,
             topic_specs=topic_specs,
+            payload_bytes=payload_bytes,
             publish_interval_ms=publish_interval_ms,
             timeout_s=timeout_s,
             publisher_linger_s=publisher_linger_s,
@@ -256,6 +267,7 @@ def run_probe(
             and subscriber_returncode == 0
             and publisher_result.get("status") == "ok"
             and subscriber_result.get("status") == "ok"
+            and publisher_result.get("payload_size_contract_ok") is True
             and delivery_ok
             and netem_ok
         )
@@ -272,6 +284,16 @@ def run_probe(
             "robot_count": robot_count,
             "samples": samples,
             "samples_per_topic": samples,
+            "payload_bytes": payload_bytes,
+            "payload_size_contract_ok": (
+                publisher_result.get("payload_size_contract_ok") is True
+            ),
+            "payload_size_min_bytes": int(
+                publisher_result.get("payload_size_min_bytes", 0)
+            ),
+            "payload_size_max_bytes": int(
+                publisher_result.get("payload_size_max_bytes", 0)
+            ),
             "publisher_linger_s": publisher_linger_s,
             "zenoh_router_enabled": use_zenoh_router,
             "repetition_seed": repetition_seed,
@@ -334,6 +356,7 @@ def write_probe_scripts(
     publisher_script: Path,
     samples: int,
     topic_specs: list[dict[str, str]] | None = None,
+    payload_bytes: int = 0,
     publish_interval_ms: int,
     timeout_s: float,
     publisher_linger_s: float = 0.5,
@@ -350,7 +373,9 @@ def write_probe_scripts(
         PUBLISHER_SCRIPT.replace("__SAMPLES__", str(samples)).replace(
             "__PUBLISH_INTERVAL_S__",
             repr(publish_interval_ms / 1000.0),
-        ).replace("__PUBLISHER_LINGER_S__", repr(max(publisher_linger_s, 0.0))).replace(
+        ).replace("__PAYLOAD_BYTES__", str(payload_bytes)).replace(
+            "__PUBLISHER_LINGER_S__", repr(max(publisher_linger_s, 0.0))
+        ).replace(
             "__TOPIC_SPECS_JSON__", topic_specs_json
         ),
         encoding="utf-8",
@@ -702,6 +727,7 @@ from std_msgs.msg import String
 TOPIC_SPECS = __TOPIC_SPECS_JSON__
 SAMPLES = __SAMPLES__
 PUBLISH_INTERVAL_S = __PUBLISH_INTERVAL_S__
+PAYLOAD_BYTES = __PAYLOAD_BYTES__
 PUBLISHER_ACK_HORIZON_S = __PUBLISHER_LINGER_S__
 
 rclpy.init()
@@ -734,20 +760,36 @@ if start_file:
 
 sent = {"control": 0, "state": 0}
 sent_by_topic = {spec["topic"]: 0 for spec in TOPIC_SPECS}
+payload_sizes = []
 for seq in range(1, SAMPLES + 1):
     now = time.time_ns()
     for spec in TOPIC_SPECS:
         msg = String()
-        msg.data = json.dumps(
-            {
-                "flow": spec["flow"],
-                "kind": spec["kind"],
-                "seq": seq,
-                "sent_ns": now,
-                "topic": spec["topic"],
-            },
-            sort_keys=True,
-        )
+        payload = {
+            "flow": spec["flow"],
+            "kind": spec["kind"],
+            "seq": seq,
+            "sent_ns": now,
+            "topic": spec["topic"],
+        }
+        if PAYLOAD_BYTES > 0:
+            payload["padding"] = ""
+            compact = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            padding_bytes = PAYLOAD_BYTES - len(compact.encode("utf-8"))
+            if padding_bytes < 0:
+                raise RuntimeError(
+                    f"payload target {PAYLOAD_BYTES} is smaller than metadata "
+                    f"for {spec['topic']}"
+                )
+            payload["padding"] = "x" * padding_bytes
+            msg.data = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        else:
+            msg.data = json.dumps(payload, sort_keys=True)
+        payload_sizes.append(len(msg.data.encode("utf-8")))
         publishers[spec["topic"]].publish(msg)
         sent[spec["kind"]] += 1
         sent_by_topic[spec["topic"]] += 1
@@ -783,6 +825,16 @@ subscription_counts = {
 }
 result = {
     "status": "ok",
+    "payload_bytes": PAYLOAD_BYTES,
+    "payload_size_min_bytes": min(payload_sizes) if payload_sizes else 0,
+    "payload_size_max_bytes": max(payload_sizes) if payload_sizes else 0,
+    "payload_size_contract_ok": (
+        bool(payload_sizes)
+        and (
+            PAYLOAD_BYTES == 0
+            or all(size == PAYLOAD_BYTES for size in payload_sizes)
+        )
+    ),
     "control_sent": sent["control"],
     "state_sent": sent["state"],
     "sent_by_topic": sent_by_topic,
