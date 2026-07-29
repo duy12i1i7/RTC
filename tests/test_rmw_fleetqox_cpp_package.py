@@ -4538,6 +4538,16 @@ int main()
                 "udp_unprotected_fragment_fail_closed_claim"
             ]
         )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "peer_identity_fragment_pressure_isolation_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "unauthorized_identity_pre_reassembly_rejection_claim"
+            ]
+        )
         self.assertFalse(
             manifest["claim_boundaries"]["production_fragment_security_claim"]
         )

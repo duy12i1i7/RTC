@@ -1488,8 +1488,15 @@ unprotected repair wrapper plus one unprotected outer-fragment wrapper before
 reassembly admission. Protected frames above the UDP payload ceiling are
 forced onto the per-fragment protected path rather than the legacy
 pre-authentication outer wrapper. This is
-PSK-authenticated selective-fragment resource-admission evidence, not hostile
-peer-identity or production security evidence.
+PSK-authenticated selective-fragment resource-admission evidence. A third
+three-peer gate first establishes that exact bounded state through an allowed
+SROS2 X.509 identity. A CA-trusted attacker then uses the same PSK to send six
+large samples as `86` signed/encrypted frames. The receiver records `96`
+identity-denied data/graph inputs while active assemblies, missing indexes,
+evictions, AEAD decrypted-frame count, and last verified identity remain
+unchanged. This is bounded single-attacker identity-isolation evidence, not
+sustained multi-attacker, credential-rotation, or production security
+evidence.
 
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge

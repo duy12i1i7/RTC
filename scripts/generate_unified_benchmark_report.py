@@ -52,6 +52,9 @@ METRIC_KEYS = (
     "authenticated_fragment_assembly_admission_claim",
     "docker_authenticated_fragment_resource_bound_claim",
     "udp_unprotected_fragment_fail_closed_claim",
+    "peer_identity_fragment_pressure_isolation_claim",
+    "unauthorized_identity_pre_reassembly_rejection_claim",
+    "authorized_fragment_resource_bound_preserved_claim",
     "production_fragment_security_claim",
     "bounded_async_fragment_send_queue_claim",
     "fleet_scale_selective_fragment_repair_claim",
@@ -1381,6 +1384,9 @@ CLAIM_BOUNDARY_KEYS = (
     "authenticated_fragment_assembly_admission_claim",
     "docker_authenticated_fragment_resource_bound_claim",
     "udp_unprotected_fragment_fail_closed_claim",
+    "peer_identity_fragment_pressure_isolation_claim",
+    "unauthorized_identity_pre_reassembly_rejection_claim",
+    "authorized_fragment_resource_bound_preserved_claim",
     "production_fragment_security_claim",
     "bounded_async_fragment_send_queue_claim",
     "fleet_scale_selective_fragment_repair_claim",
@@ -2063,6 +2069,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         "loss_resilient_large_sample_fragment" in text
         or "selective_fragment_repair" in text
         or "fragment_assembly_admission" in text
+        or "peer_identity_fragment_pressure" in text
     ):
         return "transport/udp"
     if (
