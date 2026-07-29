@@ -44,6 +44,13 @@ METRIC_KEYS = (
     "fleetqox_udp_send_pacing_us",
     "loss_resilient_fragment_configuration_contract_ok",
     "loss_resilient_large_sample_fragment_repair_claim",
+    "fragment_specific_nack_selective_retransmission_claim",
+    "docker_selective_fragment_repair_without_whole_sample_retry_claim",
+    "bounded_async_fragment_send_queue_claim",
+    "fleet_scale_selective_fragment_repair_claim",
+    "transport_contract_ok",
+    "expected_test_drops",
+    "whole_sample_max_retransmissions",
     "production_large_sample_reliability_claim",
     "complete_measurement_matrix_contract_ok",
     "payload_sensitivity_comparison_allowed",
@@ -1359,6 +1366,10 @@ CLAIM_BOUNDARY_KEYS = (
     "same_hop_32768_fully_successful_schedule_claim",
     "loss_resilient_large_sample_fragment_repair_claim",
     "docker_loss_resilient_large_sample_fragment_5of5_claim",
+    "fragment_specific_nack_selective_retransmission_claim",
+    "docker_selective_fragment_repair_without_whole_sample_retry_claim",
+    "bounded_async_fragment_send_queue_claim",
+    "fleet_scale_selective_fragment_repair_claim",
     "production_large_sample_reliability_claim",
     "docker_same_hop_rmw_comparison_8_16_32_3seed",
     "docker_same_hop_generic_serialized_rmw_comparison_8_16_32_3seed",
@@ -2034,7 +2045,10 @@ def summarize_capabilities(path: Path) -> dict[str, Any]:
 
 def classify_path(path: Path, data: dict[str, Any]) -> str:
     text = f"{path.name} {data.get('schema_version', '')}".lower()
-    if "loss_resilient_large_sample_fragment" in text:
+    if (
+        "loss_resilient_large_sample_fragment" in text
+        or "selective_fragment_repair" in text
+    ):
         return "transport/udp"
     if (
         "large_scale_rmw_comparison" in text

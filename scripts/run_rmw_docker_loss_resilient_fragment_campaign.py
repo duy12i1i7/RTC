@@ -15,6 +15,9 @@ if str(ROOT) not in sys.path:
 
 from scripts.run_large_scale_rmw_comparison import parse_csv_int  # noqa: E402
 from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
+    DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
+    DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
+    DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS,
     DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
     DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
     DEFAULT_IMAGE,
@@ -78,6 +81,12 @@ def summarize_campaign(
                 result.get("fleetqox_reliable_max_retransmissions", 0)
             )
             == max_retransmissions
+            and int(result.get("fleetqox_fragment_nack_interval_ms", 0))
+            == DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS
+            and int(result.get("fleetqox_fragment_nack_max_requests", 0))
+            == DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS
+            and int(result.get("fleetqox_fragment_history_limit", 0))
+            == DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT
             and isinstance(result.get("publisher"), dict)
             and result["publisher"].get("ack_wait_supported") is True
             and result["publisher"].get("ack_wait_complete") is True
@@ -118,6 +127,11 @@ def summarize_campaign(
         "timeout_s": timeout_s,
         "fragment_chunk_bytes": fragment_chunk_bytes,
         "max_retransmissions": max_retransmissions,
+        "fragment_nack_interval_ms":
+            DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
+        "fragment_nack_max_requests":
+            DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS,
+        "fragment_history_limit": DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
         "run_count": len(rows),
         "ok_run_count": sum(row_contracts),
         "failed_run_count": len(rows) - sum(row_contracts),

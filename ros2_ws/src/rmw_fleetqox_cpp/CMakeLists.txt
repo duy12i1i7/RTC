@@ -1090,6 +1090,9 @@ add_executable(fleetrmw_generic_serialized_relay_probe
   src/generic_serialized_relay_probe.cpp
 )
 target_compile_features(fleetrmw_generic_serialized_relay_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_generic_serialized_relay_probe
+  ${CMAKE_DL_LIBS}
+)
 ament_target_dependencies(fleetrmw_generic_serialized_relay_probe
   rclcpp
 )

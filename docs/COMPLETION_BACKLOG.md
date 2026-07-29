@@ -6,10 +6,10 @@ project. It is ordered by dependency and regression value.
 
 ## Current Baseline
 
-- The full repository suite passes `673/673` unit/contract tests; ROS-facing
+- The full repository suite passes `675/675` unit/contract tests; ROS-facing
   runtime probes use the pinned ROS 2 Jazzy Docker image. The unified report
-  currently indexes `378`
-  retained artifacts (`311` ok, `20` partial, `43` historical failed, and `4`
+  currently indexes `409`
+  retained artifacts (`322` ok, `20` partial, `63` historical failed, and `4`
   unknown); its overall `partial` status deliberately includes old debug,
   negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
@@ -1429,26 +1429,31 @@ schedule stays below the nominal 5 Mbit/s link while burst shape,
 IP/transport fragmentation, 7% packet loss, repair granularity, and overhead
 remain.
 
-The first scoped repair is now implemented and measured. FleetRMW can
-optionally split a plaintext frame into stable 1024-byte chunks before
-per-chunk AEAD/signing, then accumulate received chunks across whole-sample
-timeout retransmissions. At one robot, two RMW hops, exact 32768-byte payloads,
-a 2000 ms batch interval, roaming loss scale 0.25, and five seeds, the
-Docker/netem campaign passes `5/5`, relays `30/30`, delivers both topics at
-`1.0`, and completes every publisher ACK horizon. Production selective repair
-remains open because retries still send all chunks; secure-fragment evidence,
-fragment-specific NACK, fleet-scale/high-rate resource bounds, CPU and memory
-pressure, and a finer burst/pacing sweep are not yet proven.
+Fragment-specific repair is now implemented and measured. FleetRMW splits a
+plaintext frame into stable 1024-byte chunks before per-chunk AEAD/signing,
+retains bounded sender history, waits for receiver assembly quiescence, and
+returns bounded missing-index ranges to the exact UDP source. Selective sends
+use a bounded asynchronous queue, prioritize repair without starving initial
+traffic, coalesce duplicate pending fragment keys, share global pacing, and
+export NACK/retransmit/queue/failure/high-water counters. A fail-closed Docker
+probe deliberately drops fragment index 2 from both exact 32768-byte messages
+with whole-sample timeout retransmission set to zero. It relays `2/2`, records
+exactly two deliberate drops and two selective retransmissions, completes the
+publisher ACK horizon, reports zero queue rejection/failure, and exits
+`0/0/0`. The RMW now also shuts down socket and global pub/sub workers when the
+last local context is finalized, eliminating the loss-dependent joinable-thread
+abort exposed by this test.
 
-The 16-robot follow-up confirms that boundary rather than hiding it. Under the
-same exact 32768-byte, 2000 ms, 25 s contract, repaired FleetRMW relay counts
-rise from `1/3/1` to `16/14/16` at seeds `7/13/29`, but all three rows still
-fail. At seed 7, 1000-microsecond UDP pacing reaches `53/160` and completes the
-publisher ACK horizon, yet blocking publication runs past the relay/subscriber
-deadline. Pacing alone therefore exchanges packet loss for deadline overrun.
-The benchmark resume key now fail-closes on `timeout_s`, fragment size, retry
-count, and FleetRMW pacing so this negative result cannot be turned into a
-false success by silently extending the harness window.
+At four robots, five samples per topic, exact 32768-byte payloads, roaming loss
+scale 0.25, and seed 7, the repaired path relays `40/40`, delivers both classes
+at `1.0`, completes all ACKs, and exits `0/0/0`; quiescence gating reduces
+selective sends from `3884` in the premature-NACK build to `707`. The
+16-robot follow-up still confirms a real boundary rather than hiding it. The
+best measured selective run reaches `125/160`; a lower-rate 2200-microsecond
+calibration reaches only `101/160`. These are negative single-seed frontier
+measurements, not fleet-scale claims. Same-hop resume provenance now also
+locks the async-send mode, queue limit, NACK interval/request count/history
+limit, relay drain mode, timeout, fragment size, retry count, and pacing.
 
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
@@ -1469,9 +1474,9 @@ Next continue P0/P2 in this order:
    same-hop common-middle result plus the completed 108-cell profile-by-scale
    campaign plus the complete exact-payload frontier. Next increase beyond
    five samples and three repetitions, rerun the large-sample frontier with
-   stable fragment accumulation, implement fragment-specific NACK/selective
-   resend, and add CPU quota, memory-pressure, secure-fragment, and finer
-   burst/pacing sensitivity before any latency-superiority claim.
+   the completed fragment-specific NACK/selective resend path, and add adaptive
+   capacity pacing/admission, CPU quota, memory-pressure, secure-fragment, and
+   finer burst sensitivity before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.
 4. Increase frontier repetitions so the `32`-robot latency-mean confidence

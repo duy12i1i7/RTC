@@ -29,6 +29,9 @@ def result(seed: int) -> dict:
         "state_delivery_ratio": 1.0,
         "fleetqox_loss_resilient_fragment_chunk_bytes": 1024,
         "fleetqox_reliable_max_retransmissions": 6,
+        "fleetqox_fragment_nack_interval_ms": 50,
+        "fleetqox_fragment_nack_max_requests": 6,
+        "fleetqox_fragment_history_limit": 1024,
         "publisher": {
             "ack_wait_supported": True,
             "ack_wait_complete": True,

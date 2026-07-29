@@ -51,11 +51,27 @@ def common_relay_result(
         "fleetqox_udp_send_pacing_us": (
             0 if system == "rmw_fleetqox_cpp" else None
         ),
+        "fleetqox_fragment_nack_interval_ms": (
+            50 if system == "rmw_fleetqox_cpp" else None
+        ),
+        "fleetqox_fragment_nack_max_requests": (
+            6 if system == "rmw_fleetqox_cpp" else None
+        ),
+        "fleetqox_fragment_history_limit": (
+            1024 if system == "rmw_fleetqox_cpp" else None
+        ),
+        "fleetqox_fragment_async_send": (
+            False if system == "rmw_fleetqox_cpp" else None
+        ),
+        "fleetqox_fragment_send_queue_limit": (
+            32768 if system == "rmw_fleetqox_cpp" else None
+        ),
         "robot_count": 2,
         "topic_count": 4,
         "repetition_seed": 7,
         "relay_mode": "generic_serialized",
         "relay_scope": "rclcpp_generic_serialized_passthrough",
+        "relay_executor_drain_mode": "spin_some_bounded",
         "middle_payload_remains_serialized": True,
         "middle_application_deserialization": False,
         "middle_rmw_termination_republish": True,
@@ -187,6 +203,28 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             module.prior_row_matches_configuration(
                 module.normalize_row(
                     wrong_pacing,
+                    system="rmw_fleetqox_cpp",
+                ),
+                **expected,
+            )
+        )
+        wrong_async = common_relay_result()
+        wrong_async["fleetqox_fragment_async_send"] = True
+        self.assertFalse(
+            module.prior_row_matches_configuration(
+                module.normalize_row(
+                    wrong_async,
+                    system="rmw_fleetqox_cpp",
+                ),
+                **expected,
+            )
+        )
+        wrong_queue_limit = common_relay_result()
+        wrong_queue_limit["fleetqox_fragment_send_queue_limit"] = 1024
+        self.assertFalse(
+            module.prior_row_matches_configuration(
+                module.normalize_row(
+                    wrong_queue_limit,
                     system="rmw_fleetqox_cpp",
                 ),
                 **expected,

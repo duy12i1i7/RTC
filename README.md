@@ -126,13 +126,15 @@ This repository starts with the part that should be proven first:
   out at `1/2` and then complete at `2/2`; all publisher/subscriber processes
   and the router exit cleanly;
 - opt-in loss-resilient UDP fragmentation before per-chunk AEAD/signing, with
-  a stable frame identity that lets receivers accumulate missing 1024-byte
-  chunks across whole-sample timeout retransmissions. A five-seed
-  Docker/netem campaign at one robot and two RMW hops carries exact 32768-byte
-  application payloads, passes `5/5`, relays `30/30`, and completes every ACK
-  horizon. Retries still resend all chunks, so fragment-specific NACK,
-  secure-fragment fleet-scale evidence, and production reliability remain
-  open;
+  stable frame identity, bounded fragment history, quiescence-triggered
+  missing-index NACKs, selective retransmission, and a bounded asynchronous
+  send queue. A fail-closed Docker probe deliberately drops fragment index 2
+  from both exact 32768-byte messages while whole-sample timeout retry is
+  disabled; it relays `2/2`, records exactly two drops and two selective
+  retransmissions, completes every ACK, rejects no queue entry, and exits
+  `0/0/0`. A four-robot roaming-loss run additionally relays `40/40`; the
+  current 16-robot frontier remains negative (`125/160` best observed), so
+  secure-fragment fleet-scale evidence and production reliability remain open;
 - a QoS event ABI surface where publisher/subscription event init/fini,
   event callback setters, support checks, and offered/requested deadline missed
   event production pass in Docker; deadline misses are produced by a timer

@@ -82,6 +82,13 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
         )
         self.assertIn("FLEETQOX_RMW_UDP_SEND_PACING_US", source)
         self.assertIn('"fleetqox_udp_send_pacing_us":', source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_NACK_INTERVAL_MS", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_NACK_MAX_REQUESTS", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_ASYNC_SEND", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT", source)
+        self.assertIn('"fleetqox_fragment_async_send":', source)
+        self.assertIn('"publisher_stderr_excerpt":', source)
         self.assertIn("netem_shell_prefix", source)
         self.assertIn("publisher_linger_s", source)
 
@@ -92,6 +99,20 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
         self.assertIn("create_generic_publisher", source)
         self.assertIn("publisher->publish(*message)", source)
         self.assertIn('"application_deserialization\\":false', source)
+        self.assertIn("fleetrmw.generic_serialized_relay_probe.v2", source)
+        self.assertIn('"executor_drain_mode\\":\\"spin_some_bounded', source)
+        self.assertIn(
+            'std::string(implementation) != "rmw_fleetqox_cpp"',
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_nacks_sent",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_requests_coalesced",
+            source,
+        )
         self.assertIn("fleetrmw_generic_serialized_relay_probe", cmake)
 
     def test_fleetqox_repeat_runner_preserves_broad_claim_boundary(self):

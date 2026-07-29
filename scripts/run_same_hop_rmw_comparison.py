@@ -27,6 +27,10 @@ from scripts.run_rmw_docker_router_matched_multi_topic_probe import (  # noqa: E
     cleanup_reusable_build,
 )
 from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
+    DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
+    DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
+    DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS,
+    DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT,
     DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
     DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
     FLEETQOX_RMW,
@@ -160,6 +164,24 @@ def prior_row_matches_configuration(
         recorded_udp_send_pacing_us = int(
             result.get("fleetqox_udp_send_pacing_us") or 0
         )
+        recorded_fragment_nack_interval_ms = int(
+            result.get("fleetqox_fragment_nack_interval_ms") or 0
+        )
+        recorded_fragment_nack_max_requests = int(
+            result.get("fleetqox_fragment_nack_max_requests") or 0
+        )
+        recorded_fragment_history_limit = int(
+            result.get("fleetqox_fragment_history_limit") or 0
+        )
+        recorded_fragment_async_send = bool(
+            result.get("fleetqox_fragment_async_send", False)
+        )
+        recorded_fragment_send_queue_limit = int(
+            result.get("fleetqox_fragment_send_queue_limit") or 0
+        )
+        recorded_relay_executor_drain_mode = str(
+            result.get("relay_executor_drain_mode") or ""
+        )
     except (TypeError, ValueError):
         return False
     recorded_rmw = str(result.get("rmw", row.get("system", "")))
@@ -175,6 +197,22 @@ def prior_row_matches_configuration(
     )
     expected_udp_send_pacing_us = (
         fleetqox_udp_send_pacing_us if recorded_rmw == FLEETQOX_RMW else 0
+    )
+    expected_fragment_nack_interval_ms = (
+        DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS
+        if recorded_rmw == FLEETQOX_RMW else 0
+    )
+    expected_fragment_nack_max_requests = (
+        DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS
+        if recorded_rmw == FLEETQOX_RMW else 0
+    )
+    expected_fragment_history_limit = (
+        DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT
+        if recorded_rmw == FLEETQOX_RMW else 0
+    )
+    expected_fragment_send_queue_limit = (
+        DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT
+        if recorded_rmw == FLEETQOX_RMW else 0
     )
     return (
         recorded("image") == image
@@ -208,6 +246,15 @@ def prior_row_matches_configuration(
         and recorded_fragment_chunk_bytes == expected_fragment_chunk_bytes
         and recorded_max_retransmissions == expected_max_retransmissions
         and recorded_udp_send_pacing_us == expected_udp_send_pacing_us
+        and recorded_fragment_nack_interval_ms
+        == expected_fragment_nack_interval_ms
+        and recorded_fragment_nack_max_requests
+        == expected_fragment_nack_max_requests
+        and recorded_fragment_history_limit == expected_fragment_history_limit
+        and recorded_fragment_async_send is False
+        and recorded_fragment_send_queue_limit
+        == expected_fragment_send_queue_limit
+        and recorded_relay_executor_drain_mode == "spin_some_bounded"
     )
 
 
@@ -232,8 +279,10 @@ def middle_termination_republish_evidence(
         result.get("relay_scope") == "rclcpp_generic_serialized_passthrough"
         and result.get("middle_payload_remains_serialized") is True
         and result.get("middle_application_deserialization") is False
-        and relay.get("schema_version")
-        == "fleetrmw.generic_serialized_relay_probe.v1"
+        and relay.get("schema_version") in {
+          "fleetrmw.generic_serialized_relay_probe.v1",
+          "fleetrmw.generic_serialized_relay_probe.v2",
+        }
         and relay.get("relay_scope")
         == "rclcpp_generic_serialized_passthrough"
         and relay.get("generic_subscription") is True
@@ -537,6 +586,16 @@ def run_comparison(
         "fleetqox_reliable_max_retransmissions":
             fleetqox_reliable_max_retransmissions,
         "fleetqox_udp_send_pacing_us": fleetqox_udp_send_pacing_us,
+        "fleetqox_fragment_nack_interval_ms":
+            DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
+        "fleetqox_fragment_nack_max_requests":
+            DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS,
+        "fleetqox_fragment_history_limit":
+            DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
+        "fleetqox_fragment_async_send": False,
+        "fleetqox_fragment_send_queue_limit":
+            DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT,
+        "relay_executor_drain_mode": "spin_some_bounded",
         "prior_row_count": len(prior_rows or []),
         "reused_row_count": reused_row_count,
         "executed_row_count": executed_row_count,
@@ -555,12 +614,18 @@ def run_comparison(
             "timeout_s",
             "relay_mode",
             "relay_scope",
+            "relay_executor_drain_mode",
             "netem_enabled",
             "netem_required",
             "publisher_linger_s",
             "fleetqox_loss_resilient_fragment_chunk_bytes",
             "fleetqox_reliable_max_retransmissions",
             "fleetqox_udp_send_pacing_us",
+            "fleetqox_fragment_nack_interval_ms",
+            "fleetqox_fragment_nack_max_requests",
+            "fleetqox_fragment_history_limit",
+            "fleetqox_fragment_async_send",
+            "fleetqox_fragment_send_queue_limit",
         ],
         "resume_configuration_mismatch_policy":
             "execute_current_configuration",

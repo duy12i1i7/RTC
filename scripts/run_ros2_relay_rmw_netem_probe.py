@@ -58,6 +58,10 @@ SERIALIZED_RELAY_EXECUTABLE = (
 FLEETQOX_RMW = "rmw_fleetqox_cpp"
 DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES = 1024
 DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS = 6
+DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS = 50
+DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS = 6
+DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT = 1024
+DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT = 32768
 
 
 def ingress_specs(specs: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -268,7 +272,22 @@ def run_probe(
     fleetqox_reliable_max_retransmissions: int = (
         DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
     ),
+    fleetqox_reliable_ack_timeout_ms: int | None = None,
     fleetqox_udp_send_pacing_us: int = 0,
+    fleetqox_fragment_nack_interval_ms: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS
+    ),
+    fleetqox_fragment_nack_max_requests: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS
+    ),
+    fleetqox_fragment_history_limit: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT
+    ),
+    fleetqox_fragment_async_send: bool = False,
+    fleetqox_fragment_send_queue_limit: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT
+    ),
+    fleetqox_publisher_test_drop_fragment_indexes: str = "",
 ) -> dict[str, Any]:
     if samples <= 0 or robot_count <= 0:
         raise ValueError("samples and robot_count must be positive")
@@ -286,8 +305,46 @@ def run_probe(
         raise ValueError(
             "fleetqox_reliable_max_retransmissions is outside 0..100"
         )
+    if (
+        fleetqox_reliable_ack_timeout_ms is not None
+        and not 1 <= fleetqox_reliable_ack_timeout_ms <= 60000
+    ):
+        raise ValueError("fleetqox_reliable_ack_timeout_ms is outside 1..60000")
     if not 0 <= fleetqox_udp_send_pacing_us <= 100000:
         raise ValueError("fleetqox_udp_send_pacing_us is outside 0..100000")
+    if not 10 <= fleetqox_fragment_nack_interval_ms <= 1000:
+        raise ValueError(
+            "fleetqox_fragment_nack_interval_ms is outside 10..1000"
+        )
+    if not 0 <= fleetqox_fragment_nack_max_requests <= 100:
+        raise ValueError(
+            "fleetqox_fragment_nack_max_requests is outside 0..100"
+        )
+    if not 0 <= fleetqox_fragment_history_limit <= 4096:
+        raise ValueError("fleetqox_fragment_history_limit is outside 0..4096")
+    if not 0 <= fleetqox_fragment_send_queue_limit <= 262144:
+        raise ValueError(
+            "fleetqox_fragment_send_queue_limit is outside 0..262144"
+        )
+    if fleetqox_publisher_test_drop_fragment_indexes:
+        try:
+            test_drop_indexes = [
+                int(value.strip())
+                for value in
+                fleetqox_publisher_test_drop_fragment_indexes.split(",")
+                if value.strip()
+            ]
+        except ValueError as error:
+            raise ValueError(
+                "fleetqox_publisher_test_drop_fragment_indexes is invalid"
+            ) from error
+        if (
+            not test_drop_indexes
+            or any(value < 0 for value in test_drop_indexes)
+        ):
+            raise ValueError(
+                "fleetqox_publisher_test_drop_fragment_indexes is invalid"
+            )
     if relay_mode not in {"generic_serialized", "rclpy_typed"}:
         raise ValueError("unsupported relay_mode")
     if rmw == FLEETQOX_RMW and relay_mode != "generic_serialized":
@@ -362,10 +419,11 @@ def run_probe(
     fleetqox_one_way_budget_ms = (
         float(netem["delay_ms"]) + 2.0 * float(netem["jitter_ms"])
     )
-    fleetqox_reliable_ack_timeout_ms = max(
-        100,
-        int(math.ceil(2.0 * fleetqox_one_way_budget_ms + 50.0)),
-    )
+    if fleetqox_reliable_ack_timeout_ms is None:
+        fleetqox_reliable_ack_timeout_ms = max(
+            100,
+            int(math.ceil(2.0 * fleetqox_one_way_budget_ms + 50.0)),
+        )
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
         if relay_mode == "generic_serialized":
@@ -417,8 +475,22 @@ def run_probe(
                             ),
                         "FLEETQOX_RMW_UDP_SEND_PACING_US":
                             str(fleetqox_udp_send_pacing_us),
+                        "FLEETQOX_RMW_FRAGMENT_NACK_INTERVAL_MS":
+                            str(fleetqox_fragment_nack_interval_ms),
+                        "FLEETQOX_RMW_FRAGMENT_NACK_MAX_REQUESTS":
+                            str(fleetqox_fragment_nack_max_requests),
+                        "FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT":
+                            str(fleetqox_fragment_history_limit),
+                        "FLEETQOX_RMW_FRAGMENT_ASYNC_SEND":
+                            ("1" if fleetqox_fragment_async_send else "0"),
+                        "FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT":
+                            str(fleetqox_fragment_send_queue_limit),
                     }
                 )
+            if fleetqox_publisher_test_drop_fragment_indexes:
+                fleetqox_environments["publisher"][
+                    "FLEETQOX_RMW_TEST_DROP_FRAGMENT_INDEXES"
+                ] = fleetqox_publisher_test_drop_fragment_indexes
         if use_zenoh_router:
             write_zenoh_session_config(zenoh_config, router_host=zenoh_router_name)
             start_container(
@@ -544,9 +616,12 @@ def run_probe(
         publisher_rc = int(run(["docker", "wait", publisher_name]).stdout.strip())
         relay_rc = int(run(["docker", "wait", relay_name]).stdout.strip())
         subscriber_rc = int(run(["docker", "wait", subscriber_name]).stdout.strip())
-        publisher = parse_last_json(run(["docker", "logs", publisher_name]).stdout)
-        relay = parse_last_json(run(["docker", "logs", relay_name]).stdout)
-        subscriber = parse_last_json(run(["docker", "logs", subscriber_name]).stdout)
+        publisher_logs = run(["docker", "logs", publisher_name])
+        relay_logs = run(["docker", "logs", relay_name])
+        subscriber_logs = run(["docker", "logs", subscriber_name])
+        publisher = parse_last_json(publisher_logs.stdout)
+        relay = parse_last_json(relay_logs.stdout)
+        subscriber = parse_last_json(subscriber_logs.stdout)
         netem_status = {"direct_pub": read_json(netem_status_path)}
         netem_ok = netem_status_ok(
             netem_status, enabled=enable_netem, required=require_netem
@@ -579,6 +654,10 @@ def run_probe(
                 else "rclpy_std_msgs_string_deserialize_republish"
             ),
             "relay_mode": relay_mode,
+            "relay_executor_drain_mode": (
+                relay.get("executor_drain_mode")
+                if relay_mode == "generic_serialized" else None
+            ),
             "middle_payload_remains_serialized":
                 relay_mode == "generic_serialized",
             "middle_application_deserialization":
@@ -602,6 +681,30 @@ def run_probe(
             ),
             "fleetqox_udp_send_pacing_us": (
                 fleetqox_udp_send_pacing_us
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_fragment_nack_interval_ms": (
+                fleetqox_fragment_nack_interval_ms
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_fragment_nack_max_requests": (
+                fleetqox_fragment_nack_max_requests
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_fragment_history_limit": (
+                fleetqox_fragment_history_limit
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_fragment_async_send": (
+                fleetqox_fragment_async_send
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_fragment_send_queue_limit": (
+                fleetqox_fragment_send_queue_limit
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_publisher_test_drop_fragment_indexes": (
+                fleetqox_publisher_test_drop_fragment_indexes
                 if use_fleetqox_direct_peers else None
             ),
             "image": image,
@@ -637,6 +740,9 @@ def run_probe(
             "publisher_returncode": publisher_rc,
             "relay_returncode": relay_rc,
             "subscriber_returncode": subscriber_rc,
+            "publisher_stderr_excerpt": excerpt(publisher_logs.stderr),
+            "relay_stderr_excerpt": excerpt(relay_logs.stderr),
+            "subscriber_stderr_excerpt": excerpt(subscriber_logs.stderr),
             "publisher": publisher,
             "relay": relay,
             "subscriber": subscriber,
@@ -737,9 +843,44 @@ def main() -> int:
         default=DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
     )
     parser.add_argument(
+        "--fleetqox-reliable-ack-timeout-ms",
+        type=int,
+        default=0,
+        help="zero derives the timeout from the selected netem profile",
+    )
+    parser.add_argument(
         "--fleetqox-udp-send-pacing-us",
         type=int,
         default=0,
+    )
+    parser.add_argument(
+        "--fleetqox-fragment-nack-interval-ms",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
+    )
+    parser.add_argument(
+        "--fleetqox-fragment-nack-max-requests",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS,
+    )
+    parser.add_argument(
+        "--fleetqox-fragment-history-limit",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
+    )
+    parser.add_argument(
+        "--fleetqox-fragment-async-send",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--fleetqox-fragment-send-queue-limit",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT,
+    )
+    parser.add_argument(
+        "--fleetqox-publisher-test-drop-fragment-indexes",
+        default="",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--relay-mode",
@@ -777,9 +918,34 @@ def main() -> int:
             min(args.fleetqox_reliable_max_retransmissions, 100),
             0,
         ),
+        fleetqox_reliable_ack_timeout_ms=(
+            max(min(args.fleetqox_reliable_ack_timeout_ms, 60000), 1)
+            if args.fleetqox_reliable_ack_timeout_ms > 0
+            else None
+        ),
         fleetqox_udp_send_pacing_us=max(
             min(args.fleetqox_udp_send_pacing_us, 100000),
             0,
+        ),
+        fleetqox_fragment_nack_interval_ms=max(
+            min(args.fleetqox_fragment_nack_interval_ms, 1000),
+            10,
+        ),
+        fleetqox_fragment_nack_max_requests=max(
+            min(args.fleetqox_fragment_nack_max_requests, 100),
+            0,
+        ),
+        fleetqox_fragment_history_limit=max(
+            min(args.fleetqox_fragment_history_limit, 4096),
+            0,
+        ),
+        fleetqox_fragment_async_send=args.fleetqox_fragment_async_send,
+        fleetqox_fragment_send_queue_limit=max(
+            min(args.fleetqox_fragment_send_queue_limit, 262144),
+            0,
+        ),
+        fleetqox_publisher_test_drop_fragment_indexes=(
+            args.fleetqox_publisher_test_drop_fragment_indexes
         ),
     )
     args.summary_json.parent.mkdir(parents=True, exist_ok=True)

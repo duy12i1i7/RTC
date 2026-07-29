@@ -622,7 +622,9 @@ def _float(value: object) -> float:
 
 
 SUBSCRIBER_SCRIPT = r'''
+import ctypes
 import json
+import os
 import statistics
 import time
 
@@ -691,6 +693,32 @@ per_topic_delivery_ratio = {
     for topic, values in payloads.items()
 }
 
+
+def fleetqox_transport_metrics():
+    if os.environ.get("RMW_IMPLEMENTATION") != "rmw_fleetqox_cpp":
+        return {}
+    try:
+        library = ctypes.CDLL("librmw_fleetqox_cpp.so")
+    except OSError:
+        return {"available": False}
+    names = (
+        "data_frames_received",
+        "fragment_nacks_sent",
+        "fragment_nacks_received",
+        "fragments_selectively_retransmitted",
+        "fragment_repair_requests_coalesced",
+        "fragment_send_queue_rejections",
+        "fragment_send_failures",
+        "fragment_send_queue_high_water",
+    )
+    metrics = {"available": True}
+    for name in names:
+        symbol = getattr(library, f"rmw_fleetqox_cpp_socket_{name}")
+        symbol.restype = ctypes.c_uint64
+        metrics[name] = int(symbol())
+    return metrics
+
+
 result = {
     "status": "ok" if all(len(payloads[topic]) >= SAMPLES for topic in payloads) else "failed",
     "control_payload_count": sum(len(payloads[topic]) for topic in control_topics),
@@ -705,6 +733,7 @@ result = {
     "per_topic_payload_count": per_topic_payload_count,
     "per_topic_delivery_ratio": per_topic_delivery_ratio,
     "payloads": payloads,
+    "fleetqox_transport_metrics": fleetqox_transport_metrics(),
 }
 print(json.dumps(result, sort_keys=True))
 node.destroy_node()
@@ -714,6 +743,7 @@ raise SystemExit(0 if result["status"] == "ok" else 1)
 
 
 PUBLISHER_SCRIPT = r'''
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -823,6 +853,34 @@ subscription_counts = {
     topic: pub.get_subscription_count()
     for topic, pub in publishers.items()
 }
+
+
+def fleetqox_transport_metrics():
+    if os.environ.get("RMW_IMPLEMENTATION") != "rmw_fleetqox_cpp":
+        return {}
+    try:
+        library = ctypes.CDLL("librmw_fleetqox_cpp.so")
+    except OSError:
+        return {"available": False}
+    names = (
+        "fragment_nacks_sent",
+        "fragment_nacks_received",
+        "fragments_selectively_retransmitted",
+        "fragment_repair_requests_coalesced",
+        "test_dropped_fragments",
+        "fragment_send_queue_rejections",
+        "fragment_send_failures",
+        "fragment_send_queue_high_water",
+        "reliable_timeout_retransmissions",
+    )
+    metrics = {"available": True}
+    for name in names:
+        symbol = getattr(library, f"rmw_fleetqox_cpp_socket_{name}")
+        symbol.restype = ctypes.c_uint64
+        metrics[name] = int(symbol())
+    return metrics
+
+
 result = {
     "status": "ok",
     "payload_bytes": PAYLOAD_BYTES,
@@ -850,6 +908,7 @@ result = {
     "ack_wait_complete": ack_wait_supported and not pending_ack_topics,
     "unacked_topic_count": len(pending_ack_topics),
     "ack_wait_elapsed_s": ack_wait_elapsed_s,
+    "fleetqox_transport_metrics": fleetqox_transport_metrics(),
 }
 print(json.dumps(result, sort_keys=True))
 node.destroy_node()

@@ -1029,6 +1029,7 @@ int main()
         self.assertIn("rmw_fleetqox_cpp_send_encoded_frame", source)
         self.assertIn("FLEETQOX_FRAGMENT_V1", source)
         self.assertIn("FLEETQOX_REPAIR_FRAGMENT_V1", source)
+        self.assertIn("FLEETQOX_REPAIR_FRAGMENT_NACK_V1", source)
         self.assertIn("send_fragmented_payload_to_targets", source)
         self.assertIn(
             "send_loss_resilient_fragmented_payload_to_targets",
@@ -1043,6 +1044,17 @@ int main()
         self.assertIn("FLEETQOX_RMW_UDP_SOCKET_BUFFER_BYTES", source)
         self.assertIn("FLEETQOX_RMW_UDP_SEND_PACING_US", source)
         self.assertIn("pace_udp_send_locked", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_NACK_INTERVAL_MS", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_NACK_MAX_REQUESTS", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_ASYNC_SEND", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT", source)
+        self.assertIn("fragment_repair_pending_keys_", source)
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_requests_coalesced",
+            source,
+        )
+        self.assertIn("rmw_fleetqox_cpp_shutdown_pubsub_runtime", source)
         stubs_source = (PKG / "src" / "rmw_stubs.cpp").read_text()
         self.assertIn("FLEETQOX_RMW_SERVICE_REQUEST_REPEATS", stubs_source)
         self.assertIn("FLEETQOX_RMW_SERVICE_RESPONSE_REPEATS", stubs_source)
@@ -1063,6 +1075,7 @@ int main()
         self.assertIn("fleetrmw.router_path_telemetry.v1", router_source)
         self.assertIn("FLEETQOX_FRAGMENT_V1", router_source)
         self.assertIn("FLEETQOX_REPAIR_FRAGMENT_V1", router_source)
+        self.assertIn("FLEETQOX_REPAIR_FRAGMENT_NACK_V1", router_source)
         self.assertIn("FLEETQOX_ROUTER_UDP_SOCKET_BUFFER_BYTES", router_source)
         self.assertIn("activity_counter", router_source)
         self.assertIn("satisfaction_dwell_activity_counter", router_source)
@@ -5552,16 +5565,29 @@ int main()
                 "docker_loss_resilient_large_sample_fragment_32768b_5run_netem"
             ]
         )
+        self.assertTrue(
+            manifest["supported"][
+                "udp_fragment_specific_nack_selective_retransmission"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"]["bounded_async_fragment_send_queue"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_selective_fragment_repair_without_whole_sample_retry"
+            ]
+        )
         self.assertIn(
             "loss_resilient_large_sample_fragment_repair",
             manifest["partial"],
         )
         self.assertIn(
-            "production_loss_resilient_large_sample_selective_fragment_repair",
+            "production_loss_resilient_large_sample_fragment_repair",
             manifest["unsupported"],
         )
         self.assertNotIn(
-            "loss_resilient_large_sample_selective_fragment_repair",
+            "production_loss_resilient_large_sample_selective_fragment_repair",
             manifest["unsupported"],
         )
         self.assertTrue(
@@ -5570,6 +5596,16 @@ int main()
         self.assertTrue(
             claims["docker_loss_resilient_large_sample_fragment_5of5_claim"]
         )
+        self.assertTrue(
+            claims["fragment_specific_nack_selective_retransmission_claim"]
+        )
+        self.assertTrue(
+            claims[
+                "docker_selective_fragment_repair_without_whole_sample_retry_claim"
+            ]
+        )
+        self.assertTrue(claims["bounded_async_fragment_send_queue_claim"])
+        self.assertFalse(claims["fleet_scale_selective_fragment_repair_claim"])
         self.assertFalse(claims["production_large_sample_reliability_claim"])
         self.assertTrue(
             claims[

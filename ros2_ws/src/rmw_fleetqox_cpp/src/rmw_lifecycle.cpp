@@ -125,6 +125,7 @@ void rmw_fleetqox_cpp_graph_unregister_node(
   const char * name, const char * namespace_, std::size_t domain_id);
 bool rmw_fleetqox_cpp_socket_ensure_started();
 const char * rmw_fleetqox_cpp_socket_init_error();
+void rmw_fleetqox_cpp_shutdown_pubsub_runtime();
 
 void rmw_fleetqox_cpp_trigger_graph_guard_conditions()
 {
@@ -372,6 +373,14 @@ rmw_ret_t rmw_context_fini(rmw_context_t * context)
   impl->~rmw_context_impl_s();
   allocator.deallocate(impl, allocator.state);
   *context = rmw_get_zero_initialized_context();
+  bool no_local_nodes = false;
+  {
+    std::lock_guard<std::mutex> lock(g_node_guard_mutex);
+    no_local_nodes = g_node_guard_data.empty();
+  }
+  if (no_local_nodes) {
+    rmw_fleetqox_cpp_shutdown_pubsub_runtime();
+  }
   return ret;
 }
 

@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -96,6 +97,35 @@ bool all_samples_relayed(
     });
 }
 
+std::uint64_t fleetqox_metric(const char * symbol_name, bool * available)
+{
+  const char * implementation = std::getenv("RMW_IMPLEMENTATION");
+  if (implementation == nullptr ||
+    std::string(implementation) != "rmw_fleetqox_cpp")
+  {
+    return 0;
+  }
+  static void * library = []() {
+      void * handle = dlopen(
+        "librmw_fleetqox_cpp.so",
+        RTLD_LAZY | RTLD_NOLOAD);
+      return handle != nullptr ? handle :
+             dlopen("librmw_fleetqox_cpp.so", RTLD_LAZY);
+    }();
+  if (library == nullptr || symbol_name == nullptr) {
+    return 0;
+  }
+  using MetricFunction = std::uint64_t (*)();
+  auto function = reinterpret_cast<MetricFunction>(dlsym(library, symbol_name));
+  if (function == nullptr) {
+    return 0;
+  }
+  if (available != nullptr) {
+    *available = true;
+  }
+  return function();
+}
+
 }  // namespace
 
 int main(int argc, char ** argv)
@@ -179,7 +209,7 @@ int main(int argc, char ** argv)
     }
   } catch (const std::exception & error) {
     std::cout << "{\"schema_version\":"
-      "\"fleetrmw.generic_serialized_relay_probe.v1\","
+      "\"fleetrmw.generic_serialized_relay_probe.v2\","
       "\"status\":\"failed\",\"reason\":\"entity_creation\","
       "\"error\":\"" << json_escape(error.what()) << "\"}" << std::endl;
     node.reset();
@@ -202,14 +232,16 @@ int main(int argc, char ** argv)
   while (std::chrono::steady_clock::now() < deadline &&
     !all_samples_relayed(routes, static_cast<std::uint64_t>(samples)))
   {
-    executor.spin_once(std::chrono::milliseconds(100));
+    executor.spin_some(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   const bool samples_relayed =
     all_samples_relayed(routes, static_cast<std::uint64_t>(samples));
   const auto linger_deadline =
     std::chrono::steady_clock::now() + std::chrono::milliseconds(linger_ms);
   while (std::chrono::steady_clock::now() < linger_deadline) {
-    executor.spin_once(std::chrono::milliseconds(50));
+    executor.spin_some(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   std::uint64_t relayed_count = 0;
@@ -222,13 +254,14 @@ int main(int argc, char ** argv)
   }
   const bool ok = downstream_ready && samples_relayed;
   std::cout << "{\"schema_version\":"
-    "\"fleetrmw.generic_serialized_relay_probe.v1\",";
+    "\"fleetrmw.generic_serialized_relay_probe.v2\",";
   std::cout << "\"status\":\"" << (ok ? "ok" : "failed") << "\",";
   std::cout << "\"relay_scope\":\"rclcpp_generic_serialized_passthrough\",";
   std::cout << "\"message_type\":\"std_msgs/msg/String\",";
   std::cout << "\"generic_subscription\":true,";
   std::cout << "\"generic_publisher\":true,";
   std::cout << "\"application_deserialization\":false,";
+  std::cout << "\"executor_drain_mode\":\"spin_some_bounded\",";
   std::cout << "\"downstream_ready\":" <<
     (downstream_ready ? "true" : "false") << ",";
   std::cout << "\"relayed_count\":" << relayed_count << ",";
@@ -237,6 +270,28 @@ int main(int argc, char ** argv)
   std::cout << "\"serialized_bytes\":" << serialized_bytes << ",";
   std::cout << "\"min_source_count\":" << min_source_count << ",";
   std::cout << "\"mapping_count\":" << routes.size() << ",";
+  bool transport_metrics_available = false;
+  const std::uint64_t transport_data_frames_received = fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_data_frames_received",
+    &transport_metrics_available);
+  std::cout << "\"fleetqox_transport_metrics\":{";
+  std::cout << "\"available\":" <<
+    (transport_metrics_available ? "true" : "false") << ",";
+  std::cout << "\"data_frames_received\":" << transport_data_frames_received << ",";
+  std::cout << "\"fragment_nacks_sent\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_nacks_sent", nullptr) << ",";
+  std::cout << "\"fragment_nacks_received\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_nacks_received", nullptr) << ",";
+  std::cout << "\"fragments_selectively_retransmitted\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragments_selectively_retransmitted", nullptr) << ",";
+  std::cout << "\"fragment_repair_requests_coalesced\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_repair_requests_coalesced", nullptr) << ",";
+  std::cout << "\"fragment_send_queue_rejections\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_send_queue_rejections", nullptr) << ",";
+  std::cout << "\"fragment_send_failures\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_send_failures", nullptr) << ",";
+  std::cout << "\"fragment_send_queue_high_water\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_send_queue_high_water", nullptr) << "},";
   std::cout << "\"per_source_count\":{";
   for (std::size_t index = 0; index < routes.size(); ++index) {
     if (index > 0) {

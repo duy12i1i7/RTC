@@ -2045,6 +2045,21 @@ public:
     stop();
   }
 
+  bool ensure_started()
+  {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (!ready_) {
+      start();
+    }
+    return ready_;
+  }
+
+  void shutdown()
+  {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    stop();
+  }
+
   rmw_ret_t send_frame(const std::string & encoded_frame)
   {
     return send_frame_with_qos(encoded_frame, nullptr);
@@ -2352,6 +2367,46 @@ public:
   std::uint64_t nack_retransmissions() const
   {
     return nack_retransmissions_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_nacks_sent() const
+  {
+    return fragment_nacks_sent_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_nacks_received() const
+  {
+    return fragment_nacks_received_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragments_selectively_retransmitted() const
+  {
+    return fragments_selectively_retransmitted_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_repair_requests_coalesced() const
+  {
+    return fragment_repair_requests_coalesced_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t test_dropped_fragments() const
+  {
+    return test_dropped_fragments_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_send_queue_rejections() const
+  {
+    return fragment_send_queue_rejections_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_send_failures() const
+  {
+    return fragment_send_failures_.load(std::memory_order_relaxed);
+  }
+
+  size_t fragment_send_queue_high_water() const
+  {
+    return fragment_send_queue_high_water_.load(std::memory_order_relaxed);
   }
 
   std::uint64_t test_dropped_frames() const
@@ -2841,9 +2896,13 @@ private:
   static constexpr size_t kMaxUdpPayloadBytes = 65507;
   static constexpr size_t kUdpFragmentChunkBytes = 60000;
   static constexpr std::int64_t kFragmentAssemblyTtlNs = 10000000000ll;
+  static constexpr std::int64_t kFragmentHistoryTtlNs = 60000000000ll;
+  static constexpr size_t kMaxFragmentRepairIndexesPerRequest = 64;
   static constexpr const char * kFragmentPrefix = "FLEETQOX_FRAGMENT_V1|";
   static constexpr const char * kRepairFragmentPrefix =
     "FLEETQOX_REPAIR_FRAGMENT_V1|";
+  static constexpr const char * kRepairFragmentNackPrefix =
+    "FLEETQOX_REPAIR_FRAGMENT_NACK_V1|";
 
   struct FragmentAssembly
   {
@@ -2852,7 +2911,37 @@ private:
     size_t received_count{0};
     std::vector<std::string> chunks;
     std::vector<bool> received;
+    sockaddr_in source{};
+    bool source_available{false};
+    std::int64_t first_update_ns{0};
     std::int64_t last_update_ns{0};
+    std::int64_t last_nack_ns{0};
+    size_t nack_count{0};
+    std::string fragment_id;
+    bool repair_capable{false};
+  };
+
+  struct FragmentRepairHistory
+  {
+    std::shared_ptr<const std::string> payload;
+    std::vector<sockaddr_in> targets;
+    size_t chunk_bytes{0};
+    size_t fragment_count{0};
+    bool is_data_frame{false};
+    std::int64_t last_update_ns{0};
+    size_t request_count{0};
+  };
+
+  struct PendingFragmentSend
+  {
+    std::shared_ptr<const std::string> payload;
+    std::vector<sockaddr_in> targets;
+    std::string fragment_id;
+    size_t chunk_bytes{0};
+    size_t fragment_count{0};
+    size_t fragment_index{0};
+    bool is_data_frame{false};
+    bool selective_retransmission{false};
   };
 
   std::vector<sockaddr_in> frame_targets(bool include_local) const
@@ -3830,9 +3919,263 @@ private:
       return RMW_RET_ERROR;
     }
     const std::string fragment_id = stable_fragment_id(payload);
+    const auto shared_payload = std::make_shared<const std::string>(payload);
+    remember_fragment_history(
+      fragment_id,
+      shared_payload,
+      targets,
+      chunk_bytes,
+      fragment_count,
+      is_data_frame);
+    std::vector<size_t> indexes(fragment_count);
     for (size_t index = 0; index < fragment_count; ++index) {
+      indexes[index] = index;
+    }
+    if (fragment_async_send_enabled_) {
+      return enqueue_loss_resilient_fragment_indexes(
+        shared_payload,
+        targets,
+        is_data_frame,
+        fragment_id,
+        chunk_bytes,
+        fragment_count,
+        indexes,
+        false);
+    }
+    return send_loss_resilient_fragment_indexes(
+      *shared_payload,
+      targets,
+      label,
+      is_data_frame,
+      fragment_id,
+      chunk_bytes,
+      fragment_count,
+      indexes,
+      false);
+  }
+
+  void cleanup_fragment_history_locked(std::int64_t now_ns)
+  {
+    for (auto it = fragment_history_.begin(); it != fragment_history_.end();) {
+      if (it->second.last_update_ns > 0 &&
+        now_ns - it->second.last_update_ns > kFragmentHistoryTtlNs)
+      {
+        it = fragment_history_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  void remember_fragment_history(
+    const std::string & fragment_id,
+    const std::shared_ptr<const std::string> & payload,
+    const std::vector<sockaddr_in> & targets,
+    size_t chunk_bytes,
+    size_t fragment_count,
+    bool is_data_frame)
+  {
+    if (fragment_history_limit_ <= 0 || fragment_nack_max_requests_ <= 0) {
+      return;
+    }
+    const std::int64_t now_ns = monotonic_timestamp_ns();
+    std::lock_guard<std::mutex> lock(fragment_history_mutex_);
+    cleanup_fragment_history_locked(now_ns);
+    FragmentRepairHistory & history = fragment_history_[fragment_id];
+    const size_t prior_request_count = history.request_count;
+    history.payload = payload;
+    history.targets = targets;
+    history.chunk_bytes = chunk_bytes;
+    history.fragment_count = fragment_count;
+    history.is_data_frame = is_data_frame;
+    history.last_update_ns = now_ns;
+    history.request_count = prior_request_count;
+    while (fragment_history_.size() > static_cast<size_t>(fragment_history_limit_)) {
+      auto oldest = fragment_history_.end();
+      for (auto it = fragment_history_.begin(); it != fragment_history_.end(); ++it) {
+        if (oldest == fragment_history_.end() ||
+          it->second.last_update_ns < oldest->second.last_update_ns)
+        {
+          oldest = it;
+        }
+      }
+      if (oldest == fragment_history_.end()) {
+        break;
+      }
+      fragment_history_.erase(oldest);
+    }
+  }
+
+  bool should_drop_fragment_for_test(
+    const std::string & fragment_id,
+    size_t fragment_index)
+  {
+    if (std::find(
+        drop_fragment_indexes_.begin(),
+        drop_fragment_indexes_.end(),
+        static_cast<std::uint64_t>(fragment_index)) == drop_fragment_indexes_.end())
+    {
+      return false;
+    }
+    const std::string key = fragment_id + "|" + std::to_string(fragment_index);
+    std::lock_guard<std::mutex> lock(test_drop_mutex_);
+    if (!dropped_fragment_keys_.insert(key).second) {
+      return false;
+    }
+    test_dropped_fragments_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  }
+
+  rmw_ret_t enqueue_loss_resilient_fragment_indexes(
+    const std::shared_ptr<const std::string> & payload,
+    const std::vector<sockaddr_in> & targets,
+    bool is_data_frame,
+    const std::string & fragment_id,
+    size_t chunk_bytes,
+    size_t fragment_count,
+    const std::vector<size_t> & indexes,
+    bool selective_retransmission)
+  {
+    if (!payload || targets.empty() || indexes.empty()) {
+      return RMW_RET_INVALID_ARGUMENT;
+    }
+    if (std::any_of(indexes.begin(), indexes.end(), [fragment_count](size_t index) {
+        return index >= fragment_count;
+      }))
+    {
+      return RMW_RET_INVALID_ARGUMENT;
+    }
+    {
+      std::lock_guard<std::mutex> lock(fragment_send_queue_mutex_);
+      std::vector<size_t> accepted_indexes;
+      accepted_indexes.reserve(indexes.size());
+      for (const size_t index : indexes) {
+        if (!selective_retransmission) {
+          accepted_indexes.push_back(index);
+          continue;
+        }
+        const std::string key = fragment_id + "|" + std::to_string(index);
+        if (fragment_repair_pending_keys_.find(key) != fragment_repair_pending_keys_.end()) {
+          fragment_repair_requests_coalesced_.fetch_add(1, std::memory_order_relaxed);
+          continue;
+        }
+        accepted_indexes.push_back(index);
+      }
+      if (accepted_indexes.empty()) {
+        return RMW_RET_OK;
+      }
+      const size_t pending_count =
+        fragment_initial_send_queue_.size() + fragment_repair_send_queue_.size();
+      if (fragment_send_queue_limit_ <= 0 ||
+        accepted_indexes.size() >
+        static_cast<size_t>(fragment_send_queue_limit_) - std::min(
+          pending_count,
+          static_cast<size_t>(fragment_send_queue_limit_)))
+      {
+        RMW_SET_ERROR_MSG("FleetRMW async fragment send queue is full");
+        fragment_send_queue_rejections_.fetch_add(1, std::memory_order_relaxed);
+        return RMW_RET_ERROR;
+      }
+      auto & queue = selective_retransmission ?
+        fragment_repair_send_queue_ : fragment_initial_send_queue_;
+      for (const size_t index : accepted_indexes) {
+        if (selective_retransmission) {
+          fragment_repair_pending_keys_.insert(
+            fragment_id + "|" + std::to_string(index));
+        }
+        queue.push_back(PendingFragmentSend{
+          payload,
+          targets,
+          fragment_id,
+          chunk_bytes,
+          fragment_count,
+          index,
+          is_data_frame,
+          selective_retransmission});
+      }
+      const size_t updated_count =
+        fragment_initial_send_queue_.size() + fragment_repair_send_queue_.size();
+      size_t observed_high_water =
+        fragment_send_queue_high_water_.load(std::memory_order_relaxed);
+      while (updated_count > observed_high_water &&
+        !fragment_send_queue_high_water_.compare_exchange_weak(
+          observed_high_water,
+          updated_count,
+          std::memory_order_relaxed))
+      {
+      }
+    }
+    fragment_send_queue_cv_.notify_one();
+    return RMW_RET_OK;
+  }
+
+  void fragment_sender_loop()
+  {
+    size_t consecutive_repairs = 0;
+    while (true) {
+      PendingFragmentSend task;
+      {
+        std::unique_lock<std::mutex> lock(fragment_send_queue_mutex_);
+        fragment_send_queue_cv_.wait(lock, [this]() {
+          return !fragment_sender_running_.load(std::memory_order_acquire) ||
+                 !fragment_initial_send_queue_.empty() ||
+                 !fragment_repair_send_queue_.empty();
+        });
+        if (!fragment_sender_running_.load(std::memory_order_acquire)) {
+          break;
+        }
+        const bool choose_repair =
+          !fragment_repair_send_queue_.empty() &&
+          (fragment_initial_send_queue_.empty() || consecutive_repairs < 4);
+        auto & queue = choose_repair ?
+          fragment_repair_send_queue_ : fragment_initial_send_queue_;
+        task = std::move(queue.front());
+        queue.pop_front();
+        consecutive_repairs = choose_repair ? consecutive_repairs + 1 : 0;
+      }
+      const rmw_ret_t ret = send_loss_resilient_fragment_indexes(
+        *task.payload,
+        task.targets,
+        task.selective_retransmission ?
+        "FleetRMW queued selective fragment repair" :
+        "FleetRMW queued initial fragment",
+        task.is_data_frame,
+        task.fragment_id,
+        task.chunk_bytes,
+        task.fragment_count,
+        std::vector<size_t>{task.fragment_index},
+        task.selective_retransmission);
+      if (ret != RMW_RET_OK) {
+        fragment_send_failures_.fetch_add(1, std::memory_order_relaxed);
+      }
+      if (task.selective_retransmission) {
+        std::lock_guard<std::mutex> lock(fragment_send_queue_mutex_);
+        fragment_repair_pending_keys_.erase(
+          task.fragment_id + "|" + std::to_string(task.fragment_index));
+      }
+    }
+  }
+
+  rmw_ret_t send_loss_resilient_fragment_indexes(
+    const std::string & payload,
+    const std::vector<sockaddr_in> & targets,
+    const char * label,
+    bool is_data_frame,
+    const std::string & fragment_id,
+    size_t chunk_bytes,
+    size_t fragment_count,
+    const std::vector<size_t> & indexes,
+    bool selective_retransmission)
+  {
+    for (const size_t index : indexes) {
+      if (index >= fragment_count) {
+        return RMW_RET_INVALID_ARGUMENT;
+      }
       const size_t offset = index * chunk_bytes;
       const size_t chunk_size = std::min(chunk_bytes, payload.size() - offset);
+      if (should_drop_fragment_for_test(fragment_id, index)) {
+        continue;
+      }
       std::string fragment;
       fragment.reserve(chunk_size + 128);
       fragment.append(kRepairFragmentPrefix);
@@ -3869,6 +4212,9 @@ private:
         send_datagram_to_targets(authenticated_fragment, targets, label);
       if (ret != RMW_RET_OK) {
         return ret;
+      }
+      if (selective_retransmission) {
+        fragments_selectively_retransmitted_.fetch_add(1, std::memory_order_relaxed);
       }
     }
     return RMW_RET_OK;
@@ -4015,6 +4361,38 @@ private:
 
   void start()
   {
+    init_error_.clear();
+    peer_addresses_.clear();
+    peer_path_ids_.clear();
+    transport_mode_ = "udp";
+    fragment_async_send_enabled_ = false;
+    udp_aead_enabled_ = false;
+    udp_aead_required_ = false;
+    udp_aead_tamper_outbound_once_ = false;
+    udp_aead_session_frames_ = 0;
+    udp_aead_nonce_sequence_.store(0, std::memory_order_relaxed);
+    udp_aead_tamper_done_.store(false, std::memory_order_relaxed);
+    {
+      std::lock_guard<std::mutex> lock(udp_aead_received_session_mutex_);
+      udp_aead_received_session_keys_.clear();
+      udp_aead_received_session_order_.clear();
+    }
+    {
+      std::lock_guard<std::mutex> lock(udp_aead_replay_mutex_);
+      udp_aead_seen_nonces_.clear();
+      udp_aead_nonce_order_.clear();
+    }
+    udp_peer_auth_enabled_ = false;
+    udp_peer_auth_required_ = false;
+    udp_peer_auth_tamper_outbound_once_ = false;
+    udp_peer_auth_crl_enabled_ = false;
+    udp_peer_auth_local_certificate_der_.clear();
+    udp_peer_auth_allowed_identities_.clear();
+    udp_peer_auth_tamper_done_.store(false, std::memory_order_relaxed);
+    {
+      std::lock_guard<std::mutex> lock(udp_peer_auth_identity_mutex_);
+      udp_peer_auth_last_identity_.clear();
+    }
     if (!configure_udp_aead()) {
       return;
     }
@@ -4038,6 +4416,26 @@ private:
       "FLEETQOX_RMW_UDP_SEND_PACING_US", 0, 100000);
     loss_resilient_fragment_chunk_bytes_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES", 0, 60000);
+    fragment_nack_interval_ms_ = std::max(
+      10,
+      parse_nonnegative_int_env(
+        "FLEETQOX_RMW_FRAGMENT_NACK_INTERVAL_MS", 50, 1000));
+    fragment_nack_max_requests_ = parse_nonnegative_int_env(
+      "FLEETQOX_RMW_FRAGMENT_NACK_MAX_REQUESTS", 6, 100);
+    fragment_history_limit_ = parse_nonnegative_int_env(
+      "FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT", 1024, 4096);
+    fragment_send_queue_limit_ = parse_nonnegative_int_env(
+      "FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT", 32768, 262144);
+    if (const char * async_send_env =
+      std::getenv("FLEETQOX_RMW_FRAGMENT_ASYNC_SEND");
+      async_send_env != nullptr)
+    {
+      const std::string value = trim_copy(async_send_env);
+      fragment_async_send_enabled_ =
+        value == "1" || value == "true" || value == "yes";
+    }
+    drop_fragment_indexes_ = parse_sequence_list(
+      std::getenv("FLEETQOX_RMW_TEST_DROP_FRAGMENT_INDEXES"));
 
     timeval timeout{};
     timeout.tv_sec = 0;
@@ -4186,10 +4584,28 @@ private:
     }
 
     running_.store(true, std::memory_order_release);
+    if (fragment_async_send_enabled_) {
+      fragment_sender_running_.store(true, std::memory_order_release);
+      try {
+        fragment_sender_thread_ = std::thread([this]() {fragment_sender_loop();});
+      } catch (...) {
+        fragment_sender_running_.store(false, std::memory_order_release);
+        running_.store(false, std::memory_order_release);
+        ::close(fd_);
+        fd_ = -1;
+        init_error_ = "failed to start FleetRMW fragment sender thread";
+        return;
+      }
+    }
     try {
       receive_thread_ = std::thread([this]() { receive_loop(); });
     } catch (...) {
       running_.store(false, std::memory_order_release);
+      fragment_sender_running_.store(false, std::memory_order_release);
+      fragment_send_queue_cv_.notify_all();
+      if (fragment_sender_thread_.joinable()) {
+        fragment_sender_thread_.join();
+      }
       ::close(fd_);
       fd_ = -1;
       init_error_ = "failed to start UDP loopback receive thread";
@@ -4203,11 +4619,31 @@ private:
     quic_gateway_transport_.stop();
     shared_memory_transport_.stop();
     running_.store(false, std::memory_order_release);
-    if (fd_ >= 0) {
-      ::shutdown(fd_, SHUT_RDWR);
-    }
+    fragment_sender_running_.store(false, std::memory_order_release);
+    fragment_send_queue_cv_.notify_all();
     if (receive_thread_.joinable()) {
       receive_thread_.join();
+    }
+    if (fragment_sender_thread_.joinable()) {
+      fragment_sender_thread_.join();
+    }
+    {
+      std::lock_guard<std::mutex> lock(fragment_send_queue_mutex_);
+      fragment_initial_send_queue_.clear();
+      fragment_repair_send_queue_.clear();
+      fragment_repair_pending_keys_.clear();
+    }
+    {
+      std::lock_guard<std::mutex> lock(fragment_mutex_);
+      fragment_assemblies_.clear();
+    }
+    {
+      std::lock_guard<std::mutex> lock(fragment_history_mutex_);
+      fragment_history_.clear();
+    }
+    {
+      std::lock_guard<std::mutex> lock(test_drop_mutex_);
+      dropped_fragment_keys_.clear();
     }
     if (fd_ >= 0) {
       ::close(fd_);
@@ -4226,12 +4662,21 @@ private:
   {
     std::array<char, kMaxUdpPayloadBytes> buffer{};
     while (running_.load(std::memory_order_acquire)) {
-      const auto received = ::recvfrom(fd_, buffer.data(), buffer.size(), 0, nullptr, nullptr);
+      sockaddr_in source{};
+      socklen_t source_size = sizeof(source);
+      const auto received = ::recvfrom(
+        fd_,
+        buffer.data(),
+        buffer.size(),
+        0,
+        reinterpret_cast<sockaddr *>(&source),
+        &source_size);
       if (received < 0) {
         if (!running_.load(std::memory_order_acquire)) {
           break;
         }
         if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+          request_stale_missing_fragments();
           continue;
         }
         break;
@@ -4242,11 +4687,12 @@ private:
       const std::string encoded_frame(buffer.data(), static_cast<size_t>(received));
       if (hybrid_transport() && !udp_aead_enabled_) {
         if (!shared_memory_transport_.send(encoded_frame)) {
-          handle_received_datagram(encoded_frame, true);
+          handle_received_datagram(encoded_frame, true, &source);
         }
       } else {
-        handle_received_datagram(encoded_frame, true);
+        handle_received_datagram(encoded_frame, true, &source);
       }
+      request_stale_missing_fragments();
     }
   }
 
@@ -4321,9 +4767,268 @@ private:
     }
   }
 
+  static std::vector<size_t> missing_fragment_indexes(
+    const FragmentAssembly & assembly)
+  {
+    std::vector<size_t> missing;
+    missing.reserve(std::min(
+      assembly.fragment_count,
+      kMaxFragmentRepairIndexesPerRequest));
+    for (size_t index = 0;
+      index < assembly.received.size() &&
+      missing.size() < kMaxFragmentRepairIndexesPerRequest;
+      ++index)
+    {
+      if (!assembly.received[index]) {
+        missing.push_back(index);
+      }
+    }
+    return missing;
+  }
+
+  static std::string encode_fragment_indexes(const std::vector<size_t> & indexes)
+  {
+    std::ostringstream output;
+    size_t position = 0;
+    while (position < indexes.size()) {
+      const size_t first = indexes[position];
+      size_t last = first;
+      while (position + 1 < indexes.size() &&
+        indexes[position + 1] == last + 1)
+      {
+        last = indexes[++position];
+      }
+      if (output.tellp() > 0) {
+        output << ",";
+      }
+      output << first;
+      if (last != first) {
+        output << "-" << last;
+      }
+      ++position;
+    }
+    return output.str();
+  }
+
+  void send_fragment_repair_request(
+    const std::string & fragment_id,
+    size_t fragment_count,
+    const std::vector<size_t> & missing,
+    const sockaddr_in & source)
+  {
+    if (fragment_id.empty() || missing.empty()) {
+      return;
+    }
+    std::string request(kRepairFragmentNackPrefix);
+    request.append(fragment_id);
+    request.push_back('|');
+    request.append(std::to_string(fragment_count));
+    request.push_back('|');
+    request.append(encode_fragment_indexes(missing));
+    if (send_payload_to_targets(
+        request,
+        std::vector<sockaddr_in>{source},
+        "FleetRMW fragment repair request") == RMW_RET_OK)
+    {
+      fragment_nacks_sent_.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
+  void request_stale_missing_fragments()
+  {
+    struct PendingRequest
+    {
+      std::string fragment_id;
+      size_t fragment_count{0};
+      std::vector<size_t> missing;
+      sockaddr_in source{};
+    };
+    const std::int64_t now_ns = monotonic_timestamp_ns();
+    const std::int64_t interval_ns =
+      static_cast<std::int64_t>(fragment_nack_interval_ms_) * 1000000ll;
+    std::vector<PendingRequest> pending;
+    {
+      std::lock_guard<std::mutex> lock(fragment_mutex_);
+      cleanup_stale_fragment_assemblies_locked(now_ns);
+      for (auto & item : fragment_assemblies_) {
+        FragmentAssembly & assembly = item.second;
+        const size_t backoff_shift = std::min<size_t>(assembly.nack_count, 3);
+        const std::int64_t retry_interval_ns =
+          interval_ns * static_cast<std::int64_t>(1u << backoff_shift);
+        if (!assembly.repair_capable || !assembly.source_available ||
+          assembly.received_count >= assembly.fragment_count ||
+          assembly.nack_count >= static_cast<size_t>(fragment_nack_max_requests_) ||
+          now_ns - assembly.last_update_ns < interval_ns ||
+          (assembly.last_nack_ns > 0 &&
+          now_ns - assembly.last_nack_ns < retry_interval_ns))
+        {
+          continue;
+        }
+        std::vector<size_t> missing = missing_fragment_indexes(assembly);
+        if (missing.empty()) {
+          continue;
+        }
+        assembly.last_nack_ns = now_ns;
+        ++assembly.nack_count;
+        pending.push_back(PendingRequest{
+          assembly.fragment_id,
+          assembly.fragment_count,
+          std::move(missing),
+          assembly.source});
+      }
+    }
+    for (const PendingRequest & request : pending) {
+      send_fragment_repair_request(
+        request.fragment_id,
+        request.fragment_count,
+        request.missing,
+        request.source);
+    }
+  }
+
+  static bool parse_fragment_index_ranges(
+    const std::string & text,
+    size_t fragment_count,
+    std::vector<size_t> * indexes)
+  {
+    if (indexes == nullptr || text.empty() || fragment_count == 0) {
+      return false;
+    }
+    indexes->clear();
+    size_t start = 0;
+    while (start < text.size() &&
+      indexes->size() < kMaxFragmentRepairIndexesPerRequest)
+    {
+      const size_t end = text.find(',', start);
+      const std::string token = text.substr(
+        start,
+        end == std::string::npos ? std::string::npos : end - start);
+      const size_t dash = token.find('-');
+      size_t first = 0;
+      size_t last = 0;
+      if (dash == std::string::npos) {
+        if (!parse_size_token(token, &first)) {
+          return false;
+        }
+        last = first;
+      } else {
+        if (!parse_size_token(token.substr(0, dash), &first) ||
+          !parse_size_token(token.substr(dash + 1), &last) ||
+          first > last)
+        {
+          return false;
+        }
+      }
+      if (last >= fragment_count) {
+        return false;
+      }
+      for (size_t index = first;
+        index <= last &&
+        indexes->size() < kMaxFragmentRepairIndexesPerRequest;
+        ++index)
+      {
+        if (indexes->empty() || indexes->back() != index) {
+          indexes->push_back(index);
+        }
+      }
+      if (end == std::string::npos) {
+        break;
+      }
+      start = end + 1;
+    }
+    return !indexes->empty();
+  }
+
+  bool handle_fragment_repair_request(
+    const std::string & payload,
+    const sockaddr_in * source)
+  {
+    const std::string prefix(kRepairFragmentNackPrefix);
+    if (payload.rfind(prefix, 0) != 0) {
+      return false;
+    }
+    const size_t first_separator = payload.find('|', prefix.size());
+    const size_t second_separator =
+      first_separator == std::string::npos ?
+      std::string::npos : payload.find('|', first_separator + 1);
+    if (first_separator == std::string::npos ||
+      second_separator == std::string::npos)
+    {
+      return true;
+    }
+    const std::string fragment_id =
+      payload.substr(prefix.size(), first_separator - prefix.size());
+    size_t fragment_count = 0;
+    if (fragment_id.empty() ||
+      !parse_size_token(
+        payload.substr(
+          first_separator + 1,
+          second_separator - first_separator - 1),
+        &fragment_count))
+    {
+      return true;
+    }
+    std::vector<size_t> indexes;
+    if (!parse_fragment_index_ranges(
+        payload.substr(second_separator + 1),
+        fragment_count,
+        &indexes))
+    {
+      return true;
+    }
+
+    FragmentRepairHistory history;
+    {
+      const std::int64_t now_ns = monotonic_timestamp_ns();
+      std::lock_guard<std::mutex> lock(fragment_history_mutex_);
+      cleanup_fragment_history_locked(now_ns);
+      const auto found = fragment_history_.find(fragment_id);
+      if (found == fragment_history_.end() ||
+        found->second.fragment_count != fragment_count ||
+        found->second.request_count >=
+        static_cast<size_t>(fragment_nack_max_requests_))
+      {
+        return true;
+      }
+      ++found->second.request_count;
+      found->second.last_update_ns = now_ns;
+      history = found->second;
+    }
+    std::vector<sockaddr_in> targets =
+      source == nullptr ? history.targets : std::vector<sockaddr_in>{*source};
+    if (targets.empty()) {
+      return true;
+    }
+    fragment_nacks_received_.fetch_add(1, std::memory_order_relaxed);
+    if (fragment_async_send_enabled_) {
+      (void)enqueue_loss_resilient_fragment_indexes(
+        history.payload,
+        targets,
+        history.is_data_frame,
+        fragment_id,
+        history.chunk_bytes,
+        history.fragment_count,
+        indexes,
+        true);
+    } else if (history.payload) {
+      (void)send_loss_resilient_fragment_indexes(
+        *history.payload,
+        targets,
+        "FleetRMW selective fragment repair",
+        history.is_data_frame,
+        fragment_id,
+        history.chunk_bytes,
+        history.fragment_count,
+        indexes,
+        true);
+    }
+    return true;
+  }
+
   bool try_reassemble_fragment(
     const std::string & datagram,
-    std::string * complete_payload)
+    std::string * complete_payload,
+    const sockaddr_in * source = nullptr)
   {
     if (complete_payload != nullptr) {
       complete_payload->clear();
@@ -4369,7 +5074,7 @@ private:
     }
     const std::string chunk = datagram.substr(separators[3] + 1);
     const std::int64_t now_ns = monotonic_timestamp_ns();
-    std::lock_guard<std::mutex> lock(fragment_mutex_);
+    std::unique_lock<std::mutex> lock(fragment_mutex_);
     cleanup_stale_fragment_assemblies_locked(now_ns);
     const std::string assembly_key = prefix + fragment_id;
     FragmentAssembly & assembly = fragment_assemblies_[assembly_key];
@@ -4378,10 +5083,17 @@ private:
       assembly.total_size = total_size;
       assembly.chunks.assign(fragment_count, std::string{});
       assembly.received.assign(fragment_count, false);
+      assembly.first_update_ns = now_ns;
+      assembly.fragment_id = fragment_id;
+      assembly.repair_capable = prefix == kRepairFragmentPrefix;
     }
     if (assembly.fragment_count != fragment_count || assembly.total_size != total_size) {
       fragment_assemblies_.erase(assembly_key);
       return true;
+    }
+    if (source != nullptr) {
+      assembly.source = *source;
+      assembly.source_available = true;
     }
     assembly.last_update_ns = now_ns;
     if (!assembly.received[fragment_index]) {
@@ -4390,6 +5102,7 @@ private:
       assembly.received_count += 1;
     }
     if (assembly.received_count != assembly.fragment_count) {
+      lock.unlock();
       return true;
     }
     std::string reassembled;
@@ -4407,11 +5120,14 @@ private:
     return true;
   }
 
-  void handle_received_datagram(const std::string & datagram, bool udp_wire_payload)
+  void handle_received_datagram(
+    const std::string & datagram,
+    bool udp_wire_payload,
+    const sockaddr_in * source = nullptr)
   {
     std::string complete_payload;
     std::string wire_payload;
-    if (try_reassemble_fragment(datagram, &complete_payload)) {
+    if (try_reassemble_fragment(datagram, &complete_payload, source)) {
       if (complete_payload.empty()) {
         return;
       }
@@ -4434,7 +5150,10 @@ private:
       return;
     }
     std::string repaired_payload;
-    if (try_reassemble_fragment(plaintext, &repaired_payload)) {
+    if (handle_fragment_repair_request(plaintext, source)) {
+      return;
+    }
+    if (try_reassemble_fragment(plaintext, &repaired_payload, source)) {
       if (repaired_payload.empty()) {
         return;
       }
@@ -4469,7 +5188,10 @@ private:
   int fd_{-1};
   sockaddr_in address_{};
   std::thread receive_thread_;
+  std::thread fragment_sender_thread_;
+  std::mutex lifecycle_mutex_;
   std::atomic_bool running_{false};
+  std::atomic_bool fragment_sender_running_{false};
   std::atomic<std::uint64_t> frames_sent_{0};
   std::atomic<std::uint64_t> frames_received_{0};
   std::atomic<std::uint64_t> data_frames_received_{0};
@@ -4527,6 +5249,14 @@ private:
   std::atomic<std::uint64_t> unrecoverable_loss_notices_sent_{0};
   std::atomic<std::uint64_t> unrecoverable_loss_notices_received_{0};
   std::atomic<std::uint64_t> nack_retransmissions_{0};
+  std::atomic<std::uint64_t> fragment_nacks_sent_{0};
+  std::atomic<std::uint64_t> fragment_nacks_received_{0};
+  std::atomic<std::uint64_t> fragments_selectively_retransmitted_{0};
+  std::atomic<std::uint64_t> fragment_repair_requests_coalesced_{0};
+  std::atomic<std::uint64_t> test_dropped_fragments_{0};
+  std::atomic<std::uint64_t> fragment_send_queue_rejections_{0};
+  std::atomic<std::uint64_t> fragment_send_failures_{0};
+  std::atomic<size_t> fragment_send_queue_high_water_{0};
   std::atomic<std::uint64_t> test_dropped_frames_{0};
   std::atomic<std::uint64_t> adaptive_failovers_{0};
   std::atomic<std::uint64_t> adaptive_unicast_frames_{0};
@@ -4551,11 +5281,23 @@ private:
   rmw_fleetqox_cpp::SharedMemoryTransport shared_memory_transport_;
   std::mutex fragment_mutex_;
   std::unordered_map<std::string, FragmentAssembly> fragment_assemblies_;
+  std::mutex fragment_history_mutex_;
+  std::unordered_map<std::string, FragmentRepairHistory> fragment_history_;
+  std::mutex fragment_send_queue_mutex_;
+  std::condition_variable fragment_send_queue_cv_;
+  std::deque<PendingFragmentSend> fragment_initial_send_queue_;
+  std::deque<PendingFragmentSend> fragment_repair_send_queue_;
+  std::unordered_set<std::string> fragment_repair_pending_keys_;
   std::mutex udp_send_mutex_;
   std::chrono::steady_clock::time_point next_udp_send_time_{};
   int udp_socket_buffer_bytes_{0};
   int udp_send_pacing_us_{0};
   int loss_resilient_fragment_chunk_bytes_{0};
+  int fragment_nack_interval_ms_{50};
+  int fragment_nack_max_requests_{6};
+  int fragment_history_limit_{1024};
+  int fragment_send_queue_limit_{32768};
+  bool fragment_async_send_enabled_{false};
   std::string peer_policy_{"all"};
   std::vector<sockaddr_in> peer_addresses_;
   std::vector<std::string> peer_path_ids_;
@@ -4563,11 +5305,13 @@ private:
   mutable std::string fleet_path_plan_file_;
   mutable std::string fleet_path_plan_file_contents_;
   std::vector<std::uint64_t> drop_source_sequences_;
+  std::vector<std::uint64_t> drop_fragment_indexes_;
   int drop_source_sequence_send_count_{1};
   int proactive_data_repeats_{0};
   int proactive_data_repeat_interval_ms_{5};
   std::mutex test_drop_mutex_;
   std::unordered_map<std::string, std::uint64_t> dropped_source_sequence_counts_;
+  std::unordered_set<std::string> dropped_fragment_keys_;
   mutable std::mutex adaptive_mutex_;
   std::string last_adaptive_nack_key_;
   std::vector<std::uint64_t> adaptive_peer_scores_;
@@ -9415,6 +10159,46 @@ std::uint64_t rmw_fleetqox_cpp_socket_nack_retransmissions()
   return socket_transport().nack_retransmissions();
 }
 
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_nacks_sent()
+{
+  return socket_transport().fragment_nacks_sent();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_nacks_received()
+{
+  return socket_transport().fragment_nacks_received();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragments_selectively_retransmitted()
+{
+  return socket_transport().fragments_selectively_retransmitted();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_repair_requests_coalesced()
+{
+  return socket_transport().fragment_repair_requests_coalesced();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_test_dropped_fragments()
+{
+  return socket_transport().test_dropped_fragments();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_send_queue_rejections()
+{
+  return socket_transport().fragment_send_queue_rejections();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_send_failures()
+{
+  return socket_transport().fragment_send_failures();
+}
+
+size_t rmw_fleetqox_cpp_socket_fragment_send_queue_high_water()
+{
+  return socket_transport().fragment_send_queue_high_water();
+}
+
 std::uint64_t rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions()
 {
   return g_reliable_timeout_retransmissions.load(std::memory_order_relaxed);
@@ -9739,12 +10523,20 @@ std::uint64_t rmw_fleetqox_cpp_shared_memory_overwritten_frames()
 
 bool rmw_fleetqox_cpp_socket_ensure_started()
 {
-  return socket_transport().ready();
+  return socket_transport().ensure_started();
 }
 
 const char * rmw_fleetqox_cpp_socket_init_error()
 {
   return socket_transport().init_error().c_str();
+}
+
+void rmw_fleetqox_cpp_shutdown_pubsub_runtime()
+{
+  stop_pubsub_graph_renewal_thread();
+  stop_reliable_retransmit_thread();
+  stop_qos_deadline_monitor_thread();
+  socket_transport().shutdown();
 }
 
 size_t rmw_fleetqox_cpp_socket_peer_count()
@@ -10115,8 +10907,7 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t * node, rmw_publisher_t * publisher)
     std::lock_guard<std::mutex> lock(g_bus_mutex);
     stop_retransmit = g_publishers.empty();
     stop_graph_renewal = g_publishers.empty() && g_subscriptions.empty();
-    stop_deadline_monitor =
-      g_publishers.empty() && g_subscriptions.empty() && g_remote_pubsub_endpoints.empty();
+    stop_deadline_monitor = g_publishers.empty() && g_subscriptions.empty();
   }
   if (stop_graph_renewal) {
     stop_pubsub_graph_renewal_thread();
@@ -10326,8 +11117,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t * node, rmw_subscription_t * subsc
   {
     std::lock_guard<std::mutex> lock(g_bus_mutex);
     stop_graph_renewal = g_publishers.empty() && g_subscriptions.empty();
-    stop_deadline_monitor =
-      g_publishers.empty() && g_subscriptions.empty() && g_remote_pubsub_endpoints.empty();
+    stop_deadline_monitor = g_publishers.empty() && g_subscriptions.empty();
   }
   if (stop_graph_renewal) {
     stop_pubsub_graph_renewal_thread();
