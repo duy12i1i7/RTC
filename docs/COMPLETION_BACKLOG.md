@@ -1490,6 +1490,25 @@ repairs, and zero queue failures/rejections; its concurrency does not trigger
 the 512-index reduction, so it is diagnostic evidence rather than a positive
 fleet-scale reliability claim.
 
+Initial fragmented frames now use per-frame queues and a rotating scheduler
+instead of one FIFO that emitted every fragment of one sample contiguously.
+The existing 8-initial-to-1-repair traffic-class fairness remains in place.
+Rotation count, frame switches, maximum active initial frames, and maximum
+same-frame run both overall and while contended are exported. A deterministic
+Docker gate publishes eight 32-KiB frames with pacing, reaches seven active
+frame queues and queue high-water 350, observes 512 rotations/420 switches,
+and requires the contended same-frame maximum to be exactly one. It delivers
+8/8 through both RMW hops with complete ACK and zero queue rejection/failure.
+This proves structural interleaving against contiguous whole-frame burst loss;
+the lossy 16-robot outcome remains a separate claim. In the matched
+fragment-only seed-7 frontier, the same configuration improves from `111/160`
+to `152/160`, raises minimum per-topic delivery from `0.2` to `0.6`, reaches
+six active initial-frame queues, and records `14400` rotations with contended
+same-frame maximum one. It still leaves seven publisher topics unacknowledged
+and sends `10236` selective repairs. Because whole-sample retransmission was
+deliberately set to zero, the next gate combines this scheduler with one paced
+fallback for never-observed frames; no fleet-scale claim is made yet.
+
 Fragment repair admission and coalescing are now scoped by the exact UDP reader
 endpoint instead of only `fragment_id|index`. Retry exhaustion by one reader
 therefore cannot consume another reader's history budget, and pending/cooldown

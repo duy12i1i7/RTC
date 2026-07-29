@@ -51,6 +51,8 @@ METRIC_KEYS = (
     "bounded_fragment_repair_burst_claim",
     "docker_fragment_nack_fairness_probe_claim",
     "bounded_fragment_assembly_ttl_claim",
+    "round_robin_initial_fragment_scheduling_claim",
+    "correlated_whole_frame_loss_mitigation_claim",
     "source_scoped_fragment_repair_admission_claim",
     "multi_reader_fragment_repair_isolation_claim",
     "unauthorized_fragment_repair_source_fail_closed_claim",
@@ -1392,6 +1394,8 @@ CLAIM_BOUNDARY_KEYS = (
     "bounded_fragment_repair_burst_claim",
     "docker_fragment_nack_fairness_probe_claim",
     "bounded_fragment_assembly_ttl_claim",
+    "round_robin_initial_fragment_scheduling_claim",
+    "correlated_whole_frame_loss_mitigation_claim",
     "source_scoped_fragment_repair_admission_claim",
     "multi_reader_fragment_repair_isolation_claim",
     "unauthorized_fragment_repair_source_fail_closed_claim",
@@ -2088,9 +2092,11 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         "loss_resilient_large_sample_fragment" in text
         or "loss_resilient_fleet_fair_nack" in text
         or "loss_resilient_retained_assembly" in text
+        or "loss_resilient_round_robin_initial" in text
         or "selective_fragment_repair" in text
         or "fragment_nack_fairness" in text
         or "multireader_fragment_repair" in text
+        or "initial_fragment_round_robin" in text
         or "fragment_assembly_admission" in text
         or "peer_identity_fragment_pressure" in text
     ):

@@ -344,6 +344,18 @@ int main(int argc, char ** argv)
     "rmw_fleetqox_cpp_socket_fragment_repair_source_denials", nullptr) << ",";
   std::cout << "\"fragment_repair_reader_budget_exhausted\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_repair_reader_budget_exhausted", nullptr) << ",";
+  std::cout << "\"fragment_initial_round_robin_rotations\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_initial_round_robin_rotations", nullptr) << ",";
+  std::cout << "\"fragment_initial_frame_switches\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_initial_frame_switches", nullptr) << ",";
+  std::cout << "\"fragment_initial_max_consecutive_same_frame\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_initial_max_consecutive_same_frame", nullptr) << ",";
+  std::cout << "\"fragment_initial_max_consecutive_same_frame_while_contended\":" <<
+    fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_initial_max_consecutive_same_frame_while_contended",
+    nullptr) << ",";
+  std::cout << "\"fragment_initial_max_active_frames\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_initial_max_active_frames", nullptr) << ",";
   std::cout << "\"fragment_nack_indexes_requested\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_nack_indexes_requested", nullptr) << ",";
   std::cout << "\"fragment_nack_index_budget_reductions\":" << fleetqox_metric(

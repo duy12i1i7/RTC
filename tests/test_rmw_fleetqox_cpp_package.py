@@ -1107,6 +1107,26 @@ int main()
             source,
         )
         self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_initial_round_robin_rotations",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_initial_frame_switches",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_initial_max_consecutive_same_frame",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_initial_max_consecutive_same_frame_while_contended",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_initial_max_active_frames",
+            source,
+        )
+        self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_nack_index_budget_reductions",
             source,
         )
@@ -4564,6 +4584,9 @@ int main()
             manifest["supported"]["configurable_fragment_assembly_ttl"]
         )
         self.assertTrue(
+            manifest["supported"]["round_robin_initial_fragment_scheduling"]
+        )
+        self.assertTrue(
             manifest["supported"]["completed_fragment_retransmission_deduplication"]
         )
         self.assertTrue(
@@ -4592,6 +4615,11 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "bounded_fragment_assembly_ttl_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "round_robin_initial_fragment_scheduling_claim"
             ]
         )
         self.assertTrue(

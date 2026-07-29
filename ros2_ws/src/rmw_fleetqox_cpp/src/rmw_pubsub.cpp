@@ -2455,6 +2455,34 @@ public:
       std::memory_order_relaxed);
   }
 
+  std::uint64_t fragment_initial_round_robin_rotations() const
+  {
+    return fragment_initial_round_robin_rotations_.load(
+      std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_initial_frame_switches() const
+  {
+    return fragment_initial_frame_switches_.load(std::memory_order_relaxed);
+  }
+
+  size_t fragment_initial_max_consecutive_same_frame() const
+  {
+    return fragment_initial_max_consecutive_same_frame_.load(
+      std::memory_order_relaxed);
+  }
+
+  size_t fragment_initial_max_consecutive_same_frame_while_contended() const
+  {
+    return fragment_initial_max_consecutive_same_frame_while_contended_.load(
+      std::memory_order_relaxed);
+  }
+
+  size_t fragment_initial_max_active_frames() const
+  {
+    return fragment_initial_max_active_frames_.load(std::memory_order_relaxed);
+  }
+
   std::uint64_t fragment_nack_indexes_requested() const
   {
     return fragment_nack_indexes_requested_.load(std::memory_order_relaxed);
@@ -4280,7 +4308,7 @@ private:
           static_cast<size_t>(fragment_queue_admission_threshold_));
         const auto admission_ready = [this, admission_capacity, &accepted_indexes]() {
             const size_t pending =
-              fragment_initial_send_queue_.size() +
+              fragment_initial_send_queue_size_ +
               fragment_repair_send_queue_.size();
             return !fragment_sender_running_.load(std::memory_order_acquire) ||
                    accepted_indexes.size() <=
@@ -4316,7 +4344,7 @@ private:
         }
       }
       const size_t pending_count =
-        fragment_initial_send_queue_.size() + fragment_repair_send_queue_.size();
+        fragment_initial_send_queue_size_ + fragment_repair_send_queue_.size();
       if (fragment_send_queue_limit_ <= 0 ||
         accepted_indexes.size() >
         static_cast<size_t>(fragment_send_queue_limit_) - std::min(
@@ -4327,29 +4355,57 @@ private:
         fragment_send_queue_rejections_.fetch_add(1, std::memory_order_relaxed);
         return RMW_RET_ERROR;
       }
-      auto & queue = selective_retransmission ?
-        fragment_repair_send_queue_ : fragment_initial_send_queue_;
-      for (const size_t index : accepted_indexes) {
-        if (selective_retransmission) {
+      if (selective_retransmission) {
+        for (const size_t index : accepted_indexes) {
           fragment_repair_pending_keys_.insert(
             fragment_repair_queue_key(
               fragment_id, index, repair_target_scope));
+          fragment_repair_send_queue_.push_back(PendingFragmentSend{
+            payload,
+            targets,
+            fragment_id,
+            chunk_bytes,
+            fragment_count,
+            index,
+            is_data_frame,
+            true,
+            fragment_repair_queue_key(
+              fragment_id, index, repair_target_scope)});
         }
-        queue.push_back(PendingFragmentSend{
-          payload,
-          targets,
-          fragment_id,
-          chunk_bytes,
-          fragment_count,
-          index,
-          is_data_frame,
-          selective_retransmission,
-          selective_retransmission ?
-          fragment_repair_queue_key(
-            fragment_id, index, repair_target_scope) : std::string{}});
+      } else {
+        auto found = fragment_initial_send_queues_.find(fragment_id);
+        if (found == fragment_initial_send_queues_.end()) {
+          found = fragment_initial_send_queues_.emplace(
+            fragment_id, std::deque<PendingFragmentSend>{}).first;
+          fragment_initial_send_order_.push_back(fragment_id);
+          const size_t active_frames = fragment_initial_send_queues_.size();
+          size_t previous_active_max =
+            fragment_initial_max_active_frames_.load(
+            std::memory_order_relaxed);
+          while (previous_active_max < active_frames &&
+            !fragment_initial_max_active_frames_.compare_exchange_weak(
+              previous_active_max,
+              active_frames,
+              std::memory_order_relaxed))
+          {
+          }
+        }
+        for (const size_t index : accepted_indexes) {
+          found->second.push_back(PendingFragmentSend{
+            payload,
+            targets,
+            fragment_id,
+            chunk_bytes,
+            fragment_count,
+            index,
+            is_data_frame,
+            false,
+            std::string{}});
+          ++fragment_initial_send_queue_size_;
+        }
       }
       const size_t updated_count =
-        fragment_initial_send_queue_.size() + fragment_repair_send_queue_.size();
+        fragment_initial_send_queue_size_ + fragment_repair_send_queue_.size();
       size_t observed_high_water =
         fragment_send_queue_high_water_.load(std::memory_order_relaxed);
       while (updated_count > observed_high_water &&
@@ -4367,13 +4423,17 @@ private:
   void fragment_sender_loop()
   {
     size_t consecutive_initial_fragments = 0;
+    size_t consecutive_same_initial_frame = 0;
+    size_t consecutive_same_contended_initial_frame = 0;
+    std::string last_initial_fragment_id;
+    std::string last_contended_initial_fragment_id;
     while (true) {
       PendingFragmentSend task;
       {
         std::unique_lock<std::mutex> lock(fragment_send_queue_mutex_);
         fragment_send_queue_cv_.wait(lock, [this]() {
           return !fragment_sender_running_.load(std::memory_order_acquire) ||
-                 !fragment_initial_send_queue_.empty() ||
+                 fragment_initial_send_queue_size_ > 0 ||
                  !fragment_repair_send_queue_.empty();
         });
         if (!fragment_sender_running_.load(std::memory_order_acquire)) {
@@ -4381,12 +4441,77 @@ private:
         }
         const bool choose_repair =
           !fragment_repair_send_queue_.empty() &&
-          (fragment_initial_send_queue_.empty() ||
+          (fragment_initial_send_queue_size_ == 0 ||
           consecutive_initial_fragments >= 8);
-        auto & queue = choose_repair ?
-          fragment_repair_send_queue_ : fragment_initial_send_queue_;
-        task = std::move(queue.front());
-        queue.pop_front();
+        if (choose_repair) {
+          task = std::move(fragment_repair_send_queue_.front());
+          fragment_repair_send_queue_.pop_front();
+        } else {
+          const bool initial_frame_contention =
+            fragment_initial_send_order_.size() > 1;
+          const std::string fragment_id =
+            std::move(fragment_initial_send_order_.front());
+          fragment_initial_send_order_.pop_front();
+          auto found = fragment_initial_send_queues_.find(fragment_id);
+          if (found == fragment_initial_send_queues_.end() ||
+            found->second.empty())
+          {
+            continue;
+          }
+          task = std::move(found->second.front());
+          found->second.pop_front();
+          --fragment_initial_send_queue_size_;
+          if (found->second.empty()) {
+            fragment_initial_send_queues_.erase(found);
+          } else {
+            fragment_initial_send_order_.push_back(fragment_id);
+            fragment_initial_round_robin_rotations_.fetch_add(
+              1, std::memory_order_relaxed);
+          }
+          if (last_initial_fragment_id == task.fragment_id) {
+            ++consecutive_same_initial_frame;
+          } else {
+            if (!last_initial_fragment_id.empty()) {
+              fragment_initial_frame_switches_.fetch_add(
+                1, std::memory_order_relaxed);
+            }
+            last_initial_fragment_id = task.fragment_id;
+            consecutive_same_initial_frame = 1;
+          }
+          size_t previous_max =
+            fragment_initial_max_consecutive_same_frame_.load(
+            std::memory_order_relaxed);
+          while (previous_max < consecutive_same_initial_frame &&
+            !fragment_initial_max_consecutive_same_frame_.compare_exchange_weak(
+              previous_max,
+              consecutive_same_initial_frame,
+              std::memory_order_relaxed))
+          {
+          }
+          if (initial_frame_contention) {
+            if (last_contended_initial_fragment_id == task.fragment_id) {
+              ++consecutive_same_contended_initial_frame;
+            } else {
+              last_contended_initial_fragment_id = task.fragment_id;
+              consecutive_same_contended_initial_frame = 1;
+            }
+            size_t previous_contended_max =
+              fragment_initial_max_consecutive_same_frame_while_contended_.load(
+              std::memory_order_relaxed);
+            while (previous_contended_max <
+              consecutive_same_contended_initial_frame &&
+              !fragment_initial_max_consecutive_same_frame_while_contended_
+              .compare_exchange_weak(
+                previous_contended_max,
+                consecutive_same_contended_initial_frame,
+                std::memory_order_relaxed))
+            {
+            }
+          } else {
+            last_contended_initial_fragment_id.clear();
+            consecutive_same_contended_initial_frame = 0;
+          }
+        }
         consecutive_initial_fragments =
           choose_repair ? 0 : consecutive_initial_fragments + 1;
         fragment_send_queue_cv_.notify_all();
@@ -4975,7 +5100,9 @@ private:
     }
     {
       std::lock_guard<std::mutex> lock(fragment_send_queue_mutex_);
-      fragment_initial_send_queue_.clear();
+      fragment_initial_send_queues_.clear();
+      fragment_initial_send_order_.clear();
+      fragment_initial_send_queue_size_ = 0;
       fragment_repair_send_queue_.clear();
       fragment_repair_pending_keys_.clear();
       fragment_repair_recent_send_ns_.clear();
@@ -5838,6 +5965,12 @@ private:
   std::atomic<std::uint64_t> fragment_repair_queue_deferrals_{0};
   std::atomic<std::uint64_t> fragment_repair_source_denials_{0};
   std::atomic<std::uint64_t> fragment_repair_reader_budget_exhausted_{0};
+  std::atomic<std::uint64_t> fragment_initial_round_robin_rotations_{0};
+  std::atomic<std::uint64_t> fragment_initial_frame_switches_{0};
+  std::atomic<size_t> fragment_initial_max_consecutive_same_frame_{0};
+  std::atomic<size_t>
+    fragment_initial_max_consecutive_same_frame_while_contended_{0};
+  std::atomic<size_t> fragment_initial_max_active_frames_{0};
   std::atomic<std::uint64_t> fragment_nack_indexes_requested_{0};
   std::atomic<std::uint64_t> fragment_nack_index_budget_reductions_{0};
   std::atomic<size_t> fragment_nack_max_sweep_indexes_requested_{0};
@@ -5877,7 +6010,10 @@ private:
   std::unordered_map<std::string, FragmentRepairHistory> fragment_history_;
   std::mutex fragment_send_queue_mutex_;
   std::condition_variable fragment_send_queue_cv_;
-  std::deque<PendingFragmentSend> fragment_initial_send_queue_;
+  std::unordered_map<std::string, std::deque<PendingFragmentSend>>
+    fragment_initial_send_queues_;
+  std::deque<std::string> fragment_initial_send_order_;
+  size_t fragment_initial_send_queue_size_{0};
   std::deque<PendingFragmentSend> fragment_repair_send_queue_;
   std::unordered_set<std::string> fragment_repair_pending_keys_;
   std::unordered_map<std::string, std::int64_t>
@@ -10904,6 +11040,33 @@ std::uint64_t rmw_fleetqox_cpp_socket_fragment_repair_source_denials()
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_repair_reader_budget_exhausted()
 {
   return socket_transport().fragment_repair_reader_budget_exhausted();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_initial_round_robin_rotations()
+{
+  return socket_transport().fragment_initial_round_robin_rotations();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_initial_frame_switches()
+{
+  return socket_transport().fragment_initial_frame_switches();
+}
+
+size_t rmw_fleetqox_cpp_socket_fragment_initial_max_consecutive_same_frame()
+{
+  return socket_transport().fragment_initial_max_consecutive_same_frame();
+}
+
+size_t
+rmw_fleetqox_cpp_socket_fragment_initial_max_consecutive_same_frame_while_contended()
+{
+  return socket_transport()
+         .fragment_initial_max_consecutive_same_frame_while_contended();
+}
+
+size_t rmw_fleetqox_cpp_socket_fragment_initial_max_active_frames()
+{
+  return socket_transport().fragment_initial_max_active_frames();
 }
 
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_nack_indexes_requested()
