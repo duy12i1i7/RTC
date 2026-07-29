@@ -1440,6 +1440,16 @@ remains open because retries still send all chunks; secure-fragment evidence,
 fragment-specific NACK, fleet-scale/high-rate resource bounds, CPU and memory
 pressure, and a finer burst/pacing sweep are not yet proven.
 
+The 16-robot follow-up confirms that boundary rather than hiding it. Under the
+same exact 32768-byte, 2000 ms, 25 s contract, repaired FleetRMW relay counts
+rise from `1/3/1` to `16/14/16` at seeds `7/13/29`, but all three rows still
+fail. At seed 7, 1000-microsecond UDP pacing reaches `53/160` and completes the
+publisher ACK horizon, yet blocking publication runs past the relay/subscriber
+deadline. Pacing alone therefore exchanges packet loss for deadline overrun.
+The benchmark resume key now fail-closes on `timeout_s`, fragment size, retry
+count, and FleetRMW pacing so this negative result cannot be turned into a
+false success by silently extending the harness window.
+
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
 sequence 1 even when sequence 1 was dropped. ACK feedback now carries the

@@ -80,6 +80,8 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
             "DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS = 6",
             source,
         )
+        self.assertIn("FLEETQOX_RMW_UDP_SEND_PACING_US", source)
+        self.assertIn('"fleetqox_udp_send_pacing_us":', source)
         self.assertIn("netem_shell_prefix", source)
         self.assertIn("publisher_linger_s", source)
 

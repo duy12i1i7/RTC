@@ -47,6 +47,10 @@ def should_reuse_prior_row(
     samples: int,
     payload_bytes: int,
     publish_interval_ms: int,
+    timeout_s: float,
+    fleetqox_loss_resilient_fragment_chunk_bytes: int,
+    fleetqox_reliable_max_retransmissions: int,
+    fleetqox_udp_send_pacing_us: int,
 ) -> bool:
     return (
         row is not None
@@ -58,6 +62,14 @@ def should_reuse_prior_row(
             samples=samples,
             payload_bytes=payload_bytes,
             publish_interval_ms=publish_interval_ms,
+            timeout_s=timeout_s,
+            fleetqox_loss_resilient_fragment_chunk_bytes=(
+                fleetqox_loss_resilient_fragment_chunk_bytes
+            ),
+            fleetqox_reliable_max_retransmissions=(
+                fleetqox_reliable_max_retransmissions
+            ),
+            fleetqox_udp_send_pacing_us=fleetqox_udp_send_pacing_us,
         )
         and not (rerun_failed_rows and row.get("status") == "failed")
         and not row_needs_infrastructure_rerun(row)
@@ -104,6 +116,14 @@ def prior_row_matches_configuration(
     samples: int,
     payload_bytes: int,
     publish_interval_ms: int,
+    timeout_s: float,
+    fleetqox_loss_resilient_fragment_chunk_bytes: int = (
+        DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES
+    ),
+    fleetqox_reliable_max_retransmissions: int = (
+        DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
+    ),
+    fleetqox_udp_send_pacing_us: int = 0,
 ) -> bool:
     result = row.get("result")
     if not isinstance(result, dict):
@@ -127,6 +147,7 @@ def prior_row_matches_configuration(
         recorded_samples = int(recorded("samples"))
         recorded_payload_bytes = int(recorded("payload_bytes") or 0)
         recorded_publish_interval_ms = int(recorded("publish_interval_ms"))
+        recorded_timeout_s = float(recorded("timeout_s"))
         recorded_publisher_linger_s = float(
             result.get("publisher_linger_s", -1.0)
         )
@@ -136,18 +157,24 @@ def prior_row_matches_configuration(
         recorded_max_retransmissions = int(
             result.get("fleetqox_reliable_max_retransmissions") or 0
         )
+        recorded_udp_send_pacing_us = int(
+            result.get("fleetqox_udp_send_pacing_us") or 0
+        )
     except (TypeError, ValueError):
         return False
     recorded_rmw = str(result.get("rmw", row.get("system", "")))
     expected_fragment_chunk_bytes = (
-        DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES
+        fleetqox_loss_resilient_fragment_chunk_bytes
         if recorded_rmw == FLEETQOX_RMW
         else 0
     )
     expected_max_retransmissions = (
-        DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
+        fleetqox_reliable_max_retransmissions
         if recorded_rmw == FLEETQOX_RMW
         else 0
+    )
+    expected_udp_send_pacing_us = (
+        fleetqox_udp_send_pacing_us if recorded_rmw == FLEETQOX_RMW else 0
     )
     return (
         recorded("image") == image
@@ -161,6 +188,12 @@ def prior_row_matches_configuration(
         and recorded_samples == samples
         and recorded_payload_bytes == payload_bytes
         and recorded_publish_interval_ms == publish_interval_ms
+        and math.isclose(
+            recorded_timeout_s,
+            timeout_s,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
         and result.get("relay_mode") == "generic_serialized"
         and result.get("relay_scope")
         == "rclcpp_generic_serialized_passthrough"
@@ -174,6 +207,7 @@ def prior_row_matches_configuration(
         )
         and recorded_fragment_chunk_bytes == expected_fragment_chunk_bytes
         and recorded_max_retransmissions == expected_max_retransmissions
+        and recorded_udp_send_pacing_us == expected_udp_send_pacing_us
     )
 
 
@@ -223,6 +257,13 @@ def run_comparison(
     payload_bytes: int = 0,
     publish_interval_ms: int,
     timeout_s: float,
+    fleetqox_loss_resilient_fragment_chunk_bytes: int = (
+        DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES
+    ),
+    fleetqox_reliable_max_retransmissions: int = (
+        DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
+    ),
+    fleetqox_udp_send_pacing_us: int = 0,
     prior_rows: list[dict[str, Any]] | None = None,
     rerun_failed_rows: bool = False,
 ) -> dict[str, Any]:
@@ -250,6 +291,14 @@ def run_comparison(
                     samples=samples,
                     payload_bytes=payload_bytes,
                     publish_interval_ms=publish_interval_ms,
+                    timeout_s=timeout_s,
+                    fleetqox_loss_resilient_fragment_chunk_bytes=(
+                        fleetqox_loss_resilient_fragment_chunk_bytes
+                    ),
+                    fleetqox_reliable_max_retransmissions=(
+                        fleetqox_reliable_max_retransmissions
+                    ),
+                    fleetqox_udp_send_pacing_us=fleetqox_udp_send_pacing_us,
                 ):
                     rows.append(clean_reused_row(prior_fleet))
                     reused_row_count += 1
@@ -263,6 +312,14 @@ def run_comparison(
                         samples=samples,
                         payload_bytes=payload_bytes,
                         publish_interval_ms=publish_interval_ms,
+                        timeout_s=timeout_s,
+                        fleetqox_loss_resilient_fragment_chunk_bytes=(
+                            fleetqox_loss_resilient_fragment_chunk_bytes
+                        ),
+                        fleetqox_reliable_max_retransmissions=(
+                            fleetqox_reliable_max_retransmissions
+                        ),
+                        fleetqox_udp_send_pacing_us=fleetqox_udp_send_pacing_us,
                     ):
                         resume_configuration_mismatch_count += 1
                     print(f"run {fleet_key}", file=sys.stderr, flush=True)
@@ -283,11 +340,12 @@ def run_comparison(
                         publisher_linger_s=6.0,
                         relay_mode="generic_serialized",
                         fleetqox_loss_resilient_fragment_chunk_bytes=(
-                            DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES
+                            fleetqox_loss_resilient_fragment_chunk_bytes
                         ),
                         fleetqox_reliable_max_retransmissions=(
-                            DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
+                            fleetqox_reliable_max_retransmissions
                         ),
+                        fleetqox_udp_send_pacing_us=fleetqox_udp_send_pacing_us,
                     )
                     rows.append(normalize_row(fleet, system=FLEETQOX_RMW))
                     executed_row_count += 1
@@ -303,6 +361,14 @@ def run_comparison(
                         samples=samples,
                         payload_bytes=payload_bytes,
                         publish_interval_ms=publish_interval_ms,
+                        timeout_s=timeout_s,
+                        fleetqox_loss_resilient_fragment_chunk_bytes=(
+                            fleetqox_loss_resilient_fragment_chunk_bytes
+                        ),
+                        fleetqox_reliable_max_retransmissions=(
+                            fleetqox_reliable_max_retransmissions
+                        ),
+                        fleetqox_udp_send_pacing_us=fleetqox_udp_send_pacing_us,
                     ):
                         rows.append(clean_reused_row(prior))
                         reused_row_count += 1
@@ -316,6 +382,14 @@ def run_comparison(
                         samples=samples,
                         payload_bytes=payload_bytes,
                         publish_interval_ms=publish_interval_ms,
+                        timeout_s=timeout_s,
+                        fleetqox_loss_resilient_fragment_chunk_bytes=(
+                            fleetqox_loss_resilient_fragment_chunk_bytes
+                        ),
+                        fleetqox_reliable_max_retransmissions=(
+                            fleetqox_reliable_max_retransmissions
+                        ),
+                        fleetqox_udp_send_pacing_us=fleetqox_udp_send_pacing_us,
                     ):
                         resume_configuration_mismatch_count += 1
                     print(f"run {key}", file=sys.stderr, flush=True)
@@ -336,11 +410,12 @@ def run_comparison(
                         publisher_linger_s=6.0,
                         relay_mode="generic_serialized",
                         fleetqox_loss_resilient_fragment_chunk_bytes=(
-                            DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES
+                            fleetqox_loss_resilient_fragment_chunk_bytes
                         ),
                         fleetqox_reliable_max_retransmissions=(
-                            DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
+                            fleetqox_reliable_max_retransmissions
                         ),
+                        fleetqox_udp_send_pacing_us=fleetqox_udp_send_pacing_us,
                     )
                     rows.append(normalize_row(baseline, system=rmw))
                     executed_row_count += 1
@@ -458,9 +533,10 @@ def run_comparison(
         "publisher_reliability_horizon_mode":
             "bounded_wait_for_all_acked",
         "fleetqox_loss_resilient_fragment_chunk_bytes":
-            DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
+            fleetqox_loss_resilient_fragment_chunk_bytes,
         "fleetqox_reliable_max_retransmissions":
-            DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
+            fleetqox_reliable_max_retransmissions,
+        "fleetqox_udp_send_pacing_us": fleetqox_udp_send_pacing_us,
         "prior_row_count": len(prior_rows or []),
         "reused_row_count": reused_row_count,
         "executed_row_count": executed_row_count,
@@ -476,6 +552,7 @@ def run_comparison(
             "samples",
             "payload_bytes",
             "publish_interval_ms",
+            "timeout_s",
             "relay_mode",
             "relay_scope",
             "netem_enabled",
@@ -483,6 +560,7 @@ def run_comparison(
             "publisher_linger_s",
             "fleetqox_loss_resilient_fragment_chunk_bytes",
             "fleetqox_reliable_max_retransmissions",
+            "fleetqox_udp_send_pacing_us",
         ],
         "resume_configuration_mismatch_policy":
             "execute_current_configuration",
@@ -613,6 +691,21 @@ def main() -> int:
     parser.add_argument("--publish-interval-ms", type=int, default=50)
     parser.add_argument("--timeout-s", type=float, default=25.0)
     parser.add_argument(
+        "--fleetqox-loss-resilient-fragment-chunk-bytes",
+        type=int,
+        default=DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
+    )
+    parser.add_argument(
+        "--fleetqox-reliable-max-retransmissions",
+        type=int,
+        default=DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
+    )
+    parser.add_argument(
+        "--fleetqox-udp-send-pacing-us",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
         "--summary-json",
         default="results_rmw_socket/same_hop_rmw_comparison_summary.json",
     )
@@ -643,6 +736,18 @@ def main() -> int:
         payload_bytes=max(args.payload_bytes, 0),
         publish_interval_ms=max(args.publish_interval_ms, 0),
         timeout_s=max(args.timeout_s, 1.0),
+        fleetqox_loss_resilient_fragment_chunk_bytes=max(
+            min(args.fleetqox_loss_resilient_fragment_chunk_bytes, 60000),
+            0,
+        ),
+        fleetqox_reliable_max_retransmissions=max(
+            min(args.fleetqox_reliable_max_retransmissions, 100),
+            0,
+        ),
+        fleetqox_udp_send_pacing_us=max(
+            min(args.fleetqox_udp_send_pacing_us, 100000),
+            0,
+        ),
         prior_rows=load_same_hop_prior_rows(args.resume_summary),
         rerun_failed_rows=args.rerun_failed,
     )

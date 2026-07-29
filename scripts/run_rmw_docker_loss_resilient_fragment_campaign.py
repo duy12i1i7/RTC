@@ -176,6 +176,7 @@ def run_campaign(
             relay_mode="generic_serialized",
             fleetqox_loss_resilient_fragment_chunk_bytes=fragment_chunk_bytes,
             fleetqox_reliable_max_retransmissions=max_retransmissions,
+            fleetqox_udp_send_pacing_us=0,
         )
         rows.append({"seed": seed, "status": result.get("status"), "result": result})
     return summarize_campaign(

@@ -41,6 +41,7 @@ METRIC_KEYS = (
     "exact_payload_size_contract_ok",
     "fragment_chunk_bytes",
     "max_retransmissions",
+    "fleetqox_udp_send_pacing_us",
     "loss_resilient_fragment_configuration_contract_ok",
     "loss_resilient_large_sample_fragment_repair_claim",
     "production_large_sample_reliability_claim",

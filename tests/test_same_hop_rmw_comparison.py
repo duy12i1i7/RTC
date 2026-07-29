@@ -40,12 +40,16 @@ def common_relay_result(
         "payload_bytes": payload_bytes,
         "payload_size_contract_ok": True,
         "publish_interval_ms": publish_interval_ms,
+        "timeout_s": 25.0,
         "publisher_linger_s": 6.0,
         "fleetqox_loss_resilient_fragment_chunk_bytes": (
             1024 if system == "rmw_fleetqox_cpp" else None
         ),
         "fleetqox_reliable_max_retransmissions": (
             6 if system == "rmw_fleetqox_cpp" else None
+        ),
+        "fleetqox_udp_send_pacing_us": (
+            0 if system == "rmw_fleetqox_cpp" else None
         ),
         "robot_count": 2,
         "topic_count": 4,
@@ -110,6 +114,10 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                 samples=3,
                 payload_bytes=0,
                 publish_interval_ms=30,
+                timeout_s=25.0,
+                fleetqox_loss_resilient_fragment_chunk_bytes=1024,
+                fleetqox_reliable_max_retransmissions=6,
+                fleetqox_udp_send_pacing_us=0,
             )
         )
         self.assertFalse(
@@ -122,6 +130,10 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                 samples=3,
                 payload_bytes=0,
                 publish_interval_ms=30,
+                timeout_s=25.0,
+                fleetqox_loss_resilient_fragment_chunk_bytes=1024,
+                fleetqox_reliable_max_retransmissions=6,
+                fleetqox_udp_send_pacing_us=0,
             )
         )
 
@@ -138,6 +150,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             "samples": 3,
             "payload_bytes": 0,
             "publish_interval_ms": 30,
+            "timeout_s": 25.0,
         }
         self.assertTrue(
             module.prior_row_matches_configuration(row, **expected)
@@ -149,6 +162,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             ("samples", 4),
             ("payload_bytes", 4096),
             ("publish_interval_ms", 31),
+            ("timeout_s", 30.0),
         ):
             mismatched = dict(expected)
             mismatched[key] = value
@@ -162,6 +176,17 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             module.prior_row_matches_configuration(
                 module.normalize_row(
                     wrong_fragment,
+                    system="rmw_fleetqox_cpp",
+                ),
+                **expected,
+            )
+        )
+        wrong_pacing = common_relay_result()
+        wrong_pacing["fleetqox_udp_send_pacing_us"] = 1000
+        self.assertFalse(
+            module.prior_row_matches_configuration(
+                module.normalize_row(
+                    wrong_pacing,
                     system="rmw_fleetqox_cpp",
                 ),
                 **expected,
@@ -184,6 +209,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                         "samples": 3,
                         "payload_bytes": 0,
                         "publish_interval_ms": 30,
+                        "timeout_s": 25.0,
                         "runs": [row],
                     }
                 ),
@@ -200,6 +226,7 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                 samples=3,
                 payload_bytes=0,
                 publish_interval_ms=30,
+                timeout_s=25.0,
             )
         )
 

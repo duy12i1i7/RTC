@@ -1756,6 +1756,22 @@ historical four-RMW frontier, and it does not prove fragment-specific NACK,
 secure-fragment operation, high-rate/fleet-scale resource bounds, arbitrary
 sample sizes, or production reliability.
 
+The first 16-robot follow-up keeps the historical 32768-byte/2000 ms/25 s
+contract and reruns only the three FleetRMW rows because the new fragment
+configuration invalidates their resume provenance. Stable accumulation raises
+FleetRMW relay delivery from `1/3/1` to `16/14/16` across seeds `7/13/29`, but
+all three rows still fail and ACK completion remains absent. A seed-7
+calibration at 1000 microseconds of UDP pacing reaches `53/160` and completes
+the publisher ACK horizon, but blocking publish extends beyond the 25 s
+application-processing deadline, so relay and subscriber still fail. This is
+a negative result, not a repaired fleet-scale operating point: pacing trades
+loss for deadline overrun while whole-sample retries resend every chunk.
+Same-hop resume validation now includes `timeout_s`, fragment size, retry
+count, and FleetRMW pacing, preventing a longer timeout or different pacing
+from silently reusing stale rows. The next transport step is fragment-specific
+NACK/selective resend plus measured publication duration/effective offered
+load.
+
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK
 through a dropped sequence 1. ACK feedback now carries

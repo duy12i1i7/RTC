@@ -268,6 +268,7 @@ def run_probe(
     fleetqox_reliable_max_retransmissions: int = (
         DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
     ),
+    fleetqox_udp_send_pacing_us: int = 0,
 ) -> dict[str, Any]:
     if samples <= 0 or robot_count <= 0:
         raise ValueError("samples and robot_count must be positive")
@@ -285,6 +286,8 @@ def run_probe(
         raise ValueError(
             "fleetqox_reliable_max_retransmissions is outside 0..100"
         )
+    if not 0 <= fleetqox_udp_send_pacing_us <= 100000:
+        raise ValueError("fleetqox_udp_send_pacing_us is outside 0..100000")
     if relay_mode not in {"generic_serialized", "rclpy_typed"}:
         raise ValueError("unsupported relay_mode")
     if rmw == FLEETQOX_RMW and relay_mode != "generic_serialized":
@@ -412,6 +415,8 @@ def run_probe(
                             str(
                                 fleetqox_loss_resilient_fragment_chunk_bytes
                             ),
+                        "FLEETQOX_RMW_UDP_SEND_PACING_US":
+                            str(fleetqox_udp_send_pacing_us),
                     }
                 )
         if use_zenoh_router:
@@ -595,6 +600,10 @@ def run_probe(
                 fleetqox_loss_resilient_fragment_chunk_bytes
                 if use_fleetqox_direct_peers else None
             ),
+            "fleetqox_udp_send_pacing_us": (
+                fleetqox_udp_send_pacing_us
+                if use_fleetqox_direct_peers else None
+            ),
             "image": image,
             "rmw": rmw,
             "profile": profile,
@@ -728,6 +737,11 @@ def main() -> int:
         default=DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
     )
     parser.add_argument(
+        "--fleetqox-udp-send-pacing-us",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
         "--relay-mode",
         choices=("generic_serialized", "rclpy_typed"),
         default="generic_serialized",
@@ -761,6 +775,10 @@ def main() -> int:
         ),
         fleetqox_reliable_max_retransmissions=max(
             min(args.fleetqox_reliable_max_retransmissions, 100),
+            0,
+        ),
+        fleetqox_udp_send_pacing_us=max(
+            min(args.fleetqox_udp_send_pacing_us, 100000),
             0,
         ),
     )
