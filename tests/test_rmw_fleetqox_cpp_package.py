@@ -1127,6 +1127,24 @@ int main()
             source,
         )
         self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_async_send_completions",
+            source,
+        )
+        self.assertIn("queues_async_udp_fragments", source)
+        self.assertIn("!shared_memory_only()", source)
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_initial_pending_timeout_suppressions",
+            source,
+        )
+        self.assertIn(
+            "FLEETQOX_RMW_FRAGMENT_WHOLE_FALLBACK_GRACE_MS",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_whole_fallback_grace_deferrals",
+            source,
+        )
+        self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_nack_index_budget_reductions",
             source,
         )
@@ -4587,6 +4605,12 @@ int main()
             manifest["supported"]["round_robin_initial_fragment_scheduling"]
         )
         self.assertTrue(
+            manifest["supported"]["async_fragment_ack_timeout_after_drain"]
+        )
+        self.assertTrue(
+            manifest["supported"]["fragment_whole_fallback_grace"]
+        )
+        self.assertTrue(
             manifest["supported"]["completed_fragment_retransmission_deduplication"]
         )
         self.assertTrue(
@@ -4620,6 +4644,11 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "round_robin_initial_fragment_scheduling_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "async_fragment_ack_timeout_after_drain_claim"
             ]
         )
         self.assertTrue(

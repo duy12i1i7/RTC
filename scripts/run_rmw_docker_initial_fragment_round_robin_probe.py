@@ -22,6 +22,7 @@ from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
 
 
 SCHEMA_VERSION = "fleetrmw.initial_fragment_round_robin.v1"
+DEFAULT_FALLBACK_GRACE_MS = 5000
 
 
 def summarize_probe(
@@ -31,6 +32,7 @@ def summarize_probe(
     payload_bytes: int,
     fragment_chunk_bytes: int,
     pacing_us: int,
+    fallback_grace_ms: int = DEFAULT_FALLBACK_GRACE_MS,
 ) -> dict[str, Any]:
     publisher = result.get("publisher")
     metrics = (
@@ -54,6 +56,11 @@ def summarize_probe(
         )
         == fragment_chunk_bytes
         and int(result.get("fleetqox_udp_send_pacing_us", 0)) == pacing_us
+        and int(result.get("fleetqox_reliable_max_retransmissions", -1)) == 1
+        and int(
+            result.get("fleetqox_fragment_whole_fallback_grace_ms", -1)
+        )
+        == fallback_grace_ms
         and result.get("fleetqox_fragment_async_send") is True
         and int(result.get("relay_expected_count", -1)) == expected_frames
         and int(result.get("relay_payload_count", -1)) == expected_frames
@@ -75,6 +82,17 @@ def summarize_probe(
         )
         == 1
         and int(metrics.get("fragment_initial_max_active_frames", 0)) >= 2
+        and int(metrics.get("fragment_async_send_completions", -1))
+        == expected_frames
+        and int(
+            metrics.get(
+                "fragment_initial_pending_timeout_suppressions", 0
+            )
+        ) > 0
+        and int(
+            metrics.get("fragment_whole_fallback_grace_deferrals", 0)
+        ) > 0
+        and int(metrics.get("reliable_timeout_retransmissions", -1)) == 0
         and int(metrics.get("fragment_send_queue_high_water", 0)) > 0
         and int(metrics.get("fragment_send_queue_rejections", -1)) == 0
         and int(metrics.get("fragment_send_failures", -1)) == 0
@@ -87,8 +105,10 @@ def summarize_probe(
         "payload_bytes": payload_bytes,
         "fragment_chunk_bytes": fragment_chunk_bytes,
         "pacing_us": pacing_us,
+        "fallback_grace_ms": fallback_grace_ms,
         "round_robin_initial_fragment_scheduling_claim": contract_ok,
         "correlated_whole_frame_loss_mitigation_claim": contract_ok,
+        "async_fragment_ack_timeout_after_drain_claim": contract_ok,
         "fleet_scale_selective_fragment_repair_claim": False,
         "production_large_sample_reliability_claim": False,
         "result": result,
@@ -103,6 +123,7 @@ def run_probe(
     payload_bytes: int,
     fragment_chunk_bytes: int,
     pacing_us: int,
+    fallback_grace_ms: int = DEFAULT_FALLBACK_GRACE_MS,
 ) -> dict[str, Any]:
     result = run_relay(
         root=root,
@@ -121,7 +142,8 @@ def run_probe(
         publisher_linger_s=4.0,
         relay_mode="generic_serialized",
         fleetqox_loss_resilient_fragment_chunk_bytes=fragment_chunk_bytes,
-        fleetqox_reliable_max_retransmissions=0,
+        fleetqox_reliable_max_retransmissions=1,
+        fleetqox_fragment_whole_fallback_grace_ms=fallback_grace_ms,
         fleetqox_udp_send_pacing_us=pacing_us,
         fleetqox_fragment_async_send=True,
         fleetqox_fragment_send_queue_limit=(
@@ -134,6 +156,7 @@ def run_probe(
         payload_bytes=payload_bytes,
         fragment_chunk_bytes=fragment_chunk_bytes,
         pacing_us=pacing_us,
+        fallback_grace_ms=fallback_grace_ms,
     )
 
 
@@ -144,6 +167,11 @@ def main() -> int:
     parser.add_argument("--payload-bytes", type=int, default=32768)
     parser.add_argument("--fragment-chunk-bytes", type=int, default=1024)
     parser.add_argument("--pacing-us", type=int, default=1600)
+    parser.add_argument(
+        "--fallback-grace-ms",
+        type=int,
+        default=DEFAULT_FALLBACK_GRACE_MS,
+    )
     parser.add_argument(
         "--summary-json",
         type=Path,
@@ -160,6 +188,7 @@ def main() -> int:
         payload_bytes=max(args.payload_bytes, 1),
         fragment_chunk_bytes=max(min(args.fragment_chunk_bytes, 60000), 1),
         pacing_us=max(min(args.pacing_us, 100000), 1),
+        fallback_grace_ms=max(min(args.fallback_grace_ms, 60000), 1),
     )
     path = ROOT / args.summary_json
     path.parent.mkdir(parents=True, exist_ok=True)

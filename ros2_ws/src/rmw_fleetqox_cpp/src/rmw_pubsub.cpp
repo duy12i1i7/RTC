@@ -233,6 +233,9 @@ struct ReliableRetransmitEntry
   std::unordered_set<std::string> pending_subscriber_ids{};
   bool fragment_observed_by_reader{false};
   bool fragment_timeout_suppression_recorded{false};
+  bool fragment_initial_send_pending{false};
+  bool fragment_initial_pending_suppression_recorded{false};
+  bool fragment_fallback_grace_deferral_recorded{false};
 };
 
 struct RemotePubSubEndpoint
@@ -314,6 +317,9 @@ std::atomic<std::uint64_t> g_idle_repair_ack_nack_sent{0};
 std::atomic<std::uint64_t> g_reliable_timeout_retransmissions{0};
 std::atomic<std::uint64_t> g_fragment_observed_timeout_retransmissions_suppressed{0};
 std::atomic<std::uint64_t> g_fragment_whole_fallback_pacing_deferrals{0};
+std::atomic<std::uint64_t> g_fragment_async_send_completions{0};
+std::atomic<std::uint64_t> g_fragment_initial_pending_timeout_suppressions{0};
+std::atomic<std::uint64_t> g_fragment_whole_fallback_grace_deferrals{0};
 std::atomic<std::uint64_t> g_unrecoverable_loss_samples_reported{0};
 std::atomic<std::uint64_t> g_wait_for_all_acked_calls{0};
 std::atomic<std::uint64_t> g_wait_for_all_acked_successes{0};
@@ -348,6 +354,9 @@ bool apply_received_graph_advertisement(const std::string & encoded_frame);
 bool handle_ack_nack_feedback(const std::string & encoded_frame);
 bool handle_unrecoverable_loss_notice(const std::string & encoded_frame);
 void record_fragment_repair_observation(const std::string & encoded_frame);
+void record_fragment_async_send_complete(const std::string & encoded_frame);
+void record_fragment_async_send_failed(const std::string & encoded_frame);
+int loss_resilient_fragment_chunk_bytes();
 void record_subscription_message_lost_locked(
   FleetQoxSubscriptionData * data,
   size_t count,
@@ -2075,6 +2084,20 @@ public:
     return send_frame_with_qos(encoded_frame, &qos);
   }
 
+  bool queues_async_udp_fragments(const std::string & encoded_frame) const
+  {
+    const bool udp_target_available =
+      !peer_addresses_.empty() ||
+      address_.sin_addr.s_addr != htonl(INADDR_ANY);
+    return ready_ &&
+           fragment_async_send_enabled_ &&
+           loss_resilient_fragment_chunk_bytes_ > 0 &&
+           encoded_frame.size() >
+           static_cast<size_t>(loss_resilient_fragment_chunk_bytes_) &&
+           !shared_memory_only() &&
+           udp_target_available;
+  }
+
   rmw_ret_t send_frame_with_qos(
     const std::string & encoded_frame,
     const rmw_qos_profile_t * qos)
@@ -3135,6 +3158,7 @@ private:
     bool is_data_frame{false};
     bool selective_retransmission{false};
     std::string repair_key;
+    bool initial_send_completion{false};
   };
 
   std::vector<sockaddr_in> frame_targets(bool include_local) const
@@ -4462,6 +4486,7 @@ private:
           found->second.pop_front();
           --fragment_initial_send_queue_size_;
           if (found->second.empty()) {
+            task.initial_send_completion = true;
             fragment_initial_send_queues_.erase(found);
           } else {
             fragment_initial_send_order_.push_back(fragment_id);
@@ -4530,6 +4555,13 @@ private:
         task.selective_retransmission);
       if (ret != RMW_RET_OK) {
         fragment_send_failures_.fetch_add(1, std::memory_order_relaxed);
+      }
+      if (!task.selective_retransmission && task.initial_send_completion) {
+        if (ret == RMW_RET_OK) {
+          record_fragment_async_send_complete(*task.payload);
+        } else {
+          record_fragment_async_send_failed(*task.payload);
+        }
       }
       if (task.selective_retransmission) {
         std::lock_guard<std::mutex> lock(fragment_send_queue_mutex_);
@@ -6088,6 +6120,42 @@ void record_fragment_repair_observation(const std::string & encoded_frame)
   if (found != g_retransmit_ledger.end()) {
     found->second.fragment_observed_by_reader = true;
   }
+}
+
+void record_fragment_async_send_terminal(
+  const std::string & encoded_frame,
+  bool completed)
+{
+  const auto frame = rmw_fleetqox_cpp::decode_data_frame(encoded_frame);
+  if (!frame.has_value()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_bus_mutex);
+  const auto found = g_retransmit_ledger.find(
+    retransmit_ledger_key(
+      frame->publisher_id,
+      frame->source_sequence_number));
+  if (found == g_retransmit_ledger.end()) {
+    return;
+  }
+  found->second.fragment_initial_send_pending = false;
+  found->second.fragment_initial_pending_suppression_recorded = false;
+  found->second.fragment_fallback_grace_deferral_recorded = false;
+  if (completed) {
+    found->second.last_send_ns = monotonic_timestamp_ns();
+    g_fragment_async_send_completions.fetch_add(
+      1, std::memory_order_relaxed);
+  }
+}
+
+void record_fragment_async_send_complete(const std::string & encoded_frame)
+{
+  record_fragment_async_send_terminal(encoded_frame, true);
+}
+
+void record_fragment_async_send_failed(const std::string & encoded_frame)
+{
+  record_fragment_async_send_terminal(encoded_frame, false);
 }
 
 bool handle_ack_nack_feedback(const std::string & encoded_frame)
@@ -9152,6 +9220,9 @@ rmw_ret_t publish_payload(FleetQoxPublisherData * data, const std::vector<std::u
     retransmit_entry.expected_acknowledgments = matched_subscription_ids.size();
     retransmit_entry.pending_subscriber_ids.insert(
       matched_subscription_ids.begin(), matched_subscription_ids.end());
+    retransmit_entry.fragment_initial_send_pending =
+      reliable &&
+      socket_transport().queues_async_udp_fragments(encoded_frame);
     g_retransmit_ledger[retransmit_ledger_key(data->publisher_id, source_sequence)] =
       std::move(retransmit_entry);
   }
@@ -9162,7 +9233,12 @@ rmw_ret_t publish_payload(FleetQoxPublisherData * data, const std::vector<std::u
     send_publisher_graph_advertisement(data, "liveliness_assert");
   }
   maybe_renew_publisher_graph(data);
-  return socket_transport().send_data_frame(encoded_frame, data->qos);
+  const rmw_ret_t send_ret =
+    socket_transport().send_data_frame(encoded_frame, data->qos);
+  if (send_ret != RMW_RET_OK) {
+    record_fragment_async_send_failed(encoded_frame);
+  }
+  return send_ret;
 }
 
 int reliable_ack_timeout_ms()
@@ -9179,6 +9255,13 @@ int reliable_max_timeout_retransmissions()
   return max_retransmissions;
 }
 
+int loss_resilient_fragment_chunk_bytes()
+{
+  static const int chunk_bytes = parse_nonnegative_int_env(
+    "FLEETQOX_RMW_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES", 0, 60000);
+  return chunk_bytes;
+}
+
 int fragment_whole_fallback_interval_ms()
 {
   static const int interval_ms = parse_nonnegative_int_env(
@@ -9186,11 +9269,16 @@ int fragment_whole_fallback_interval_ms()
   return interval_ms;
 }
 
+int fragment_whole_fallback_grace_ms()
+{
+  static const int grace_ms = parse_nonnegative_int_env(
+    "FLEETQOX_RMW_FRAGMENT_WHOLE_FALLBACK_GRACE_MS", 1000, 60000);
+  return grace_ms;
+}
+
 bool loss_resilient_fragment_mode_configured()
 {
-  static const bool configured = parse_nonnegative_int_env(
-    "FLEETQOX_RMW_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES", 0, 60000) > 0;
-  return configured;
+  return loss_resilient_fragment_chunk_bytes() > 0;
 }
 
 void reliable_retransmit_loop()
@@ -9209,6 +9297,9 @@ void reliable_retransmit_loop()
   const std::int64_t fragment_fallback_interval_ns =
     static_cast<std::int64_t>(
     fragment_whole_fallback_interval_ms()) * 1000000ll;
+  const std::int64_t fragment_fallback_grace_ns =
+    static_cast<std::int64_t>(
+    fragment_whole_fallback_grace_ms()) * 1000000ll;
   std::int64_t next_fragment_fallback_ns = 0;
   while (g_reliable_retransmit_running.load(std::memory_order_acquire)) {
     std::this_thread::sleep_for(poll_interval);
@@ -9237,11 +9328,31 @@ void reliable_retransmit_loop()
           ++it;
           continue;
         }
+        if (entry.fragment_initial_send_pending) {
+          if (!entry.fragment_initial_pending_suppression_recorded) {
+            g_fragment_initial_pending_timeout_suppressions.fetch_add(
+              1, std::memory_order_relaxed);
+            entry.fragment_initial_pending_suppression_recorded = true;
+          }
+          ++it;
+          continue;
+        }
         if (entry.fragment_observed_by_reader) {
           if (!entry.fragment_timeout_suppression_recorded) {
             g_fragment_observed_timeout_retransmissions_suppressed.fetch_add(
               1, std::memory_order_relaxed);
             entry.fragment_timeout_suppression_recorded = true;
+          }
+          ++it;
+          continue;
+        }
+        if (pace_fragment_fallback &&
+          now - entry.last_send_ns < fragment_fallback_grace_ns)
+        {
+          if (!entry.fragment_fallback_grace_deferral_recorded) {
+            g_fragment_whole_fallback_grace_deferrals.fetch_add(
+              1, std::memory_order_relaxed);
+            entry.fragment_fallback_grace_deferral_recorded = true;
           }
           ++it;
           continue;
@@ -9256,6 +9367,10 @@ void reliable_retransmit_loop()
         }
         entry.last_send_ns = now;
         ++entry.timeout_retransmissions;
+        entry.fragment_initial_send_pending =
+          socket_transport().queues_async_udp_fragments(entry.encoded_frame);
+        entry.fragment_initial_pending_suppression_recorded = false;
+        entry.fragment_fallback_grace_deferral_recorded = false;
         pending.emplace_back(entry.encoded_frame, entry.qos);
         if (pace_fragment_fallback) {
           fragment_fallback_scheduled = true;
@@ -9270,10 +9385,12 @@ void reliable_retransmit_loop()
         1, std::memory_order_relaxed);
     }
     for (const auto & retransmission : pending) {
-      if (socket_transport().send_data_frame(retransmission.first, retransmission.second) ==
-        RMW_RET_OK)
+      if (socket_transport().send_data_frame(
+          retransmission.first, retransmission.second) == RMW_RET_OK)
       {
         g_reliable_timeout_retransmissions.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        record_fragment_async_send_failed(retransmission.first);
       }
     }
   }
@@ -11154,6 +11271,25 @@ rmw_fleetqox_cpp_socket_fragment_observed_timeout_retransmissions_suppressed()
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_whole_fallback_pacing_deferrals()
 {
   return g_fragment_whole_fallback_pacing_deferrals.load(
+    std::memory_order_relaxed);
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_async_send_completions()
+{
+  return g_fragment_async_send_completions.load(std::memory_order_relaxed);
+}
+
+std::uint64_t
+rmw_fleetqox_cpp_socket_fragment_initial_pending_timeout_suppressions()
+{
+  return g_fragment_initial_pending_timeout_suppressions.load(
+    std::memory_order_relaxed);
+}
+
+std::uint64_t
+rmw_fleetqox_cpp_socket_fragment_whole_fallback_grace_deferrals()
+{
+  return g_fragment_whole_fallback_grace_deferrals.load(
     std::memory_order_relaxed);
 }
 

@@ -43,6 +43,7 @@ METRIC_KEYS = (
     "max_retransmissions",
     "fleetqox_udp_send_pacing_us",
     "fleetqox_fragment_assembly_ttl_ms",
+    "fleetqox_fragment_whole_fallback_grace_ms",
     "loss_resilient_fragment_configuration_contract_ok",
     "loss_resilient_large_sample_fragment_repair_claim",
     "fragment_specific_nack_selective_retransmission_claim",
@@ -53,6 +54,7 @@ METRIC_KEYS = (
     "bounded_fragment_assembly_ttl_claim",
     "round_robin_initial_fragment_scheduling_claim",
     "correlated_whole_frame_loss_mitigation_claim",
+    "async_fragment_ack_timeout_after_drain_claim",
     "source_scoped_fragment_repair_admission_claim",
     "multi_reader_fragment_repair_isolation_claim",
     "unauthorized_fragment_repair_source_fail_closed_claim",
@@ -1396,6 +1398,7 @@ CLAIM_BOUNDARY_KEYS = (
     "bounded_fragment_assembly_ttl_claim",
     "round_robin_initial_fragment_scheduling_claim",
     "correlated_whole_frame_loss_mitigation_claim",
+    "async_fragment_ack_timeout_after_drain_claim",
     "source_scoped_fragment_repair_admission_claim",
     "multi_reader_fragment_repair_isolation_claim",
     "unauthorized_fragment_repair_source_fail_closed_claim",
@@ -2093,6 +2096,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         or "loss_resilient_fleet_fair_nack" in text
         or "loss_resilient_retained_assembly" in text
         or "loss_resilient_round_robin_initial" in text
+        or "loss_resilient_round_robin_unseen_fallback" in text
         or "selective_fragment_repair" in text
         or "fragment_nack_fairness" in text
         or "multireader_fragment_repair" in text

@@ -93,6 +93,9 @@ def common_relay_result(
         "fleetqox_fragment_whole_fallback_interval_ms": (
             250 if system == "rmw_fleetqox_cpp" else None
         ),
+        "fleetqox_fragment_whole_fallback_grace_ms": (
+            1000 if system == "rmw_fleetqox_cpp" else None
+        ),
         "robot_count": 2,
         "topic_count": 4,
         "repetition_seed": 7,

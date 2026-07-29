@@ -221,6 +221,8 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker deterministic 8-frame contended initial-fragment round-robin scheduling | `results_rmw_socket/docker_initial_fragment_round_robin_probe_summary.json` |
 | Docker/netem 16-robot 32-KiB configurable assembly-retention frontier, seed 7 | `results_rmw_socket/loss_resilient_retained_assembly_32768_16robot_seed7_summary.json` |
 | Docker/netem 16-robot 32-KiB round-robin initial-fragment frontier, seed 7 | `results_rmw_socket/loss_resilient_round_robin_initial_32768_16robot_seed7_summary.json` |
+| Docker/netem 16-robot 32-KiB drain-aware fallback frontier, 1-second grace, seed 7 | `results_rmw_socket/loss_resilient_round_robin_unseen_fallback_32768_16robot_seed7_summary.json` |
+| Docker/netem 16-robot 32-KiB drain-aware fallback frontier, 5-second grace, seed 7 | `results_rmw_socket/loss_resilient_round_robin_unseen_fallback_grace5000_32768_16robot_seed7_summary.json` |
 | Docker raw-UDP bounded fragment-assembly admission, oversize/collision rejection, and exact TTL expiry | `results_rmw_socket/docker_fragment_assembly_admission_probe_summary.json` |
 | Docker two-peer AES-256-GCM authenticated fragment-assembly admission and unprotected-fragment fail-closed control | `results_rmw_socket/docker_authenticated_fragment_assembly_probe_summary.json` |
 | Docker three-peer X.509 unauthorized-identity fragment-pressure isolation, five independent runs | `results_rmw_socket/docker_peer_identity_fragment_pressure_probe_summary.json` |

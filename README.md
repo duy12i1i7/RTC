@@ -132,9 +132,13 @@ This repository starts with the part that should be proven first:
   from both exact 32768-byte messages while whole-sample timeout retry is
   disabled; it relays `2/2`, records exactly two drops and two selective
   retransmissions, completes every ACK, rejects no queue entry, and exits
-  `0/0/0`. A four-robot roaming-loss run additionally relays `40/40`; the
-  current 16-robot frontier remains negative (`125/160` best observed), so
-  secure-fragment fleet-scale evidence and production reliability remain open;
+  `0/0/0`. Async fragment ACK timing is rebased when the final queued fragment
+  is physically sent, and a configurable post-drain grace prevents premature
+  whole-frame fallback; the deterministic eight-frame gate completes `8/8`
+  with one retry available but zero whole-frame retries. A four-robot
+  roaming-loss run additionally relays `40/40`; the current 16-robot frontier
+  remains negative (`154/160` best observed), so secure-fragment fleet-scale
+  evidence and production reliability remain open;
 - a QoS event ABI surface where publisher/subscription event init/fini,
   event callback setters, support checks, and offered/requested deadline missed
   event production pass in Docker; deadline misses are produced by a timer

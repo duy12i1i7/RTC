@@ -1509,6 +1509,23 @@ and sends `10236` selective repairs. Because whole-sample retransmission was
 deliberately set to zero, the next gate combines this scheduler with one paced
 fallback for never-observed frames; no fleet-scale claim is made yet.
 
+That combined gate is now implemented. Reliable timeout accounting marks a
+fragmented sample pending while its asynchronous initial queue drains, rebases
+`last_send_ns` only when the final fragment is physically sent, and applies
+`FLEETQOX_RMW_FRAGMENT_WHOLE_FALLBACK_GRACE_MS` before a whole-sample fallback.
+The deterministic eight-frame Docker gate enables one whole-sample retry and
+uses a 5-second verification grace longer than its 4-second ACK horizon. It
+requires eight drain completions, observed pending-timeout suppression,
+post-drain grace deferral, zero whole-sample timeout retransmissions, complete
+ACK, and clean `0/0/0` teardown. The fleet frontier remains negative: the
+same 16-robot, 32-KiB, seed-7 run reaches `153/160` with a 1-second grace, and
+`154/160` with a 5-second grace. The latter still sends `47` timeout fallbacks,
+`12605` selective fragments, and waits `57.9` seconds in fragment admission.
+The small gain from the longer grace falsifies grace duration as the remaining
+root cause; feedback/repair amplification and the stochastic high-load
+teardown allocator failure remain open. No fleet-scale or production claim is
+made from these runs.
+
 Fragment repair admission and coalescing are now scoped by the exact UDP reader
 endpoint instead of only `fragment_id|index`. Retry exhaustion by one reader
 therefore cannot consume another reader's history budget, and pending/cooldown

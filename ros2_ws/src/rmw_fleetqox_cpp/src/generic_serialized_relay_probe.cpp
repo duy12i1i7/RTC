@@ -356,6 +356,12 @@ int main(int argc, char ** argv)
     nullptr) << ",";
   std::cout << "\"fragment_initial_max_active_frames\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_initial_max_active_frames", nullptr) << ",";
+  std::cout << "\"fragment_async_send_completions\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_async_send_completions", nullptr) << ",";
+  std::cout << "\"fragment_initial_pending_timeout_suppressions\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_initial_pending_timeout_suppressions", nullptr) << ",";
+  std::cout << "\"fragment_whole_fallback_grace_deferrals\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_whole_fallback_grace_deferrals", nullptr) << ",";
   std::cout << "\"fragment_nack_indexes_requested\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_nack_indexes_requested", nullptr) << ",";
   std::cout << "\"fragment_nack_index_budget_reductions\":" << fleetqox_metric(
