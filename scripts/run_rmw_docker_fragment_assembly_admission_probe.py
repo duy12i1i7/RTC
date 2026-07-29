@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import time
 from typing import Any
@@ -17,6 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.run_rmw_docker_authenticated_fragment_assembly_probe import (  # noqa: E402
+    ensure_rmw_build,
+)
 from scripts.run_ros2_direct_rmw_netem_probe import (  # noqa: E402
     parse_last_json,
     run,
@@ -24,9 +26,7 @@ from scripts.run_ros2_direct_rmw_netem_probe import (  # noqa: E402
 )
 from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
     DEFAULT_IMAGE,
-    SERIALIZED_RELAY_BUILD,
     SERIALIZED_RELAY_INSTALL,
-    SERIALIZED_RELAY_LOG,
 )
 
 
@@ -55,7 +55,7 @@ ready_path = os.environ["FLEETQOX_PROBE_READY_FILE"]
 with open(ready_path, "w", encoding="utf-8") as stream:
     stream.write("ready\n")
 
-deadline = time.monotonic() + 3.0
+deadline = time.monotonic() + 0.65
 while time.monotonic() < deadline:
     rclpy.spin_once(node, timeout_sec=0.05)
 
@@ -81,11 +81,34 @@ expected = {
     "fragment_assembly_metadata_mismatch_drops": 1,
 }
 status = "ok" if metrics == expected else "failed"
+deadline = time.monotonic() + 1.4
+while time.monotonic() < deadline:
+    rclpy.spin_once(node, timeout_sec=0.05)
+expiry_names = (
+    "fragment_active_assemblies",
+    "fragment_active_missing_indexes",
+    "fragment_assembly_ttl_expirations",
+    "fragment_assembly_ttl_expired_missing_indexes",
+)
+expiry_metrics = {}
+for name in expiry_names:
+    symbol = getattr(library, f"rmw_fleetqox_cpp_socket_{name}")
+    symbol.restype = ctypes.c_uint64
+    expiry_metrics[name] = int(symbol())
+expiry_expected = {
+    "fragment_active_assemblies": 0,
+    "fragment_active_missing_indexes": 0,
+    "fragment_assembly_ttl_expirations": 4,
+    "fragment_assembly_ttl_expired_missing_indexes": 4,
+}
+status = "ok" if status == "ok" and expiry_metrics == expiry_expected else "failed"
 print(json.dumps({
     "schema_version": "fleetrmw.fragment_assembly_admission_receiver.v1",
     "status": status,
     "metrics": metrics,
     "expected": expected,
+    "expiry_metrics": expiry_metrics,
+    "expiry_expected": expiry_expected,
 }, sort_keys=True))
 node.destroy_node()
 rclpy.shutdown()
@@ -126,8 +149,12 @@ def summarize_probe(
     injector_returncode: int,
     assembly_limit: int,
     max_assembly_bytes: int,
+    assembly_ttl_ms: int = 1000,
 ) -> dict[str, Any]:
     metrics = receiver.get("metrics") if isinstance(receiver, dict) else None
+    expiry_metrics = (
+        receiver.get("expiry_metrics") if isinstance(receiver, dict) else None
+    )
     contract_ok = (
         receiver_returncode == 0
         and injector_returncode == 0
@@ -145,18 +172,32 @@ def summarize_probe(
         and int(
             metrics.get("fragment_assembly_metadata_mismatch_drops", -1)
         ) == 1
+        and isinstance(expiry_metrics, dict)
+        and int(expiry_metrics.get("fragment_active_assemblies", -1)) == 0
+        and int(expiry_metrics.get("fragment_active_missing_indexes", -1))
+        == 0
+        and int(expiry_metrics.get("fragment_assembly_ttl_expirations", -1))
+        == assembly_limit
+        and int(
+            expiry_metrics.get(
+                "fragment_assembly_ttl_expired_missing_indexes", -1
+            )
+        )
+        == assembly_limit
     )
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "ok" if contract_ok else "failed",
         "assembly_limit": assembly_limit,
         "max_assembly_bytes": max_assembly_bytes,
+        "assembly_ttl_ms": assembly_ttl_ms,
         "raw_partial_assembly_count": 6,
         "receiver_returncode": receiver_returncode,
         "injector_returncode": injector_returncode,
         "bounded_fragment_assembly_admission_claim": contract_ok,
         "fragment_assembly_oversize_fail_closed_claim": contract_ok,
         "fragment_metadata_mismatch_isolation_claim": contract_ok,
+        "bounded_fragment_assembly_ttl_claim": contract_ok,
         "production_fragment_security_claim": False,
         "receiver": receiver,
     }
@@ -168,6 +209,7 @@ def run_probe(
     image: str,
     assembly_limit: int,
     max_assembly_bytes: int,
+    assembly_ttl_ms: int,
 ) -> dict[str, Any]:
     suffix = f"{os.getpid()}-{time.time_ns()}"
     network = f"fleetrmw-fragment-admission-net-{suffix}"
@@ -181,37 +223,11 @@ def run_probe(
     injector_returncode = -1
     receiver_result: dict[str, Any] | None = None
 
-    def docker_shell(command: str) -> subprocess.CompletedProcess[str]:
-        return run([
-            "docker",
-            "run",
-            "--rm",
-            "--entrypoint",
-            "bash",
-            "-v",
-            f"{root}:/work",
-            "-w",
-            "/work",
-            image,
-            "-lc",
-            command,
-        ])
-
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
         receiver_script.write_text(RECEIVER_SCRIPT, encoding="utf-8")
         injector_script.write_text(INJECTOR_SCRIPT, encoding="utf-8")
-        install_setup = root / SERIALIZED_RELAY_INSTALL / "setup.bash"
-        if not install_setup.exists():
-            docker_shell(
-                "source /opt/ros/jazzy/setup.bash && "
-                f"colcon --log-base /work/{SERIALIZED_RELAY_LOG} "
-                "build --base-paths ros2_ws/src "
-                "--packages-select fleetrmw_interfaces rmw_fleetqox_cpp "
-                f"--build-base /work/{SERIALIZED_RELAY_BUILD} "
-                f"--install-base /work/{SERIALIZED_RELAY_INSTALL} "
-                "--cmake-args -DCMAKE_BUILD_TYPE=Release"
-            )
+        ensure_rmw_build(root=root, image=image)
         run(["docker", "network", "create", network])
         run([
             "docker",
@@ -242,6 +258,8 @@ def run_probe(
             f"export FLEETQOX_RMW_FRAGMENT_ASSEMBLY_LIMIT={assembly_limit} && "
             "export FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES="
             f"{max_assembly_bytes} && "
+            "export FLEETQOX_RMW_FRAGMENT_ASSEMBLY_TTL_MS="
+            f"{assembly_ttl_ms} && "
             f"export FLEETQOX_PROBE_READY_FILE={ready_path} && "
             f"python3 /work/{receiver_script.relative_to(root)}"
         )
@@ -290,6 +308,7 @@ def run_probe(
         injector_returncode=injector_returncode,
         assembly_limit=assembly_limit,
         max_assembly_bytes=max_assembly_bytes,
+        assembly_ttl_ms=assembly_ttl_ms,
     )
 
 
@@ -298,6 +317,7 @@ def main() -> int:
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--assembly-limit", type=int, default=4)
     parser.add_argument("--max-assembly-bytes", type=int, default=4096)
+    parser.add_argument("--assembly-ttl-ms", type=int, default=1000)
     parser.add_argument(
         "--summary-json",
         type=Path,
@@ -315,6 +335,7 @@ def main() -> int:
             min(args.max_assembly_bytes, 256 * 1024 * 1024),
             1,
         ),
+        assembly_ttl_ms=max(min(args.assembly_ttl_ms, 600000), 1000),
     )
     path = ROOT / args.summary_json
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -20,6 +20,12 @@ class FragmentAssemblyAdmissionProbeTests(unittest.TestCase):
                 "fragment_assembly_oversize_drops": 1,
                 "fragment_assembly_metadata_mismatch_drops": 1,
             },
+            "expiry_metrics": {
+                "fragment_active_assemblies": 0,
+                "fragment_active_missing_indexes": 0,
+                "fragment_assembly_ttl_expirations": 4,
+                "fragment_assembly_ttl_expired_missing_indexes": 4,
+            },
         }
         summary = summarize_probe(
             receiver,
@@ -32,6 +38,7 @@ class FragmentAssemblyAdmissionProbeTests(unittest.TestCase):
         self.assertTrue(
             summary["bounded_fragment_assembly_admission_claim"]
         )
+        self.assertTrue(summary["bounded_fragment_assembly_ttl_claim"])
         self.assertFalse(summary["production_fragment_security_claim"])
 
         receiver["metrics"]["fragment_active_assemblies"] = 5

@@ -1504,9 +1504,20 @@ zero queue failures/rejections.
 
 Fragment reassembly admission is now independently bounded and fail-closed.
 `FLEETQOX_RMW_FRAGMENT_ASSEMBLY_LIMIT` caps concurrent partial assemblies,
-`FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES` rejects oversized declarations,
-and a conflicting count/size tuple cannot erase an existing assembly. A raw
-UDP Docker gate injects six partial assemblies against limit four, one
+`FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES` rejects oversized declarations, and
+a conflicting count/size tuple cannot erase an existing assembly.
+`FLEETQOX_RMW_FRAGMENT_ASSEMBLY_TTL_MS` bounds idle retention. The TTL now
+defaults to 60 seconds, aligned with bounded writer fragment history instead of
+the previous silent 10-second constant. Expiration count and discarded missing
+indexes are exported. The raw-UDP gate first verifies four retained assemblies,
+then configures a 1000-ms TTL and requires exactly four expirations/four
+discarded missing indexes with zero active state.
+The matched 16-robot/32-KiB/seed-7 rerun with the new 60-second provenance
+delivers `111/160`, with zero TTL expirations, zero expired missing indexes,
+zero admission evictions, and zero queue failures/rejections. This falsifies
+the 10-second-expiry hypothesis for that frontier run; configurable retention
+is closed, while fleet-scale reliability remains explicitly unclaimed.
+The raw UDP Docker gate injects six partial assemblies against limit four, one
 oversized declaration, and one metadata collision. It records active `4`,
 missing indexes `4`, evictions `2`, oversize drops `1`, mismatch drops `1`,
 and clean injector/receiver exits. A second two-peer ROS 2 gate sends six

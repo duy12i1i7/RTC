@@ -1118,6 +1118,15 @@ int main()
             "rmw_fleetqox_cpp_socket_fragment_nack_sweep_budget_exhaustions",
             source,
         )
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_ASSEMBLY_TTL_MS", source)
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_assembly_ttl_expirations",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_assembly_ttl_expired_missing_indexes",
+            source,
+        )
         self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_nack_exhausted_assemblies",
             source,
@@ -4552,6 +4561,9 @@ int main()
             manifest["supported"]["source_scoped_fragment_repair_admission"]
         )
         self.assertTrue(
+            manifest["supported"]["configurable_fragment_assembly_ttl"]
+        )
+        self.assertTrue(
             manifest["supported"]["completed_fragment_retransmission_deduplication"]
         )
         self.assertTrue(
@@ -4575,6 +4587,11 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "multi_reader_fragment_repair_isolation_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "bounded_fragment_assembly_ttl_claim"
             ]
         )
         self.assertTrue(

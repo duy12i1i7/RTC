@@ -2560,6 +2560,18 @@ public:
       std::memory_order_relaxed);
   }
 
+  std::uint64_t fragment_assembly_ttl_expirations() const
+  {
+    return fragment_assembly_ttl_expirations_.load(
+      std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_assembly_ttl_expired_missing_indexes() const
+  {
+    return fragment_assembly_ttl_expired_missing_indexes_.load(
+      std::memory_order_relaxed);
+  }
+
   std::uint64_t test_dropped_frames() const
   {
     return test_dropped_frames_.load(std::memory_order_relaxed);
@@ -3046,7 +3058,6 @@ public:
 private:
   static constexpr size_t kMaxUdpPayloadBytes = 65507;
   static constexpr size_t kUdpFragmentChunkBytes = 60000;
-  static constexpr std::int64_t kFragmentAssemblyTtlNs = 10000000000ll;
   static constexpr std::int64_t kFragmentHistoryTtlNs = 60000000000ll;
   static constexpr size_t kMaxFragmentRepairIndexesPerRequest = 64;
   static constexpr size_t kFleetFragmentRepairIndexesPerSweep = 512;
@@ -4747,6 +4758,10 @@ private:
       "FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES",
       16 * 1024 * 1024,
       256 * 1024 * 1024);
+    fragment_assembly_ttl_ms_ = std::max(
+      1000,
+      parse_nonnegative_int_env(
+        "FLEETQOX_RMW_FRAGMENT_ASSEMBLY_TTL_MS", 60000, 600000));
     fragment_send_queue_limit_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT", 32768, 262144);
     fragment_queue_admission_threshold_ = parse_nonnegative_int_env(
@@ -5089,10 +5104,19 @@ private:
 
   void cleanup_stale_fragment_assemblies_locked(std::int64_t now_ns)
   {
+    const std::int64_t assembly_ttl_ns =
+      static_cast<std::int64_t>(fragment_assembly_ttl_ms_) * 1000000ll;
     for (auto it = fragment_assemblies_.begin(); it != fragment_assemblies_.end();) {
       if (it->second.last_update_ns > 0 &&
-        now_ns - it->second.last_update_ns > kFragmentAssemblyTtlNs)
+        now_ns - it->second.last_update_ns > assembly_ttl_ns)
       {
+        const size_t missing =
+          it->second.fragment_count - std::min(
+          it->second.received_count, it->second.fragment_count);
+        fragment_assembly_ttl_expirations_.fetch_add(
+          1, std::memory_order_relaxed);
+        fragment_assembly_ttl_expired_missing_indexes_.fetch_add(
+          static_cast<std::uint64_t>(missing), std::memory_order_relaxed);
         it = fragment_assemblies_.erase(it);
       } else {
         ++it;
@@ -5821,6 +5845,8 @@ private:
   std::atomic<std::uint64_t> fragment_assembly_evictions_{0};
   std::atomic<std::uint64_t> fragment_assembly_oversize_drops_{0};
   std::atomic<std::uint64_t> fragment_assembly_metadata_mismatch_drops_{0};
+  std::atomic<std::uint64_t> fragment_assembly_ttl_expirations_{0};
+  std::atomic<std::uint64_t> fragment_assembly_ttl_expired_missing_indexes_{0};
   std::atomic<std::uint64_t> test_dropped_frames_{0};
   std::atomic<std::uint64_t> adaptive_failovers_{0};
   std::atomic<std::uint64_t> adaptive_unicast_frames_{0};
@@ -5867,6 +5893,7 @@ private:
   int fragment_history_limit_{1024};
   int fragment_assembly_limit_{1024};
   int fragment_max_assembly_bytes_{16 * 1024 * 1024};
+  int fragment_assembly_ttl_ms_{60000};
   int fragment_send_queue_limit_{32768};
   int fragment_queue_admission_threshold_{0};
   int fragment_queue_admission_timeout_ms_{0};
@@ -10937,6 +10964,16 @@ std::uint64_t rmw_fleetqox_cpp_socket_fragment_assembly_oversize_drops()
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_assembly_metadata_mismatch_drops()
 {
   return socket_transport().fragment_assembly_metadata_mismatch_drops();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_assembly_ttl_expirations()
+{
+  return socket_transport().fragment_assembly_ttl_expirations();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_assembly_ttl_expired_missing_indexes()
+{
+  return socket_transport().fragment_assembly_ttl_expired_missing_indexes();
 }
 
 std::uint64_t rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions()

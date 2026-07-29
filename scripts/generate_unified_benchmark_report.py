@@ -42,6 +42,7 @@ METRIC_KEYS = (
     "fragment_chunk_bytes",
     "max_retransmissions",
     "fleetqox_udp_send_pacing_us",
+    "fleetqox_fragment_assembly_ttl_ms",
     "loss_resilient_fragment_configuration_contract_ok",
     "loss_resilient_large_sample_fragment_repair_claim",
     "fragment_specific_nack_selective_retransmission_claim",
@@ -49,6 +50,7 @@ METRIC_KEYS = (
     "fleet_aware_fragment_nack_fairness_claim",
     "bounded_fragment_repair_burst_claim",
     "docker_fragment_nack_fairness_probe_claim",
+    "bounded_fragment_assembly_ttl_claim",
     "source_scoped_fragment_repair_admission_claim",
     "multi_reader_fragment_repair_isolation_claim",
     "unauthorized_fragment_repair_source_fail_closed_claim",
@@ -1389,6 +1391,7 @@ CLAIM_BOUNDARY_KEYS = (
     "fleet_aware_fragment_nack_fairness_claim",
     "bounded_fragment_repair_burst_claim",
     "docker_fragment_nack_fairness_probe_claim",
+    "bounded_fragment_assembly_ttl_claim",
     "source_scoped_fragment_repair_admission_claim",
     "multi_reader_fragment_repair_isolation_claim",
     "unauthorized_fragment_repair_source_fail_closed_claim",
@@ -2084,6 +2087,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
     if (
         "loss_resilient_large_sample_fragment" in text
         or "loss_resilient_fleet_fair_nack" in text
+        or "loss_resilient_retained_assembly" in text
         or "selective_fragment_repair" in text
         or "fragment_nack_fairness" in text
         or "multireader_fragment_repair" in text

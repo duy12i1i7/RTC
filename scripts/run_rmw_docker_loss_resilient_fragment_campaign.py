@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 from scripts.run_large_scale_rmw_comparison import parse_csv_int  # noqa: E402
 from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
     DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
+    DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_TTL_MS,
     DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
     DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST,
     DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS,
@@ -95,6 +96,8 @@ def summarize_campaign(
             == DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST
             and int(result.get("fleetqox_fragment_history_limit", 0))
             == DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT
+            and int(result.get("fleetqox_fragment_assembly_ttl_ms", 0))
+            == DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_TTL_MS
             and isinstance(result.get("publisher"), dict)
             and result["publisher"].get("ack_wait_supported") is True
             and result["publisher"].get("ack_wait_complete") is True
@@ -142,6 +145,8 @@ def summarize_campaign(
         "fragment_nack_max_indexes_per_request":
             DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST,
         "fragment_history_limit": DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
+        "fragment_assembly_ttl_ms":
+            DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_TTL_MS,
         "run_count": len(rows),
         "ok_run_count": sum(row_contracts),
         "failed_run_count": len(rows) - sum(row_contracts),

@@ -29,6 +29,7 @@ from scripts.run_rmw_docker_router_matched_multi_topic_probe import (  # noqa: E
 from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
     DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
     DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_LIMIT,
+    DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_TTL_MS,
     DEFAULT_FLEETQOX_FRAGMENT_MAX_ASSEMBLY_BYTES,
     DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
     DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST,
@@ -192,6 +193,9 @@ def prior_row_matches_configuration(
         recorded_fragment_max_assembly_bytes = int(
             result.get("fleetqox_fragment_max_assembly_bytes") or 0
         )
+        recorded_fragment_assembly_ttl_ms = int(
+            result.get("fleetqox_fragment_assembly_ttl_ms") or 0
+        )
         recorded_fragment_async_send = bool(
             result.get("fleetqox_fragment_async_send", False)
         )
@@ -301,6 +305,11 @@ def prior_row_matches_configuration(
         and recorded_fragment_max_assembly_bytes
         == (
           DEFAULT_FLEETQOX_FRAGMENT_MAX_ASSEMBLY_BYTES
+          if recorded_rmw == FLEETQOX_RMW else 0
+        )
+        and recorded_fragment_assembly_ttl_ms
+        == (
+          DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_TTL_MS
           if recorded_rmw == FLEETQOX_RMW else 0
         )
         and recorded_fragment_async_send is False
@@ -675,6 +684,8 @@ def run_comparison(
             DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_LIMIT,
         "fleetqox_fragment_max_assembly_bytes":
             DEFAULT_FLEETQOX_FRAGMENT_MAX_ASSEMBLY_BYTES,
+        "fleetqox_fragment_assembly_ttl_ms":
+            DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_TTL_MS,
         "fleetqox_fragment_async_send": False,
         "fleetqox_fragment_send_queue_limit":
             DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT,
@@ -720,6 +731,7 @@ def run_comparison(
             "fleetqox_fragment_history_limit",
             "fleetqox_fragment_assembly_limit",
             "fleetqox_fragment_max_assembly_bytes",
+            "fleetqox_fragment_assembly_ttl_ms",
             "fleetqox_fragment_async_send",
             "fleetqox_fragment_send_queue_limit",
             "fleetqox_fragment_queue_admission_threshold",

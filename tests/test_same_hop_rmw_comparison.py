@@ -69,6 +69,9 @@ def common_relay_result(
         "fleetqox_fragment_max_assembly_bytes": (
             16 * 1024 * 1024 if system == "rmw_fleetqox_cpp" else None
         ),
+        "fleetqox_fragment_assembly_ttl_ms": (
+            60000 if system == "rmw_fleetqox_cpp" else None
+        ),
         "fleetqox_fragment_async_send": (
             False if system == "rmw_fleetqox_cpp" else None
         ),

@@ -64,6 +64,7 @@ DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST = 8
 DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT = 1024
 DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_LIMIT = 1024
 DEFAULT_FLEETQOX_FRAGMENT_MAX_ASSEMBLY_BYTES = 16 * 1024 * 1024
+DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_TTL_MS = 60000
 DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT = 32768
 DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_THRESHOLD = 0
 DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_TIMEOUT_MS = 0
@@ -300,6 +301,9 @@ def run_probe(
     fleetqox_fragment_max_assembly_bytes: int = (
         DEFAULT_FLEETQOX_FRAGMENT_MAX_ASSEMBLY_BYTES
     ),
+    fleetqox_fragment_assembly_ttl_ms: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_TTL_MS
+    ),
     fleetqox_fragment_async_send: bool = False,
     fleetqox_fragment_send_queue_limit: int = (
         DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT
@@ -365,6 +369,10 @@ def run_probe(
     if not 0 <= fleetqox_fragment_max_assembly_bytes <= 256 * 1024 * 1024:
         raise ValueError(
             "fleetqox_fragment_max_assembly_bytes is outside 0..268435456"
+        )
+    if not 1000 <= fleetqox_fragment_assembly_ttl_ms <= 600000:
+        raise ValueError(
+            "fleetqox_fragment_assembly_ttl_ms is outside 1000..600000"
         )
     if not 0 <= fleetqox_fragment_send_queue_limit <= 262144:
         raise ValueError(
@@ -553,6 +561,8 @@ def run_probe(
                             str(fleetqox_fragment_assembly_limit),
                         "FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES":
                             str(fleetqox_fragment_max_assembly_bytes),
+                        "FLEETQOX_RMW_FRAGMENT_ASSEMBLY_TTL_MS":
+                            str(fleetqox_fragment_assembly_ttl_ms),
                         "FLEETQOX_RMW_FRAGMENT_ASYNC_SEND":
                             ("1" if fleetqox_fragment_async_send else "0"),
                         "FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT":
@@ -789,6 +799,10 @@ def run_probe(
                 fleetqox_fragment_max_assembly_bytes
                 if use_fleetqox_direct_peers else None
             ),
+            "fleetqox_fragment_assembly_ttl_ms": (
+                fleetqox_fragment_assembly_ttl_ms
+                if use_fleetqox_direct_peers else None
+            ),
             "fleetqox_fragment_async_send": (
                 fleetqox_fragment_async_send
                 if use_fleetqox_direct_peers else None
@@ -998,6 +1012,11 @@ def main() -> int:
         default=DEFAULT_FLEETQOX_FRAGMENT_MAX_ASSEMBLY_BYTES,
     )
     parser.add_argument(
+        "--fleetqox-fragment-assembly-ttl-ms",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_TTL_MS,
+    )
+    parser.add_argument(
         "--fleetqox-fragment-async-send",
         action="store_true",
     )
@@ -1104,6 +1123,10 @@ def main() -> int:
         fleetqox_fragment_max_assembly_bytes=max(
             min(args.fleetqox_fragment_max_assembly_bytes, 256 * 1024 * 1024),
             0,
+        ),
+        fleetqox_fragment_assembly_ttl_ms=max(
+            min(args.fleetqox_fragment_assembly_ttl_ms, 600000),
+            1000,
         ),
         fleetqox_fragment_async_send=args.fleetqox_fragment_async_send,
         fleetqox_fragment_send_queue_limit=max(

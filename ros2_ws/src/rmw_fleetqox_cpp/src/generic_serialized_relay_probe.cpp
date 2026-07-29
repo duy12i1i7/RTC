@@ -370,6 +370,12 @@ int main(int argc, char ** argv)
     fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_assembly_metadata_mismatch_drops",
     nullptr) << ",";
+  std::cout << "\"fragment_assembly_ttl_expirations\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_assembly_ttl_expirations", nullptr) << ",";
+  std::cout << "\"fragment_assembly_ttl_expired_missing_indexes\":" <<
+    fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_assembly_ttl_expired_missing_indexes",
+    nullptr) << ",";
   std::cout << "\"fragment_observed_timeout_retransmissions_suppressed\":" <<
     fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_observed_timeout_retransmissions_suppressed",
