@@ -56,6 +56,8 @@ SERIALIZED_RELAY_EXECUTABLE = (
     "rmw_fleetqox_cpp/fleetrmw_generic_serialized_relay_probe"
 )
 FLEETQOX_RMW = "rmw_fleetqox_cpp"
+DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES = 1024
+DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS = 6
 
 
 def ingress_specs(specs: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -260,6 +262,12 @@ def run_probe(
     timeout_s: float,
     publisher_linger_s: float = 6.0,
     relay_mode: str = "generic_serialized",
+    fleetqox_loss_resilient_fragment_chunk_bytes: int = (
+        DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES
+    ),
+    fleetqox_reliable_max_retransmissions: int = (
+        DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
+    ),
 ) -> dict[str, Any]:
     if samples <= 0 or robot_count <= 0:
         raise ValueError("samples and robot_count must be positive")
@@ -269,6 +277,14 @@ def run_probe(
         raise ValueError("timing values are outside their valid range")
     if netem_loss_scale < 0:
         raise ValueError("netem_loss_scale must be non-negative")
+    if not 0 <= fleetqox_loss_resilient_fragment_chunk_bytes <= 60000:
+        raise ValueError(
+            "fleetqox_loss_resilient_fragment_chunk_bytes is outside 0..60000"
+        )
+    if not 0 <= fleetqox_reliable_max_retransmissions <= 100:
+        raise ValueError(
+            "fleetqox_reliable_max_retransmissions is outside 0..100"
+        )
     if relay_mode not in {"generic_serialized", "rclpy_typed"}:
         raise ValueError("unsupported relay_mode")
     if rmw == FLEETQOX_RMW and relay_mode != "generic_serialized":
@@ -347,7 +363,6 @@ def run_probe(
         100,
         int(math.ceil(2.0 * fleetqox_one_way_budget_ms + 50.0)),
     )
-    fleetqox_reliable_max_retransmissions = 3
     try:
         work_dir.mkdir(parents=True, exist_ok=True)
         if relay_mode == "generic_serialized":
@@ -393,6 +408,10 @@ def run_probe(
                             str(fleetqox_reliable_ack_timeout_ms),
                         "FLEETQOX_RMW_RELIABLE_MAX_RETRANSMISSIONS":
                             str(fleetqox_reliable_max_retransmissions),
+                        "FLEETQOX_RMW_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES":
+                            str(
+                                fleetqox_loss_resilient_fragment_chunk_bytes
+                            ),
                     }
                 )
         if use_zenoh_router:
@@ -572,6 +591,10 @@ def run_probe(
                 fleetqox_reliable_max_retransmissions
                 if use_fleetqox_direct_peers else None
             ),
+            "fleetqox_loss_resilient_fragment_chunk_bytes": (
+                fleetqox_loss_resilient_fragment_chunk_bytes
+                if use_fleetqox_direct_peers else None
+            ),
             "image": image,
             "rmw": rmw,
             "profile": profile,
@@ -695,6 +718,16 @@ def main() -> int:
     parser.add_argument("--timeout-s", type=float, default=25.0)
     parser.add_argument("--publisher-linger-s", type=float, default=6.0)
     parser.add_argument(
+        "--fleetqox-loss-resilient-fragment-chunk-bytes",
+        type=int,
+        default=DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
+    )
+    parser.add_argument(
+        "--fleetqox-reliable-max-retransmissions",
+        type=int,
+        default=DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
+    )
+    parser.add_argument(
         "--relay-mode",
         choices=("generic_serialized", "rclpy_typed"),
         default="generic_serialized",
@@ -722,6 +755,14 @@ def main() -> int:
         timeout_s=max(args.timeout_s, 1.0),
         publisher_linger_s=max(args.publisher_linger_s, 0.0),
         relay_mode=args.relay_mode,
+        fleetqox_loss_resilient_fragment_chunk_bytes=max(
+            min(args.fleetqox_loss_resilient_fragment_chunk_bytes, 60000),
+            0,
+        ),
+        fleetqox_reliable_max_retransmissions=max(
+            min(args.fleetqox_reliable_max_retransmissions, 100),
+            0,
+        ),
     )
     args.summary_json.parent.mkdir(parents=True, exist_ok=True)
     args.summary_json.write_text(

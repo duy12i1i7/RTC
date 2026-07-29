@@ -2842,6 +2842,8 @@ private:
   static constexpr size_t kUdpFragmentChunkBytes = 60000;
   static constexpr std::int64_t kFragmentAssemblyTtlNs = 10000000000ll;
   static constexpr const char * kFragmentPrefix = "FLEETQOX_FRAGMENT_V1|";
+  static constexpr const char * kRepairFragmentPrefix =
+    "FLEETQOX_REPAIR_FRAGMENT_V1|";
 
   struct FragmentAssembly
   {
@@ -3768,6 +3770,14 @@ private:
     const std::vector<sockaddr_in> & targets,
     const char * label)
   {
+    const bool is_data_frame =
+      rmw_fleetqox_cpp::decode_data_frame(payload).has_value();
+    if (loss_resilient_fragment_chunk_bytes_ > 0 &&
+      payload.size() > static_cast<size_t>(loss_resilient_fragment_chunk_bytes_))
+    {
+      return send_loss_resilient_fragmented_payload_to_targets(
+        payload, targets, label, is_data_frame);
+    }
     std::string wire_payload;
     if (!protect_udp_payload(payload, &wire_payload)) {
       RMW_SET_ERROR_MSG("failed to encrypt FleetRMW UDP payload with AES-256-GCM");
@@ -3776,7 +3786,7 @@ private:
     std::string authenticated_payload;
     if (!protect_udp_peer_authenticated_payload(
         wire_payload,
-        rmw_fleetqox_cpp::decode_data_frame(payload).has_value(),
+        is_data_frame,
         &authenticated_payload))
     {
       RMW_SET_ERROR_MSG("failed to sign FleetRMW UDP payload with SROS2 identity key");
@@ -3787,6 +3797,81 @@ private:
       return send_fragmented_payload_to_targets(wire_payload, targets, label);
     }
     return send_datagram_to_targets(wire_payload, targets, label);
+  }
+
+  static std::string stable_fragment_id(const std::string & payload)
+  {
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const unsigned char byte : payload) {
+      hash ^= static_cast<std::uint64_t>(byte);
+      hash *= 1099511628211ull;
+    }
+    std::ostringstream output;
+    output << std::hex << std::setw(16) << std::setfill('0') << hash <<
+      "-" << std::dec << payload.size();
+    return output.str();
+  }
+
+  rmw_ret_t send_loss_resilient_fragmented_payload_to_targets(
+    const std::string & payload,
+    const std::vector<sockaddr_in> & targets,
+    const char * label,
+    bool is_data_frame)
+  {
+    const size_t chunk_bytes =
+      static_cast<size_t>(loss_resilient_fragment_chunk_bytes_);
+    if (payload.empty() || chunk_bytes == 0) {
+      return RMW_RET_INVALID_ARGUMENT;
+    }
+    const size_t fragment_count =
+      (payload.size() + chunk_bytes - 1) / chunk_bytes;
+    if (fragment_count == 0 || fragment_count > 4096) {
+      RMW_SET_ERROR_MSG("loss-resilient FleetRMW fragment count is out of range");
+      return RMW_RET_ERROR;
+    }
+    const std::string fragment_id = stable_fragment_id(payload);
+    for (size_t index = 0; index < fragment_count; ++index) {
+      const size_t offset = index * chunk_bytes;
+      const size_t chunk_size = std::min(chunk_bytes, payload.size() - offset);
+      std::string fragment;
+      fragment.reserve(chunk_size + 128);
+      fragment.append(kRepairFragmentPrefix);
+      fragment.append(fragment_id);
+      fragment.push_back('|');
+      fragment.append(std::to_string(index));
+      fragment.push_back('|');
+      fragment.append(std::to_string(fragment_count));
+      fragment.push_back('|');
+      fragment.append(std::to_string(payload.size()));
+      fragment.push_back('|');
+      fragment.append(payload.data() + offset, chunk_size);
+
+      std::string protected_fragment;
+      if (!protect_udp_payload(fragment, &protected_fragment)) {
+        RMW_SET_ERROR_MSG(
+          "failed to encrypt loss-resilient FleetRMW UDP fragment");
+        return RMW_RET_ERROR;
+      }
+      std::string authenticated_fragment;
+      if (!protect_udp_peer_authenticated_payload(
+          protected_fragment, is_data_frame, &authenticated_fragment))
+      {
+        RMW_SET_ERROR_MSG(
+          "failed to sign loss-resilient FleetRMW UDP fragment");
+        return RMW_RET_ERROR;
+      }
+      if (authenticated_fragment.size() > kMaxUdpPayloadBytes) {
+        RMW_SET_ERROR_MSG(
+          "protected loss-resilient FleetRMW fragment exceeds UDP payload limit");
+        return RMW_RET_ERROR;
+      }
+      const rmw_ret_t ret =
+        send_datagram_to_targets(authenticated_fragment, targets, label);
+      if (ret != RMW_RET_OK) {
+        return ret;
+      }
+    }
+    return RMW_RET_OK;
   }
 
   rmw_ret_t send_datagram_to_targets(
@@ -3951,6 +4036,8 @@ private:
     }
     udp_send_pacing_us_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_UDP_SEND_PACING_US", 0, 100000);
+    loss_resilient_fragment_chunk_bytes_ = parse_nonnegative_int_env(
+      "FLEETQOX_RMW_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES", 0, 60000);
 
     timeval timeout{};
     timeout.tv_sec = 0;
@@ -4241,8 +4328,12 @@ private:
     if (complete_payload != nullptr) {
       complete_payload->clear();
     }
-    const std::string prefix(kFragmentPrefix);
-    if (datagram.rfind(prefix, 0) != 0) {
+    std::string prefix;
+    if (datagram.rfind(kFragmentPrefix, 0) == 0) {
+      prefix = kFragmentPrefix;
+    } else if (datagram.rfind(kRepairFragmentPrefix, 0) == 0) {
+      prefix = kRepairFragmentPrefix;
+    } else {
       return false;
     }
     size_t field_start = prefix.size();
@@ -4280,7 +4371,8 @@ private:
     const std::int64_t now_ns = monotonic_timestamp_ns();
     std::lock_guard<std::mutex> lock(fragment_mutex_);
     cleanup_stale_fragment_assemblies_locked(now_ns);
-    FragmentAssembly & assembly = fragment_assemblies_[fragment_id];
+    const std::string assembly_key = prefix + fragment_id;
+    FragmentAssembly & assembly = fragment_assemblies_[assembly_key];
     if (assembly.fragment_count == 0) {
       assembly.fragment_count = fragment_count;
       assembly.total_size = total_size;
@@ -4288,7 +4380,7 @@ private:
       assembly.received.assign(fragment_count, false);
     }
     if (assembly.fragment_count != fragment_count || assembly.total_size != total_size) {
-      fragment_assemblies_.erase(fragment_id);
+      fragment_assemblies_.erase(assembly_key);
       return true;
     }
     assembly.last_update_ns = now_ns;
@@ -4305,7 +4397,7 @@ private:
     for (const std::string & part : assembly.chunks) {
       reassembled.append(part);
     }
-    fragment_assemblies_.erase(fragment_id);
+    fragment_assemblies_.erase(assembly_key);
     if (reassembled.size() != total_size) {
       return true;
     }
@@ -4339,6 +4431,14 @@ private:
     }
     std::string plaintext;
     if (!unprotect_udp_payload(authenticated_content, &plaintext)) {
+      return;
+    }
+    std::string repaired_payload;
+    if (try_reassemble_fragment(plaintext, &repaired_payload)) {
+      if (repaired_payload.empty()) {
+        return;
+      }
+      handle_received_payload(repaired_payload);
       return;
     }
     handle_received_payload(plaintext);
@@ -4455,6 +4555,7 @@ private:
   std::chrono::steady_clock::time_point next_udp_send_time_{};
   int udp_socket_buffer_bytes_{0};
   int udp_send_pacing_us_{0};
+  int loss_resilient_fragment_chunk_bytes_{0};
   std::string peer_policy_{"all"};
   std::vector<sockaddr_in> peer_addresses_;
   std::vector<std::string> peer_path_ids_;

@@ -28,6 +28,8 @@ namespace
 
 constexpr size_t kMaxUdpPayloadBytes = 65507;
 constexpr const char * kFragmentPrefix = "FLEETQOX_FRAGMENT_V1|";
+constexpr const char * kRepairFragmentPrefix =
+  "FLEETQOX_REPAIR_FRAGMENT_V1|";
 
 struct RouterConfig
 {
@@ -214,8 +216,8 @@ bool endpoints_match(const sockaddr_in & left, const sockaddr_in & right)
 
 bool is_fragment_datagram(const std::string & payload)
 {
-  const std::string prefix(kFragmentPrefix);
-  return payload.rfind(prefix, 0) == 0;
+  return payload.rfind(kFragmentPrefix, 0) == 0 ||
+         payload.rfind(kRepairFragmentPrefix, 0) == 0;
 }
 
 bool parse_peer_endpoints(const std::string & peers, std::vector<sockaddr_in> * peer_addresses)

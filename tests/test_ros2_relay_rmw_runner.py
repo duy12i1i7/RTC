@@ -72,6 +72,14 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
         self.assertIn('"middle_rmw_termination_republish":', source)
         self.assertIn('"fleetqox_direct_peer_transport":', source)
         self.assertIn("FLEETQOX_RMW_RELIABLE_ACK_TIMEOUT_MS", source)
+        self.assertIn(
+            "FLEETQOX_RMW_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES",
+            source,
+        )
+        self.assertIn(
+            "DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS = 6",
+            source,
+        )
         self.assertIn("netem_shell_prefix", source)
         self.assertIn("publisher_linger_s", source)
 

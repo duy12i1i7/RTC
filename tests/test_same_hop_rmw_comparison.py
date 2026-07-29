@@ -41,6 +41,12 @@ def common_relay_result(
         "payload_size_contract_ok": True,
         "publish_interval_ms": publish_interval_ms,
         "publisher_linger_s": 6.0,
+        "fleetqox_loss_resilient_fragment_chunk_bytes": (
+            1024 if system == "rmw_fleetqox_cpp" else None
+        ),
+        "fleetqox_reliable_max_retransmissions": (
+            6 if system == "rmw_fleetqox_cpp" else None
+        ),
         "robot_count": 2,
         "topic_count": 4,
         "repetition_seed": 7,
@@ -150,6 +156,17 @@ class SameHopRmwComparisonTest(unittest.TestCase):
                 module.prior_row_matches_configuration(row, **mismatched),
                 key,
             )
+        wrong_fragment = common_relay_result()
+        wrong_fragment["fleetqox_loss_resilient_fragment_chunk_bytes"] = 0
+        self.assertFalse(
+            module.prior_row_matches_configuration(
+                module.normalize_row(
+                    wrong_fragment,
+                    system="rmw_fleetqox_cpp",
+                ),
+                **expected,
+            )
+        )
 
     def test_resume_loader_uses_summary_configuration_for_legacy_rows(self):
         module = load_runner()

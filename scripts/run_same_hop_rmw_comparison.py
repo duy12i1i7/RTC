@@ -27,6 +27,8 @@ from scripts.run_rmw_docker_router_matched_multi_topic_probe import (  # noqa: E
     cleanup_reusable_build,
 )
 from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
+    DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
+    DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
     FLEETQOX_RMW,
     run_probe as run_relay,
 )
@@ -128,8 +130,25 @@ def prior_row_matches_configuration(
         recorded_publisher_linger_s = float(
             result.get("publisher_linger_s", -1.0)
         )
+        recorded_fragment_chunk_bytes = int(
+            result.get("fleetqox_loss_resilient_fragment_chunk_bytes") or 0
+        )
+        recorded_max_retransmissions = int(
+            result.get("fleetqox_reliable_max_retransmissions") or 0
+        )
     except (TypeError, ValueError):
         return False
+    recorded_rmw = str(result.get("rmw", row.get("system", "")))
+    expected_fragment_chunk_bytes = (
+        DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES
+        if recorded_rmw == FLEETQOX_RMW
+        else 0
+    )
+    expected_max_retransmissions = (
+        DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
+        if recorded_rmw == FLEETQOX_RMW
+        else 0
+    )
     return (
         recorded("image") == image
         and recorded("profile", "profile") == profile
@@ -153,6 +172,8 @@ def prior_row_matches_configuration(
             rel_tol=0.0,
             abs_tol=1e-12,
         )
+        and recorded_fragment_chunk_bytes == expected_fragment_chunk_bytes
+        and recorded_max_retransmissions == expected_max_retransmissions
     )
 
 
@@ -261,6 +282,12 @@ def run_comparison(
                         timeout_s=timeout_s,
                         publisher_linger_s=6.0,
                         relay_mode="generic_serialized",
+                        fleetqox_loss_resilient_fragment_chunk_bytes=(
+                            DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES
+                        ),
+                        fleetqox_reliable_max_retransmissions=(
+                            DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
+                        ),
                     )
                     rows.append(normalize_row(fleet, system=FLEETQOX_RMW))
                     executed_row_count += 1
@@ -308,6 +335,12 @@ def run_comparison(
                         timeout_s=timeout_s,
                         publisher_linger_s=6.0,
                         relay_mode="generic_serialized",
+                        fleetqox_loss_resilient_fragment_chunk_bytes=(
+                            DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES
+                        ),
+                        fleetqox_reliable_max_retransmissions=(
+                            DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS
+                        ),
                     )
                     rows.append(normalize_row(baseline, system=rmw))
                     executed_row_count += 1
@@ -424,6 +457,10 @@ def run_comparison(
         "publisher_reliability_horizon_s": 6.0,
         "publisher_reliability_horizon_mode":
             "bounded_wait_for_all_acked",
+        "fleetqox_loss_resilient_fragment_chunk_bytes":
+            DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
+        "fleetqox_reliable_max_retransmissions":
+            DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
         "prior_row_count": len(prior_rows or []),
         "reused_row_count": reused_row_count,
         "executed_row_count": executed_row_count,
@@ -444,6 +481,8 @@ def run_comparison(
             "netem_enabled",
             "netem_required",
             "publisher_linger_s",
+            "fleetqox_loss_resilient_fragment_chunk_bytes",
+            "fleetqox_reliable_max_retransmissions",
         ],
         "resume_configuration_mismatch_policy":
             "execute_current_configuration",

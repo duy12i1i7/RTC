@@ -214,6 +214,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Same-hop 8/16/32-robot × Wi-Fi/WAN/roaming full-factorial sensitivity | `results_rmw_socket/same_hop_profile_scale_sensitivity_8_16_32_3profile_3seed_summary.json` |
 | Same-hop 16-robot exact 256/4096/32768-byte payload sensitivity | `results_rmw_socket/same_hop_payload_sensitivity_16robot_3size_3seed_summary.json` |
 | Same-hop 16-robot exact 32768-byte offered-load sensitivity | `results_rmw_socket/same_hop_offered_load_sensitivity_32768b_16robot_3interval_3seed_summary.json` |
+| Docker/netem FleetRMW 32768-byte loss-resilient fragment accumulation, five seeds | `results_rmw_socket/docker_loss_resilient_large_sample_fragment_5run_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -1743,9 +1744,17 @@ outcomes, while latency and sustainable-rate claims remain blocked. In
 particular, failure at 4.194 Mbit/s under a nominal 5 Mbit/s link means average
 offered load alone is not explanatory: batch burst shape, fragmentation under
 7% packet loss, protocol overhead, and repair granularity remain confounded.
-FleetRMW currently has whole-sample repair plus oversized-frame
-fragmentation/reassembly, not loss-resilient selective repair for large
-sub-UDP-limit samples.
+The follow-up FleetRMW transport path now optionally fragments the plaintext
+frame into 1024-byte chunks before per-chunk AEAD/signing and derives a stable
+frame identity, allowing a receiver to retain chunks across whole-sample
+timeout retransmissions. A fail-closed five-seed Docker/netem campaign at one
+robot, two RMW hops, roaming loss scale 0.25, 32768-byte exact application
+payloads, and a 2000 ms interval passes `5/5`, relays `30/30`, delivers both
+topics at `1.0`, and completes every publisher ACK horizon. This closes the
+scoped fragment-accumulation defect. It does not retroactively change the
+historical four-RMW frontier, and it does not prove fragment-specific NACK,
+secure-fragment operation, high-rate/fleet-scale resource bounds, arbitrary
+sample sizes, or production reliability.
 
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK

@@ -6,10 +6,10 @@ project. It is ordered by dependency and regression value.
 
 ## Current Baseline
 
-- The full repository suite passes `671/671` unit/contract tests; ROS-facing
+- The full repository suite passes `673/673` unit/contract tests; ROS-facing
   runtime probes use the pinned ROS 2 Jazzy Docker image. The unified report
-  currently indexes `376`
-  retained artifacts (`309` ok, `20` partial, `43` historical failed, and `4`
+  currently indexes `378`
+  retained artifacts (`311` ok, `20` partial, `43` historical failed, and `4`
   unknown); its overall `partial` status deliberately includes old debug,
   negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
@@ -1427,8 +1427,18 @@ no row satisfies the complete contract and no interval is fully successful.
 This rules out a simple average-rate explanation: even the 4.194 Mbit/s
 schedule stays below the nominal 5 Mbit/s link while burst shape,
 IP/transport fragmentation, 7% packet loss, repair granularity, and overhead
-remain. Loss-resilient selective fragment repair is now an explicit transport
-blocker; CPU and memory pressure plus a finer burst/pacing sweep remain open.
+remain.
+
+The first scoped repair is now implemented and measured. FleetRMW can
+optionally split a plaintext frame into stable 1024-byte chunks before
+per-chunk AEAD/signing, then accumulate received chunks across whole-sample
+timeout retransmissions. At one robot, two RMW hops, exact 32768-byte payloads,
+a 2000 ms batch interval, roaming loss scale 0.25, and five seeds, the
+Docker/netem campaign passes `5/5`, relays `30/30`, delivers both topics at
+`1.0`, and completes every publisher ACK horizon. Production selective repair
+remains open because retries still send all chunks; secure-fragment evidence,
+fragment-specific NACK, fleet-scale/high-rate resource bounds, CPU and memory
+pressure, and a finer burst/pacing sweep are not yet proven.
 
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
@@ -1448,9 +1458,10 @@ Next continue P0/P2 in this order:
 2. Preserve both completed comparison contracts and the repaired `36/36`
    same-hop common-middle result plus the completed 108-cell profile-by-scale
    campaign plus the complete exact-payload frontier. Next increase beyond
-   five samples and three repetitions, add a finer burst/pacing sweep, close
-   large-sample selective fragment repair, and add CPU quota and
-   memory-pressure sensitivity before any latency-superiority claim.
+   five samples and three repetitions, rerun the large-sample frontier with
+   stable fragment accumulation, implement fragment-specific NACK/selective
+   resend, and add CPU quota, memory-pressure, secure-fragment, and finer
+   burst/pacing sensitivity before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.
 4. Increase frontier repetitions so the `32`-robot latency-mean confidence

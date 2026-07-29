@@ -1028,7 +1028,16 @@ int main()
         self.assertIn("rmw_fleetqox_cpp_send_graph_advertisement", source)
         self.assertIn("rmw_fleetqox_cpp_send_encoded_frame", source)
         self.assertIn("FLEETQOX_FRAGMENT_V1", source)
+        self.assertIn("FLEETQOX_REPAIR_FRAGMENT_V1", source)
         self.assertIn("send_fragmented_payload_to_targets", source)
+        self.assertIn(
+            "send_loss_resilient_fragmented_payload_to_targets",
+            source,
+        )
+        self.assertIn(
+            "FLEETQOX_RMW_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES",
+            source,
+        )
         self.assertIn("try_reassemble_fragment", source)
         self.assertIn("handle_received_datagram", source)
         self.assertIn("FLEETQOX_RMW_UDP_SOCKET_BUFFER_BYTES", source)
@@ -1053,6 +1062,7 @@ int main()
         router_source = (PKG / "src" / "udp_router_probe.cpp").read_text()
         self.assertIn("fleetrmw.router_path_telemetry.v1", router_source)
         self.assertIn("FLEETQOX_FRAGMENT_V1", router_source)
+        self.assertIn("FLEETQOX_REPAIR_FRAGMENT_V1", router_source)
         self.assertIn("FLEETQOX_ROUTER_UDP_SOCKET_BUFFER_BYTES", router_source)
         self.assertIn("activity_counter", router_source)
         self.assertIn("satisfaction_dwell_activity_counter", router_source)
@@ -5527,10 +5537,40 @@ int main()
                 "same_hop_offered_load_complete_measurement_matrix"
             ]
         )
+        self.assertTrue(
+            manifest["supported"][
+                "udp_stable_fragment_identity_across_retransmission"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "udp_loss_resilient_fragment_accumulation"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_loss_resilient_large_sample_fragment_32768b_5run_netem"
+            ]
+        )
         self.assertIn(
+            "loss_resilient_large_sample_fragment_repair",
+            manifest["partial"],
+        )
+        self.assertIn(
+            "production_loss_resilient_large_sample_selective_fragment_repair",
+            manifest["unsupported"],
+        )
+        self.assertNotIn(
             "loss_resilient_large_sample_selective_fragment_repair",
             manifest["unsupported"],
         )
+        self.assertTrue(
+            claims["loss_resilient_large_sample_fragment_repair_claim"]
+        )
+        self.assertTrue(
+            claims["docker_loss_resilient_large_sample_fragment_5of5_claim"]
+        )
+        self.assertFalse(claims["production_large_sample_reliability_claim"])
         self.assertTrue(
             claims[
                 "docker_same_hop_generic_serialized_rmw_comparison_8_16_32_3seed"

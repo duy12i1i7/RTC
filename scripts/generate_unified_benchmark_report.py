@@ -39,6 +39,11 @@ METRIC_KEYS = (
     "payload_size_min_bytes",
     "payload_size_max_bytes",
     "exact_payload_size_contract_ok",
+    "fragment_chunk_bytes",
+    "max_retransmissions",
+    "loss_resilient_fragment_configuration_contract_ok",
+    "loss_resilient_large_sample_fragment_repair_claim",
+    "production_large_sample_reliability_claim",
     "complete_measurement_matrix_contract_ok",
     "payload_sensitivity_comparison_allowed",
     "publish_interval_ms",
@@ -1351,6 +1356,9 @@ CLAIM_BOUNDARY_KEYS = (
     "docker_same_hop_offered_load_sensitivity_36of36_measured_claim",
     "docker_same_hop_offered_load_delivery_contract_0of36_claim",
     "same_hop_32768_fully_successful_schedule_claim",
+    "loss_resilient_large_sample_fragment_repair_claim",
+    "docker_loss_resilient_large_sample_fragment_5of5_claim",
+    "production_large_sample_reliability_claim",
     "docker_same_hop_rmw_comparison_8_16_32_3seed",
     "docker_same_hop_generic_serialized_rmw_comparison_8_16_32_3seed",
     "reception_baseline_cumulative_ack_floor_claim",
@@ -2025,6 +2033,8 @@ def summarize_capabilities(path: Path) -> dict[str, Any]:
 
 def classify_path(path: Path, data: dict[str, Any]) -> str:
     text = f"{path.name} {data.get('schema_version', '')}".lower()
+    if "loss_resilient_large_sample_fragment" in text:
+        return "transport/udp"
     if (
         "large_scale_rmw_comparison" in text
         or "same_hop_rmw_comparison" in text
