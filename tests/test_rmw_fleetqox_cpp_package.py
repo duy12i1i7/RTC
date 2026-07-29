@@ -1099,6 +1099,14 @@ int main()
             source,
         )
         self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_source_denials",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_reader_budget_exhausted",
+            source,
+        )
+        self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_nack_index_budget_reductions",
             source,
         )
@@ -4541,6 +4549,9 @@ int main()
             manifest["supported"]["fleet_aware_fragment_nack_index_budget"]
         )
         self.assertTrue(
+            manifest["supported"]["source_scoped_fragment_repair_admission"]
+        )
+        self.assertTrue(
             manifest["supported"]["completed_fragment_retransmission_deduplication"]
         )
         self.assertTrue(
@@ -4559,6 +4570,16 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "fleet_aware_fragment_nack_fairness_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "multi_reader_fragment_repair_isolation_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "unauthorized_fragment_repair_source_fail_closed_claim"
             ]
         )
         self.assertTrue(

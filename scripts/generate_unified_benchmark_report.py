@@ -49,6 +49,9 @@ METRIC_KEYS = (
     "fleet_aware_fragment_nack_fairness_claim",
     "bounded_fragment_repair_burst_claim",
     "docker_fragment_nack_fairness_probe_claim",
+    "source_scoped_fragment_repair_admission_claim",
+    "multi_reader_fragment_repair_isolation_claim",
+    "unauthorized_fragment_repair_source_fail_closed_claim",
     "bounded_fragment_assembly_admission_claim",
     "fragment_assembly_oversize_fail_closed_claim",
     "fragment_metadata_mismatch_isolation_claim",
@@ -1386,6 +1389,9 @@ CLAIM_BOUNDARY_KEYS = (
     "fleet_aware_fragment_nack_fairness_claim",
     "bounded_fragment_repair_burst_claim",
     "docker_fragment_nack_fairness_probe_claim",
+    "source_scoped_fragment_repair_admission_claim",
+    "multi_reader_fragment_repair_isolation_claim",
+    "unauthorized_fragment_repair_source_fail_closed_claim",
     "bounded_fragment_assembly_admission_claim",
     "fragment_assembly_oversize_fail_closed_claim",
     "fragment_metadata_mismatch_isolation_claim",
@@ -2080,6 +2086,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         or "loss_resilient_fleet_fair_nack" in text
         or "selective_fragment_repair" in text
         or "fragment_nack_fairness" in text
+        or "multireader_fragment_repair" in text
         or "fragment_assembly_admission" in text
         or "peer_identity_fragment_pressure" in text
     ):

@@ -1490,6 +1490,18 @@ repairs, and zero queue failures/rejections; its concurrency does not trigger
 the 512-index reduction, so it is diagnostic evidence rather than a positive
 fleet-scale reliability claim.
 
+Fragment repair admission and coalescing are now scoped by the exact UDP reader
+endpoint instead of only `fragment_id|index`. Retry exhaustion by one reader
+therefore cannot consume another reader's history budget, and pending/cooldown
+deduplication cannot suppress a repair targeted to a different reader. Repair
+NACKs from endpoints that were not targets of the original fragmented frame
+are rejected before history mutation or retransmission. A deterministic Docker
+gate drops index 2 from one 65-fragment frame sent to two readers, configures
+one request per reader, and sends the same NACK first from an untargeted third
+endpoint. It requires one source denial, two admitted NACKs, one repair at each
+authorized endpoint, none at the attacker, zero cross-reader coalescing, and
+zero queue failures/rejections.
+
 Fragment reassembly admission is now independently bounded and fail-closed.
 `FLEETQOX_RMW_FRAGMENT_ASSEMBLY_LIMIT` caps concurrent partial assemblies,
 `FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES` rejects oversized declarations,
