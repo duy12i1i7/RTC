@@ -217,6 +217,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker/netem FleetRMW 32768-byte loss-resilient fragment accumulation, five seeds | `results_rmw_socket/docker_loss_resilient_large_sample_fragment_5run_summary.json` |
 | Docker deterministic FleetRMW fragment-specific NACK/selective repair with whole-sample retry disabled | `results_rmw_socket/docker_selective_fragment_repair_probe_summary.json` |
 | Docker raw-UDP bounded fragment-assembly admission, oversize rejection, and metadata-collision isolation | `results_rmw_socket/docker_fragment_assembly_admission_probe_summary.json` |
+| Docker two-peer AES-256-GCM authenticated fragment-assembly admission and unprotected-fragment fail-closed control | `results_rmw_socket/docker_authenticated_fragment_assembly_probe_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |

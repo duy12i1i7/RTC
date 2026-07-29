@@ -3996,6 +3996,10 @@ private:
     }
     wire_payload = std::move(authenticated_payload);
     if (wire_payload.size() > kMaxUdpPayloadBytes) {
+      if (udp_aead_enabled_ || udp_peer_auth_enabled_) {
+        return send_loss_resilient_fragmented_payload_to_targets(
+          payload, targets, label, is_data_frame, 60000);
+      }
       return send_fragmented_payload_to_targets(wire_payload, targets, label);
     }
     return send_datagram_to_targets(wire_payload, targets, label);
@@ -4018,9 +4022,12 @@ private:
     const std::string & payload,
     const std::vector<sockaddr_in> & targets,
     const char * label,
-    bool is_data_frame)
+    bool is_data_frame,
+    size_t protected_chunk_bytes = 0)
   {
     const size_t chunk_bytes =
+      protected_chunk_bytes > 0 ?
+      protected_chunk_bytes :
       static_cast<size_t>(loss_resilient_fragment_chunk_bytes_);
     if (payload.empty() || chunk_bytes == 0) {
       return RMW_RET_INVALID_ARGUMENT;
@@ -5485,7 +5492,13 @@ private:
   {
     std::string complete_payload;
     std::string wire_payload;
-    if (try_reassemble_fragment(datagram, &complete_payload, source)) {
+    const bool strict_protected_fragment_wrapper =
+      udp_wire_payload && (udp_aead_required_ || udp_peer_auth_required_) &&
+      (datagram.rfind(kRepairFragmentPrefix, 0) == 0 ||
+      datagram.rfind(kFragmentPrefix, 0) == 0);
+    if (!strict_protected_fragment_wrapper &&
+      try_reassemble_fragment(datagram, &complete_payload, source))
+    {
       if (complete_payload.empty()) {
         return;
       }

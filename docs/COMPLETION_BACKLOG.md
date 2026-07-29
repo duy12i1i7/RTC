@@ -1479,8 +1479,17 @@ and a conflicting count/size tuple cannot erase an existing assembly. A raw
 UDP Docker gate injects six partial assemblies against limit four, one
 oversized declaration, and one metadata collision. It records active `4`,
 missing indexes `4`, evictions `2`, oversize drops `1`, mismatch drops `1`,
-and clean injector/receiver exits. This is resource-admission evidence, not
-authenticated hostile-fleet or production security evidence.
+and clean injector/receiver exits. A second two-peer ROS 2 gate sends six
+distinct AES-256-GCM-protected fragmented samples while dropping exactly one
+chunk from each. Strict AEAD admission decrypts protected traffic with zero
+authentication failures, retains exactly four assemblies/four missing
+indexes, evicts exactly two, delivers no incomplete sample, and rejects one
+unprotected repair wrapper plus one unprotected outer-fragment wrapper before
+reassembly admission. Protected frames above the UDP payload ceiling are
+forced onto the per-fragment protected path rather than the legacy
+pre-authentication outer wrapper. This is
+PSK-authenticated selective-fragment resource-admission evidence, not hostile
+peer-identity or production security evidence.
 
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
@@ -1503,7 +1512,8 @@ Next continue P0/P2 in this order:
    five samples and three repetitions, rerun the large-sample frontier with
    the completed fragment-specific NACK/selective resend path and coordinated
    observed/selective versus unseen/whole fallback, and add adaptive
-   link-capacity pacing/admission, CPU quota, memory-pressure, secure-fragment, and
+   link-capacity pacing/admission, CPU quota, memory-pressure,
+   peer-identity-authenticated fragment pressure, and
    finer burst sensitivity before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.

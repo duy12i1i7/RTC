@@ -1041,6 +1041,11 @@ int main()
         )
         self.assertIn("try_reassemble_fragment", source)
         self.assertIn("handle_received_datagram", source)
+        self.assertIn("strict_protected_fragment_wrapper", source)
+        self.assertIn(
+            "udp_wire_payload && (udp_aead_required_ || udp_peer_auth_required_)",
+            source,
+        )
         self.assertIn("FLEETQOX_RMW_UDP_SOCKET_BUFFER_BYTES", source)
         self.assertIn("FLEETQOX_RMW_UDP_SEND_PACING_US", source)
         self.assertIn("pace_udp_send_locked", source)
@@ -4517,6 +4522,24 @@ int main()
         )
         self.assertTrue(
             manifest["supported"]["bounded_fragment_assembly_admission"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_authenticated_fragment_assembly_admission_probe"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "authenticated_fragment_assembly_admission_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "udp_unprotected_fragment_fail_closed_claim"
+            ]
+        )
+        self.assertFalse(
+            manifest["claim_boundaries"]["production_fragment_security_claim"]
         )
         self.assertEqual(
             manifest["serialization_format"],
