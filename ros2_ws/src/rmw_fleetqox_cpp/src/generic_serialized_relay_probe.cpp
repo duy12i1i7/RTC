@@ -237,9 +237,36 @@ int main(int argc, char ** argv)
   }
   const bool samples_relayed =
     all_samples_relayed(routes, static_cast<std::uint64_t>(samples));
-  const auto linger_deadline =
+  const auto reliability_deadline =
     std::chrono::steady_clock::now() + std::chrono::milliseconds(linger_ms);
-  while (std::chrono::steady_clock::now() < linger_deadline) {
+  const auto ack_wait_started = std::chrono::steady_clock::now();
+  bool downstream_ack_wait_supported = true;
+  bool downstream_ack_wait_complete = samples_relayed;
+  if (samples_relayed) {
+    for (const auto & route : routes) {
+      const auto now = std::chrono::steady_clock::now();
+      const auto remaining = now < reliability_deadline ?
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+        reliability_deadline - now) :
+        std::chrono::milliseconds(0);
+      try {
+        if (route == nullptr || route->publisher == nullptr ||
+          !route->publisher->wait_for_all_acked(remaining))
+        {
+          downstream_ack_wait_complete = false;
+          break;
+        }
+      } catch (const std::exception &) {
+        downstream_ack_wait_supported = false;
+        downstream_ack_wait_complete = false;
+        break;
+      }
+    }
+  }
+  const auto ack_wait_elapsed_ms =
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - ack_wait_started).count();
+  while (std::chrono::steady_clock::now() < reliability_deadline) {
     executor.spin_some(std::chrono::milliseconds(50));
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
@@ -252,7 +279,10 @@ int main(int argc, char ** argv)
     serialized_bytes += route->serialized_bytes;
     min_source_count = std::min(min_source_count, route->count);
   }
-  const bool ok = downstream_ready && samples_relayed;
+  const bool downstream_reliability_complete =
+    !downstream_ack_wait_supported || downstream_ack_wait_complete;
+  const bool ok =
+    downstream_ready && samples_relayed && downstream_reliability_complete;
   std::cout << "{\"schema_version\":"
     "\"fleetrmw.generic_serialized_relay_probe.v2\",";
   std::cout << "\"status\":\"" << (ok ? "ok" : "failed") << "\",";
@@ -262,6 +292,12 @@ int main(int argc, char ** argv)
   std::cout << "\"generic_publisher\":true,";
   std::cout << "\"application_deserialization\":false,";
   std::cout << "\"executor_drain_mode\":\"spin_some_bounded\",";
+  std::cout << "\"downstream_ack_wait_supported\":" <<
+    (downstream_ack_wait_supported ? "true" : "false") << ",";
+  std::cout << "\"downstream_ack_wait_complete\":" <<
+    (downstream_ack_wait_complete ? "true" : "false") << ",";
+  std::cout << "\"downstream_ack_wait_elapsed_ms\":" <<
+    ack_wait_elapsed_ms << ",";
   std::cout << "\"downstream_ready\":" <<
     (downstream_ready ? "true" : "false") << ",";
   std::cout << "\"relayed_count\":" << relayed_count << ",";
@@ -286,12 +322,24 @@ int main(int argc, char ** argv)
     "rmw_fleetqox_cpp_socket_fragments_selectively_retransmitted", nullptr) << ",";
   std::cout << "\"fragment_repair_requests_coalesced\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_repair_requests_coalesced", nullptr) << ",";
+  std::cout << "\"fragment_repair_cooldown_coalesced\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_repair_cooldown_coalesced", nullptr) << ",";
+  std::cout << "\"completed_fragment_duplicates_dropped\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_completed_fragment_duplicates_dropped", nullptr) << ",";
   std::cout << "\"fragment_send_queue_rejections\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_send_queue_rejections", nullptr) << ",";
   std::cout << "\"fragment_send_failures\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_send_failures", nullptr) << ",";
   std::cout << "\"fragment_send_queue_high_water\":" << fleetqox_metric(
-    "rmw_fleetqox_cpp_socket_fragment_send_queue_high_water", nullptr) << "},";
+    "rmw_fleetqox_cpp_socket_fragment_send_queue_high_water", nullptr) << ",";
+  std::cout << "\"fragment_queue_admission_waits\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_queue_admission_waits", nullptr) << ",";
+  std::cout << "\"fragment_queue_admission_timeouts\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_queue_admission_timeouts", nullptr) << ",";
+  std::cout << "\"fragment_queue_admission_wait_ns\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_queue_admission_wait_ns", nullptr) << ",";
+  std::cout << "\"fragment_repair_queue_deferrals\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals", nullptr) << "},";
   std::cout << "\"per_source_count\":{";
   for (std::size_t index = 0; index < routes.size(); ++index) {
     if (index > 0) {

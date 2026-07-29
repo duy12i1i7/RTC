@@ -1432,10 +1432,15 @@ remain.
 Fragment-specific repair is now implemented and measured. FleetRMW splits a
 plaintext frame into stable 1024-byte chunks before per-chunk AEAD/signing,
 retains bounded sender history, waits for receiver assembly quiescence, and
-returns bounded missing-index ranges to the exact UDP source. Selective sends
-use a bounded asynchronous queue, prioritize repair without starving initial
-traffic, coalesce duplicate pending fragment keys, share global pacing, and
-export NACK/retransmit/queue/failure/high-water counters. A fail-closed Docker
+returns bounded missing-index ranges to the exact UDP source. NACK generation
+requests observed internal holes before guarded trailing indexes. Completed
+frame tombstones reject late whole-frame retransmission fragments instead of
+opening an incomplete duplicate assembly. Selective sends use separate bounded
+initial and repair queues, favor initial traffic 8:1, coalesce pending/recent
+repair keys, apply configurable admission backpressure, share global pacing,
+and export NACK/retransmit/queue/failure/high-water/deferral counters. The
+generic serialized relay spends its bounded reliability horizon in
+`wait_for_all_acked` before teardown. A fail-closed Docker
 probe deliberately drops fragment index 2 from both exact 32768-byte messages
 with whole-sample timeout retransmission set to zero. It relays `2/2`, records
 exactly two deliberate drops and two selective retransmissions, completes the
@@ -1445,15 +1450,21 @@ last local context is finalized, eliminating the loss-dependent joinable-thread
 abort exposed by this test.
 
 At four robots, five samples per topic, exact 32768-byte payloads, roaming loss
-scale 0.25, and seed 7, the repaired path relays `40/40`, delivers both classes
-at `1.0`, completes all ACKs, and exits `0/0/0`; quiescence gating reduces
-selective sends from `3884` in the premature-NACK build to `707`. The
-16-robot follow-up still confirms a real boundary rather than hiding it. The
-best measured selective run reaches `125/160`; a lower-rate 2200-microsecond
-calibration reaches only `101/160`. These are negative single-seed frontier
-measurements, not fleet-scale claims. Same-hop resume provenance now also
-locks the async-send mode, queue limit, NACK interval/request count/history
-limit, relay drain mode, timeout, fragment size, retry count, and pacing.
+scale 0.25, and configured seed 7, the current bounded path relays and delivers
+`40/40`, completes the relay downstream ACK horizon, and exits `0/0/0`; one
+upstream publisher ACK remains pending in that stochastic netem run, so the
+strict ACK claim remains limited to the deterministic gate above. The
+16-robot follow-up still confirms a real boundary rather than hiding it:
+repair admission bounds observed queue high-water to `320` (initial 256 +
+repair 64) and improves one measured relay count from `74/160` to `95/160`.
+Disabling competing whole-sample retries reaches `119/160`; a larger bounded
+repair queue reaches `126/160`. Netem records that the configured seed does
+not control its random-loss RNG, so these are negative individual frontier
+measurements rather than deterministic seed comparisons or fleet-scale
+claims. Same-hop resume provenance now also locks initial admission threshold
+and timeout, repair queue limit/cooldown, async-send mode, total queue limit,
+NACK interval/request count/history limit, relay drain mode, timeout, fragment
+size, retry count, and pacing.
 
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
@@ -1474,8 +1485,9 @@ Next continue P0/P2 in this order:
    same-hop common-middle result plus the completed 108-cell profile-by-scale
    campaign plus the complete exact-payload frontier. Next increase beyond
    five samples and three repetitions, rerun the large-sample frontier with
-   the completed fragment-specific NACK/selective resend path, and add adaptive
-   capacity pacing/admission, CPU quota, memory-pressure, secure-fragment, and
+   the completed fragment-specific NACK/selective resend path, separate
+   selective repair from whole-sample fallback, and add adaptive
+   link-capacity pacing/admission, CPU quota, memory-pressure, secure-fragment, and
    finer burst sensitivity before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.

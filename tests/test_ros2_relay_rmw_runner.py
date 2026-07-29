@@ -87,6 +87,16 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
         self.assertIn("FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_ASYNC_SEND", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT", source)
+        self.assertIn(
+            "FLEETQOX_RMW_FRAGMENT_QUEUE_ADMISSION_THRESHOLD",
+            source,
+        )
+        self.assertIn(
+            "FLEETQOX_RMW_FRAGMENT_QUEUE_ADMISSION_TIMEOUT_MS",
+            source,
+        )
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_REPAIR_COOLDOWN_MS", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_REPAIR_QUEUE_LIMIT", source)
         self.assertIn('"fleetqox_fragment_async_send":', source)
         self.assertIn('"publisher_stderr_excerpt":', source)
         self.assertIn("netem_shell_prefix", source)
@@ -101,6 +111,8 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
         self.assertIn('"application_deserialization\\":false', source)
         self.assertIn("fleetrmw.generic_serialized_relay_probe.v2", source)
         self.assertIn('"executor_drain_mode\\":\\"spin_some_bounded', source)
+        self.assertIn("wait_for_all_acked", source)
+        self.assertIn('"downstream_ack_wait_complete\\":', source)
         self.assertIn(
             'std::string(implementation) != "rmw_fleetqox_cpp"',
             source,
@@ -111,6 +123,18 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
         )
         self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_repair_requests_coalesced",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_cooldown_coalesced",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_completed_fragment_duplicates_dropped",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals",
             source,
         )
         self.assertIn("fleetrmw_generic_serialized_relay_probe", cmake)

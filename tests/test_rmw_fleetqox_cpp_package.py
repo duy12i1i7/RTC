@@ -1049,9 +1049,40 @@ int main()
         self.assertIn("FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_ASYNC_SEND", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT", source)
+        self.assertIn(
+            "FLEETQOX_RMW_FRAGMENT_QUEUE_ADMISSION_THRESHOLD",
+            source,
+        )
+        self.assertIn(
+            "FLEETQOX_RMW_FRAGMENT_QUEUE_ADMISSION_TIMEOUT_MS",
+            source,
+        )
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_REPAIR_COOLDOWN_MS", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_REPAIR_QUEUE_LIMIT", source)
+        self.assertIn("fragment_repair_recent_send_ns_", source)
+        self.assertIn("consecutive_initial_fragments >= 8", source)
+        self.assertIn("completed_fragment_assemblies_", source)
+        self.assertIn("include_trailing_indexes", source)
+        self.assertIn("tail_guard_ns", source)
         self.assertIn("fragment_repair_pending_keys_", source)
         self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_repair_requests_coalesced",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_cooldown_coalesced",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_completed_fragment_duplicates_dropped",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_queue_admission_waits",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals",
             source,
         )
         self.assertIn("rmw_fleetqox_cpp_shutdown_pubsub_runtime", source)
@@ -4450,6 +4481,15 @@ int main()
         manifest = json.loads(manifest_path.read_text())
         self.assertEqual(manifest["schema_version"], "fleetrmw.rmw_capabilities.v1")
         self.assertFalse(manifest["production_ready"])
+        self.assertTrue(
+            manifest["supported"]["bounded_fragment_queue_admission_backpressure"]
+        )
+        self.assertTrue(
+            manifest["supported"]["bounded_fragment_repair_queue_admission"]
+        )
+        self.assertTrue(
+            manifest["supported"]["completed_fragment_retransmission_deduplication"]
+        )
         self.assertEqual(
             manifest["serialization_format"],
             "fleetrmw.introspection_c.v1",

@@ -62,6 +62,10 @@ DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS = 50
 DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS = 6
 DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT = 1024
 DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT = 32768
+DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_THRESHOLD = 0
+DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_TIMEOUT_MS = 0
+DEFAULT_FLEETQOX_FRAGMENT_REPAIR_QUEUE_LIMIT = 64
+DEFAULT_FLEETQOX_FRAGMENT_REPAIR_COOLDOWN_MS = 100
 
 
 def ingress_specs(specs: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -287,6 +291,18 @@ def run_probe(
     fleetqox_fragment_send_queue_limit: int = (
         DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT
     ),
+    fleetqox_fragment_queue_admission_threshold: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_THRESHOLD
+    ),
+    fleetqox_fragment_queue_admission_timeout_ms: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_TIMEOUT_MS
+    ),
+    fleetqox_fragment_repair_queue_limit: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_REPAIR_QUEUE_LIMIT
+    ),
+    fleetqox_fragment_repair_cooldown_ms: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_REPAIR_COOLDOWN_MS
+    ),
     fleetqox_publisher_test_drop_fragment_indexes: str = "",
 ) -> dict[str, Any]:
     if samples <= 0 or robot_count <= 0:
@@ -325,6 +341,22 @@ def run_probe(
     if not 0 <= fleetqox_fragment_send_queue_limit <= 262144:
         raise ValueError(
             "fleetqox_fragment_send_queue_limit is outside 0..262144"
+        )
+    if not 0 <= fleetqox_fragment_queue_admission_threshold <= 262144:
+        raise ValueError(
+            "fleetqox_fragment_queue_admission_threshold is outside 0..262144"
+        )
+    if not 0 <= fleetqox_fragment_queue_admission_timeout_ms <= 60000:
+        raise ValueError(
+            "fleetqox_fragment_queue_admission_timeout_ms is outside 0..60000"
+        )
+    if not 0 <= fleetqox_fragment_repair_queue_limit <= 262144:
+        raise ValueError(
+            "fleetqox_fragment_repair_queue_limit is outside 0..262144"
+        )
+    if not 0 <= fleetqox_fragment_repair_cooldown_ms <= 60000:
+        raise ValueError(
+            "fleetqox_fragment_repair_cooldown_ms is outside 0..60000"
         )
     if fleetqox_publisher_test_drop_fragment_indexes:
         try:
@@ -485,6 +517,14 @@ def run_probe(
                             ("1" if fleetqox_fragment_async_send else "0"),
                         "FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT":
                             str(fleetqox_fragment_send_queue_limit),
+                        "FLEETQOX_RMW_FRAGMENT_QUEUE_ADMISSION_THRESHOLD":
+                            str(fleetqox_fragment_queue_admission_threshold),
+                        "FLEETQOX_RMW_FRAGMENT_QUEUE_ADMISSION_TIMEOUT_MS":
+                            str(fleetqox_fragment_queue_admission_timeout_ms),
+                        "FLEETQOX_RMW_FRAGMENT_REPAIR_QUEUE_LIMIT":
+                            str(fleetqox_fragment_repair_queue_limit),
+                        "FLEETQOX_RMW_FRAGMENT_REPAIR_COOLDOWN_MS":
+                            str(fleetqox_fragment_repair_cooldown_ms),
                     }
                 )
             if fleetqox_publisher_test_drop_fragment_indexes:
@@ -703,6 +743,22 @@ def run_probe(
                 fleetqox_fragment_send_queue_limit
                 if use_fleetqox_direct_peers else None
             ),
+            "fleetqox_fragment_queue_admission_threshold": (
+                fleetqox_fragment_queue_admission_threshold
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_fragment_queue_admission_timeout_ms": (
+                fleetqox_fragment_queue_admission_timeout_ms
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_fragment_repair_queue_limit": (
+                fleetqox_fragment_repair_queue_limit
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_fragment_repair_cooldown_ms": (
+                fleetqox_fragment_repair_cooldown_ms
+                if use_fleetqox_direct_peers else None
+            ),
             "fleetqox_publisher_test_drop_fragment_indexes": (
                 fleetqox_publisher_test_drop_fragment_indexes
                 if use_fleetqox_direct_peers else None
@@ -878,6 +934,26 @@ def main() -> int:
         default=DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT,
     )
     parser.add_argument(
+        "--fleetqox-fragment-queue-admission-threshold",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_THRESHOLD,
+    )
+    parser.add_argument(
+        "--fleetqox-fragment-queue-admission-timeout-ms",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_TIMEOUT_MS,
+    )
+    parser.add_argument(
+        "--fleetqox-fragment-repair-cooldown-ms",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_REPAIR_COOLDOWN_MS,
+    )
+    parser.add_argument(
+        "--fleetqox-fragment-repair-queue-limit",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_REPAIR_QUEUE_LIMIT,
+    )
+    parser.add_argument(
         "--fleetqox-publisher-test-drop-fragment-indexes",
         default="",
         help=argparse.SUPPRESS,
@@ -942,6 +1018,22 @@ def main() -> int:
         fleetqox_fragment_async_send=args.fleetqox_fragment_async_send,
         fleetqox_fragment_send_queue_limit=max(
             min(args.fleetqox_fragment_send_queue_limit, 262144),
+            0,
+        ),
+        fleetqox_fragment_queue_admission_threshold=max(
+            min(args.fleetqox_fragment_queue_admission_threshold, 262144),
+            0,
+        ),
+        fleetqox_fragment_queue_admission_timeout_ms=max(
+            min(args.fleetqox_fragment_queue_admission_timeout_ms, 60000),
+            0,
+        ),
+        fleetqox_fragment_repair_cooldown_ms=max(
+            min(args.fleetqox_fragment_repair_cooldown_ms, 60000),
+            0,
+        ),
+        fleetqox_fragment_repair_queue_limit=max(
+            min(args.fleetqox_fragment_repair_queue_limit, 262144),
             0,
         ),
         fleetqox_publisher_test_drop_fragment_indexes=(

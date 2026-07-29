@@ -66,6 +66,18 @@ def common_relay_result(
         "fleetqox_fragment_send_queue_limit": (
             32768 if system == "rmw_fleetqox_cpp" else None
         ),
+        "fleetqox_fragment_queue_admission_threshold": (
+            0 if system == "rmw_fleetqox_cpp" else None
+        ),
+        "fleetqox_fragment_queue_admission_timeout_ms": (
+            0 if system == "rmw_fleetqox_cpp" else None
+        ),
+        "fleetqox_fragment_repair_cooldown_ms": (
+            100 if system == "rmw_fleetqox_cpp" else None
+        ),
+        "fleetqox_fragment_repair_queue_limit": (
+            64 if system == "rmw_fleetqox_cpp" else None
+        ),
         "robot_count": 2,
         "topic_count": 4,
         "repetition_seed": 7,
@@ -225,6 +237,39 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             module.prior_row_matches_configuration(
                 module.normalize_row(
                     wrong_queue_limit,
+                    system="rmw_fleetqox_cpp",
+                ),
+                **expected,
+            )
+        )
+        wrong_admission = common_relay_result()
+        wrong_admission["fleetqox_fragment_queue_admission_threshold"] = 256
+        self.assertFalse(
+            module.prior_row_matches_configuration(
+                module.normalize_row(
+                    wrong_admission,
+                    system="rmw_fleetqox_cpp",
+                ),
+                **expected,
+            )
+        )
+        wrong_cooldown = common_relay_result()
+        wrong_cooldown["fleetqox_fragment_repair_cooldown_ms"] = 0
+        self.assertFalse(
+            module.prior_row_matches_configuration(
+                module.normalize_row(
+                    wrong_cooldown,
+                    system="rmw_fleetqox_cpp",
+                ),
+                **expected,
+            )
+        )
+        wrong_repair_queue = common_relay_result()
+        wrong_repair_queue["fleetqox_fragment_repair_queue_limit"] = 32
+        self.assertFalse(
+            module.prior_row_matches_configuration(
+                module.normalize_row(
+                    wrong_repair_queue,
                     system="rmw_fleetqox_cpp",
                 ),
                 **expected,
