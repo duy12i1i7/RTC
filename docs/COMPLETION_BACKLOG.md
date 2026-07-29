@@ -1491,12 +1491,13 @@ pre-authentication outer wrapper. This is
 PSK-authenticated selective-fragment resource-admission evidence. A third
 three-peer gate first establishes that exact bounded state through an allowed
 SROS2 X.509 identity. A CA-trusted attacker then uses the same PSK to send six
-large samples as `86` signed/encrypted frames. The receiver records `96`
-identity-denied data/graph inputs while active assemblies, missing indexes,
-evictions, AEAD decrypted-frame count, and last verified identity remain
-unchanged. This is bounded single-attacker identity-isolation evidence, not
-sustained multi-attacker, credential-rotation, or production security
-evidence.
+large fragmented samples. The campaign recreates credentials, network, and
+processes independently and passes `5/5`; the receiver denies `481` attacker
+data/graph inputs in total, at least `95` per run, while active assemblies,
+missing indexes, evictions, AEAD decrypted-frame count, and last verified
+identity remain unchanged. This is repeated bounded identity-isolation
+evidence, not a long-duration multi-attacker, credential-rotation, or
+production security soak.
 
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge

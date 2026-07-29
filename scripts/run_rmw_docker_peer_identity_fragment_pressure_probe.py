@@ -32,7 +32,8 @@ from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
 )
 
 
-SCHEMA_VERSION = "fleetrmw.peer_identity_fragment_pressure.v1"
+SCHEMA_VERSION = "fleetrmw.peer_identity_fragment_pressure_campaign.v1"
+RUN_SCHEMA_VERSION = "fleetrmw.peer_identity_fragment_pressure.v1"
 RECEIVER_SCHEMA_VERSION = "fleetrmw.peer_identity_fragment_pressure_receiver.v1"
 PUBLISHER_SCHEMA_VERSION = "fleetrmw.peer_identity_fragment_pressure_publisher.v1"
 TOPIC = "/fleetqox/peer_identity_fragment_pressure"
@@ -332,7 +333,7 @@ def summarize_probe(
     attacker_ok = publisher_ok(attacker, "attacker", attacker_returncode)
     contract_ok = receiver_ok and allowed_ok and attacker_ok
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": RUN_SCHEMA_VERSION,
         "status": "ok" if contract_ok else "failed",
         "assembly_limit": assembly_limit,
         "allowed_partial_sample_count": PARTIAL_SAMPLE_COUNT,
@@ -350,6 +351,76 @@ def summarize_probe(
         "allowed_publisher": allowed,
         "attacker_publisher": attacker,
     }
+
+
+def summarize_campaign(
+    runs: list[dict[str, Any]],
+    *,
+    requested_run_count: int,
+) -> dict[str, Any]:
+    ok_runs = [
+        row
+        for row in runs
+        if row.get("status") == "ok"
+        and row.get("schema_version") == RUN_SCHEMA_VERSION
+        and row.get("peer_identity_fragment_pressure_isolation_claim") is True
+        and row.get("unauthorized_identity_pre_reassembly_rejection_claim")
+        is True
+        and row.get("authorized_fragment_resource_bound_preserved_claim")
+        is True
+    ]
+    identity_denied_deltas = [
+        int(row.get("receiver", {}).get("identity_denied_delta", 0))
+        for row in ok_runs
+        if isinstance(row.get("receiver"), dict)
+    ]
+    contract_ok = (
+        requested_run_count > 0
+        and len(runs) == requested_run_count
+        and len(ok_runs) == requested_run_count
+        and len(identity_denied_deltas) == requested_run_count
+        and all(value > 0 for value in identity_denied_deltas)
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": "ok" if contract_ok else "failed",
+        "run_count": requested_run_count,
+        "ok_run_count": len(ok_runs),
+        "identity_denied_total": sum(identity_denied_deltas),
+        "identity_denied_min_per_run": (
+            min(identity_denied_deltas) if identity_denied_deltas else 0
+        ),
+        "peer_identity_fragment_pressure_isolation_claim": contract_ok,
+        "unauthorized_identity_pre_reassembly_rejection_claim": contract_ok,
+        "authorized_fragment_resource_bound_preserved_claim": contract_ok,
+        "repeated_peer_identity_fragment_pressure_claim": (
+            contract_ok and requested_run_count >= 5
+        ),
+        "long_duration_peer_identity_fragment_soak_claim": False,
+        "production_fragment_security_claim": False,
+        "runs": runs,
+    }
+
+
+def run_campaign(
+    *,
+    root: Path,
+    image: str,
+    assembly_limit: int,
+    max_assembly_bytes: int,
+    iterations: int,
+) -> dict[str, Any]:
+    run_count = max(iterations, 1)
+    runs = [
+        run_probe(
+            root=root,
+            image=image,
+            assembly_limit=assembly_limit,
+            max_assembly_bytes=max_assembly_bytes,
+        )
+        for _ in range(run_count)
+    ]
+    return summarize_campaign(runs, requested_run_count=run_count)
 
 
 def identity_environment(
@@ -640,6 +711,7 @@ def run_probe(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--assembly-limit", type=int, default=4)
     parser.add_argument("--max-assembly-bytes", type=int, default=16384)
     parser.add_argument(
@@ -652,7 +724,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     assembly_limit = max(min(args.assembly_limit, PARTIAL_SAMPLE_COUNT - 1), 1)
-    summary = run_probe(
+    summary = run_campaign(
         root=ROOT,
         image=args.image,
         assembly_limit=assembly_limit,
@@ -660,6 +732,7 @@ def main() -> int:
             min(args.max_assembly_bytes, 256 * 1024 * 1024),
             8192,
         ),
+        iterations=max(args.iterations, 1),
     )
     path = ROOT / args.summary_json
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -669,6 +742,7 @@ def main() -> int:
     )
     print(
         f"status={summary['status']} "
+        f"runs={summary['ok_run_count']}/{summary['run_count']} "
         "identity_pressure_isolated="
         f"{summary['peer_identity_fragment_pressure_isolation_claim']}"
     )

@@ -5,6 +5,8 @@ import unittest
 from scripts.run_rmw_docker_peer_identity_fragment_pressure_probe import (
     PUBLISHER_SCHEMA_VERSION,
     RECEIVER_SCHEMA_VERSION,
+    RUN_SCHEMA_VERSION,
+    summarize_campaign,
     summarize_probe,
 )
 
@@ -77,6 +79,29 @@ class PeerIdentityFragmentPressureProbeTests(unittest.TestCase):
             attacker_returncode=0,
             assembly_limit=4,
         )
+        self.assertEqual(failed["status"], "failed")
+
+    def test_campaign_requires_all_five_independent_runs(self) -> None:
+        run = {
+            "schema_version": RUN_SCHEMA_VERSION,
+            "status": "ok",
+            "peer_identity_fragment_pressure_isolation_claim": True,
+            "unauthorized_identity_pre_reassembly_rejection_claim": True,
+            "authorized_fragment_resource_bound_preserved_claim": True,
+            "receiver": {"identity_denied_delta": 96},
+        }
+        summary = summarize_campaign([run] * 5, requested_run_count=5)
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["ok_run_count"], 5)
+        self.assertEqual(summary["identity_denied_total"], 480)
+        self.assertTrue(
+            summary["repeated_peer_identity_fragment_pressure_claim"]
+        )
+        self.assertFalse(
+            summary["long_duration_peer_identity_fragment_soak_claim"]
+        )
+
+        failed = summarize_campaign([run] * 4, requested_run_count=5)
         self.assertEqual(failed["status"], "failed")
 
 

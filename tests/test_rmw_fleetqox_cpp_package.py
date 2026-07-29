@@ -4548,6 +4548,16 @@ int main()
                 "unauthorized_identity_pre_reassembly_rejection_claim"
             ]
         )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "repeated_peer_identity_fragment_pressure_claim"
+            ]
+        )
+        self.assertFalse(
+            manifest["claim_boundaries"][
+                "long_duration_peer_identity_fragment_soak_claim"
+            ]
+        )
         self.assertFalse(
             manifest["claim_boundaries"]["production_fragment_security_claim"]
         )
