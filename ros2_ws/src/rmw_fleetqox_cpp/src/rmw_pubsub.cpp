@@ -2505,6 +2505,22 @@ public:
       }));
   }
 
+  std::uint64_t fragment_assembly_evictions() const
+  {
+    return fragment_assembly_evictions_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_assembly_oversize_drops() const
+  {
+    return fragment_assembly_oversize_drops_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_assembly_metadata_mismatch_drops() const
+  {
+    return fragment_assembly_metadata_mismatch_drops_.load(
+      std::memory_order_relaxed);
+  }
+
   std::uint64_t test_dropped_frames() const
   {
     return test_dropped_frames_.load(std::memory_order_relaxed);
@@ -4637,6 +4653,12 @@ private:
       "FLEETQOX_RMW_FRAGMENT_NACK_MAX_REQUESTS", 6, 100);
     fragment_history_limit_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT", 1024, 4096);
+    fragment_assembly_limit_ = parse_nonnegative_int_env(
+      "FLEETQOX_RMW_FRAGMENT_ASSEMBLY_LIMIT", 1024, 16384);
+    fragment_max_assembly_bytes_ = parse_nonnegative_int_env(
+      "FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES",
+      16 * 1024 * 1024,
+      256 * 1024 * 1024);
     fragment_send_queue_limit_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT", 32768, 262144);
     fragment_queue_admission_threshold_ = parse_nonnegative_int_env(
@@ -5360,6 +5382,14 @@ private:
       return true;
     }
     const std::string chunk = datagram.substr(separators[3] + 1);
+    if ((fragment_max_assembly_bytes_ > 0 &&
+      total_size > static_cast<size_t>(fragment_max_assembly_bytes_)) ||
+      chunk.size() > total_size)
+    {
+      fragment_assembly_oversize_drops_.fetch_add(
+        1, std::memory_order_relaxed);
+      return true;
+    }
     const std::int64_t now_ns = monotonic_timestamp_ns();
     std::unique_lock<std::mutex> lock(fragment_mutex_);
     cleanup_stale_fragment_assemblies_locked(now_ns);
@@ -5371,7 +5401,36 @@ private:
         1, std::memory_order_relaxed);
       return true;
     }
-    FragmentAssembly & assembly = fragment_assemblies_[assembly_key];
+    auto assembly_it = fragment_assemblies_.find(assembly_key);
+    if (assembly_it == fragment_assemblies_.end() &&
+      fragment_assembly_limit_ > 0)
+    {
+      const size_t limit = static_cast<size_t>(fragment_assembly_limit_);
+      while (fragment_assemblies_.size() >= limit) {
+        auto oldest = fragment_assemblies_.end();
+        for (auto it = fragment_assemblies_.begin();
+          it != fragment_assemblies_.end(); ++it)
+        {
+          if (oldest == fragment_assemblies_.end() ||
+            it->second.last_update_ns < oldest->second.last_update_ns)
+          {
+            oldest = it;
+          }
+        }
+        if (oldest == fragment_assemblies_.end()) {
+          break;
+        }
+        fragment_assemblies_.erase(oldest);
+        fragment_assembly_evictions_.fetch_add(
+          1, std::memory_order_relaxed);
+      }
+      assembly_it = fragment_assemblies_.emplace(
+        assembly_key, FragmentAssembly{}).first;
+    } else if (assembly_it == fragment_assemblies_.end()) {
+      assembly_it = fragment_assemblies_.emplace(
+        assembly_key, FragmentAssembly{}).first;
+    }
+    FragmentAssembly & assembly = assembly_it->second;
     if (assembly.fragment_count == 0) {
       assembly.fragment_count = fragment_count;
       assembly.total_size = total_size;
@@ -5382,7 +5441,8 @@ private:
       assembly.repair_capable = prefix == kRepairFragmentPrefix;
     }
     if (assembly.fragment_count != fragment_count || assembly.total_size != total_size) {
-      fragment_assemblies_.erase(assembly_key);
+      fragment_assembly_metadata_mismatch_drops_.fetch_add(
+        1, std::memory_order_relaxed);
       return true;
     }
     if (source != nullptr) {
@@ -5561,6 +5621,9 @@ private:
   std::atomic<std::uint64_t> fragment_queue_admission_timeouts_{0};
   std::atomic<std::uint64_t> fragment_queue_admission_wait_ns_{0};
   std::atomic<std::uint64_t> fragment_repair_queue_deferrals_{0};
+  std::atomic<std::uint64_t> fragment_assembly_evictions_{0};
+  std::atomic<std::uint64_t> fragment_assembly_oversize_drops_{0};
+  std::atomic<std::uint64_t> fragment_assembly_metadata_mismatch_drops_{0};
   std::atomic<std::uint64_t> test_dropped_frames_{0};
   std::atomic<std::uint64_t> adaptive_failovers_{0};
   std::atomic<std::uint64_t> adaptive_unicast_frames_{0};
@@ -5603,6 +5666,8 @@ private:
   int fragment_nack_interval_ms_{50};
   int fragment_nack_max_requests_{6};
   int fragment_history_limit_{1024};
+  int fragment_assembly_limit_{1024};
+  int fragment_max_assembly_bytes_{16 * 1024 * 1024};
   int fragment_send_queue_limit_{32768};
   int fragment_queue_admission_threshold_{0};
   int fragment_queue_admission_timeout_ms_{0};
@@ -10628,6 +10693,21 @@ std::uint64_t rmw_fleetqox_cpp_socket_fragment_oldest_assembly_age_ms()
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_history_request_exhausted()
 {
   return socket_transport().fragment_history_request_exhausted();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_assembly_evictions()
+{
+  return socket_transport().fragment_assembly_evictions();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_assembly_oversize_drops()
+{
+  return socket_transport().fragment_assembly_oversize_drops();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_assembly_metadata_mismatch_drops()
+{
+  return socket_transport().fragment_assembly_metadata_mismatch_drops();
 }
 
 std::uint64_t rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions()

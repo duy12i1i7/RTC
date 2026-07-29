@@ -350,6 +350,14 @@ int main(int argc, char ** argv)
     "rmw_fleetqox_cpp_socket_fragment_oldest_assembly_age_ms", nullptr) << ",";
   std::cout << "\"fragment_history_request_exhausted\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_history_request_exhausted", nullptr) << ",";
+  std::cout << "\"fragment_assembly_evictions\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_assembly_evictions", nullptr) << ",";
+  std::cout << "\"fragment_assembly_oversize_drops\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_assembly_oversize_drops", nullptr) << ",";
+  std::cout << "\"fragment_assembly_metadata_mismatch_drops\":" <<
+    fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_assembly_metadata_mismatch_drops",
+    nullptr) << ",";
   std::cout << "\"fragment_observed_timeout_retransmissions_suppressed\":" <<
     fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_observed_timeout_retransmissions_suppressed",

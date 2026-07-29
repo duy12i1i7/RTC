@@ -1099,9 +1099,15 @@ int main()
             "FLEETQOX_RMW_FRAGMENT_WHOLE_FALLBACK_INTERVAL_MS",
             source,
         )
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_ASSEMBLY_LIMIT", source)
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES", source)
         self.assertIn(
             "rmw_fleetqox_cpp_socket_"
             "fragment_whole_fallback_pacing_deferrals",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_assembly_evictions",
             source,
         )
         self.assertIn("rmw_fleetqox_cpp_shutdown_pubsub_runtime", source)
@@ -4508,6 +4514,9 @@ int main()
         )
         self.assertTrue(
             manifest["supported"]["completed_fragment_retransmission_deduplication"]
+        )
+        self.assertTrue(
+            manifest["supported"]["bounded_fragment_assembly_admission"]
         )
         self.assertEqual(
             manifest["serialization_format"],

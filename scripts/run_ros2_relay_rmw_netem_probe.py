@@ -61,6 +61,8 @@ DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS = 6
 DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS = 50
 DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS = 6
 DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT = 1024
+DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_LIMIT = 1024
+DEFAULT_FLEETQOX_FRAGMENT_MAX_ASSEMBLY_BYTES = 16 * 1024 * 1024
 DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT = 32768
 DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_THRESHOLD = 0
 DEFAULT_FLEETQOX_FRAGMENT_QUEUE_ADMISSION_TIMEOUT_MS = 0
@@ -288,6 +290,12 @@ def run_probe(
     fleetqox_fragment_history_limit: int = (
         DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT
     ),
+    fleetqox_fragment_assembly_limit: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_LIMIT
+    ),
+    fleetqox_fragment_max_assembly_bytes: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_MAX_ASSEMBLY_BYTES
+    ),
     fleetqox_fragment_async_send: bool = False,
     fleetqox_fragment_send_queue_limit: int = (
         DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT
@@ -342,6 +350,14 @@ def run_probe(
         )
     if not 0 <= fleetqox_fragment_history_limit <= 4096:
         raise ValueError("fleetqox_fragment_history_limit is outside 0..4096")
+    if not 0 <= fleetqox_fragment_assembly_limit <= 16384:
+        raise ValueError(
+            "fleetqox_fragment_assembly_limit is outside 0..16384"
+        )
+    if not 0 <= fleetqox_fragment_max_assembly_bytes <= 256 * 1024 * 1024:
+        raise ValueError(
+            "fleetqox_fragment_max_assembly_bytes is outside 0..268435456"
+        )
     if not 0 <= fleetqox_fragment_send_queue_limit <= 262144:
         raise ValueError(
             "fleetqox_fragment_send_queue_limit is outside 0..262144"
@@ -521,6 +537,10 @@ def run_probe(
                             str(fleetqox_fragment_nack_max_requests),
                         "FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT":
                             str(fleetqox_fragment_history_limit),
+                        "FLEETQOX_RMW_FRAGMENT_ASSEMBLY_LIMIT":
+                            str(fleetqox_fragment_assembly_limit),
+                        "FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES":
+                            str(fleetqox_fragment_max_assembly_bytes),
                         "FLEETQOX_RMW_FRAGMENT_ASYNC_SEND":
                             ("1" if fleetqox_fragment_async_send else "0"),
                         "FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT":
@@ -745,6 +765,14 @@ def run_probe(
                 fleetqox_fragment_history_limit
                 if use_fleetqox_direct_peers else None
             ),
+            "fleetqox_fragment_assembly_limit": (
+                fleetqox_fragment_assembly_limit
+                if use_fleetqox_direct_peers else None
+            ),
+            "fleetqox_fragment_max_assembly_bytes": (
+                fleetqox_fragment_max_assembly_bytes
+                if use_fleetqox_direct_peers else None
+            ),
             "fleetqox_fragment_async_send": (
                 fleetqox_fragment_async_send
                 if use_fleetqox_direct_peers else None
@@ -939,6 +967,16 @@ def main() -> int:
         default=DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
     )
     parser.add_argument(
+        "--fleetqox-fragment-assembly-limit",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_LIMIT,
+    )
+    parser.add_argument(
+        "--fleetqox-fragment-max-assembly-bytes",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_MAX_ASSEMBLY_BYTES,
+    )
+    parser.add_argument(
         "--fleetqox-fragment-async-send",
         action="store_true",
     )
@@ -1032,6 +1070,14 @@ def main() -> int:
         ),
         fleetqox_fragment_history_limit=max(
             min(args.fleetqox_fragment_history_limit, 4096),
+            0,
+        ),
+        fleetqox_fragment_assembly_limit=max(
+            min(args.fleetqox_fragment_assembly_limit, 16384),
+            0,
+        ),
+        fleetqox_fragment_max_assembly_bytes=max(
+            min(args.fleetqox_fragment_max_assembly_bytes, 256 * 1024 * 1024),
             0,
         ),
         fleetqox_fragment_async_send=args.fleetqox_fragment_async_send,

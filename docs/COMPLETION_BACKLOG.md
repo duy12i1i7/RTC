@@ -1472,6 +1472,16 @@ and timeout, repair queue limit/cooldown, async-send mode, total queue limit,
 NACK interval/request count/history limit, relay drain mode, timeout, fragment
 size, retry count, and pacing.
 
+Fragment reassembly admission is now independently bounded and fail-closed.
+`FLEETQOX_RMW_FRAGMENT_ASSEMBLY_LIMIT` caps concurrent partial assemblies,
+`FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES` rejects oversized declarations,
+and a conflicting count/size tuple cannot erase an existing assembly. A raw
+UDP Docker gate injects six partial assemblies against limit four, one
+oversized declaration, and one metadata collision. It records active `4`,
+missing indexes `4`, evictions `2`, oversize drops `1`, mismatch drops `1`,
+and clean injector/receiver exits. This is resource-admission evidence, not
+authenticated hostile-fleet or production security evidence.
+
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
 sequence 1 even when sequence 1 was dropped. ACK feedback now carries the

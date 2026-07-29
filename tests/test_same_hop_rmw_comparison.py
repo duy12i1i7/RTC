@@ -60,6 +60,12 @@ def common_relay_result(
         "fleetqox_fragment_history_limit": (
             1024 if system == "rmw_fleetqox_cpp" else None
         ),
+        "fleetqox_fragment_assembly_limit": (
+            1024 if system == "rmw_fleetqox_cpp" else None
+        ),
+        "fleetqox_fragment_max_assembly_bytes": (
+            16 * 1024 * 1024 if system == "rmw_fleetqox_cpp" else None
+        ),
         "fleetqox_fragment_async_send": (
             False if system == "rmw_fleetqox_cpp" else None
         ),
@@ -240,6 +246,17 @@ class SameHopRmwComparisonTest(unittest.TestCase):
             module.prior_row_matches_configuration(
                 module.normalize_row(
                     wrong_queue_limit,
+                    system="rmw_fleetqox_cpp",
+                ),
+                **expected,
+            )
+        )
+        wrong_assembly_limit = common_relay_result()
+        wrong_assembly_limit["fleetqox_fragment_assembly_limit"] = 64
+        self.assertFalse(
+            module.prior_row_matches_configuration(
+                module.normalize_row(
+                    wrong_assembly_limit,
                     system="rmw_fleetqox_cpp",
                 ),
                 **expected,
