@@ -2444,6 +2444,29 @@ public:
     return fragment_repair_queue_deferrals_.load(std::memory_order_relaxed);
   }
 
+  std::uint64_t fragment_nack_indexes_requested() const
+  {
+    return fragment_nack_indexes_requested_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_nack_index_budget_reductions() const
+  {
+    return fragment_nack_index_budget_reductions_.load(
+      std::memory_order_relaxed);
+  }
+
+  size_t fragment_nack_max_sweep_indexes_requested() const
+  {
+    return fragment_nack_max_sweep_indexes_requested_.load(
+      std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_nack_sweep_budget_exhaustions() const
+  {
+    return fragment_nack_sweep_budget_exhaustions_.load(
+      std::memory_order_relaxed);
+  }
+
   std::uint64_t fragment_active_assemblies()
   {
     std::lock_guard<std::mutex> lock(fragment_mutex_);
@@ -3010,6 +3033,7 @@ private:
   static constexpr std::int64_t kFragmentAssemblyTtlNs = 10000000000ll;
   static constexpr std::int64_t kFragmentHistoryTtlNs = 60000000000ll;
   static constexpr size_t kMaxFragmentRepairIndexesPerRequest = 64;
+  static constexpr size_t kFleetFragmentRepairIndexesPerSweep = 512;
   static constexpr const char * kFragmentPrefix = "FLEETQOX_FRAGMENT_V1|";
   static constexpr const char * kRepairFragmentPrefix =
     "FLEETQOX_REPAIR_FRAGMENT_V1|";
@@ -4658,6 +4682,10 @@ private:
         "FLEETQOX_RMW_FRAGMENT_NACK_INTERVAL_MS", 50, 1000));
     fragment_nack_max_requests_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_FRAGMENT_NACK_MAX_REQUESTS", 6, 100);
+    fragment_nack_max_indexes_per_request_ = std::max(
+      1,
+      parse_nonnegative_int_env(
+        "FLEETQOX_RMW_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST", 8, 64));
     fragment_history_limit_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT", 1024, 4096);
     fragment_assembly_limit_ = parse_nonnegative_int_env(
@@ -5056,12 +5084,13 @@ private:
 
   static std::vector<size_t> missing_fragment_indexes(
     const FragmentAssembly & assembly,
-    bool include_trailing_indexes)
+    bool include_trailing_indexes,
+    size_t max_indexes)
   {
     std::vector<size_t> missing;
     missing.reserve(std::min(
       assembly.fragment_count,
-      kMaxFragmentRepairIndexesPerRequest));
+      max_indexes));
     const size_t scan_count = include_trailing_indexes ?
       assembly.received.size() :
       std::min(
@@ -5069,7 +5098,7 @@ private:
       assembly.highest_received_index + 1);
     for (size_t index = 0;
       index < scan_count &&
-      missing.size() < kMaxFragmentRepairIndexesPerRequest;
+      missing.size() < max_indexes;
       ++index)
     {
       if (!assembly.received[index]) {
@@ -5136,6 +5165,12 @@ private:
       std::vector<size_t> missing;
       sockaddr_in source{};
     };
+    struct CandidateRequest
+    {
+      std::string assembly_key;
+      FragmentAssembly * assembly{nullptr};
+      std::vector<size_t> missing;
+    };
     const std::int64_t now_ns = monotonic_timestamp_ns();
     const std::int64_t interval_ns =
       static_cast<std::int64_t>(fragment_nack_interval_ms_) * 1000000ll;
@@ -5143,6 +5178,8 @@ private:
     {
       std::lock_guard<std::mutex> lock(fragment_mutex_);
       cleanup_stale_fragment_assemblies_locked(now_ns);
+      std::vector<CandidateRequest> candidates;
+      candidates.reserve(fragment_assemblies_.size());
       for (auto & item : fragment_assemblies_) {
         FragmentAssembly & assembly = item.second;
         const size_t backoff_shift = std::min<size_t>(assembly.nack_count, 3);
@@ -5166,18 +5203,78 @@ private:
           last_fragment_observed ||
           now_ns - assembly.first_update_ns >= tail_guard_ns;
         std::vector<size_t> missing = missing_fragment_indexes(
-          assembly, include_trailing_indexes);
-        if (missing.empty()) {
-          continue;
+          assembly,
+          include_trailing_indexes,
+          static_cast<size_t>(fragment_nack_max_indexes_per_request_));
+        if (!missing.empty()) {
+          candidates.push_back(CandidateRequest{
+            item.first, &assembly, std::move(missing)});
         }
+      }
+      if (candidates.empty()) {
+        fragment_nack_sweep_cursor_ = 0;
+        return;
+      }
+      std::sort(
+        candidates.begin(),
+        candidates.end(),
+        [](const CandidateRequest & left, const CandidateRequest & right) {
+          return left.assembly_key < right.assembly_key;
+        });
+      const size_t eligible_assemblies = candidates.size();
+      const size_t fleet_fair_share = std::max<size_t>(
+        1,
+        kFleetFragmentRepairIndexesPerSweep / eligible_assemblies);
+      const size_t request_index_limit = std::min(
+        static_cast<size_t>(fragment_nack_max_indexes_per_request_),
+        fleet_fair_share);
+      size_t remaining_index_budget = kFleetFragmentRepairIndexesPerSweep;
+      const size_t start_index =
+        fragment_nack_sweep_cursor_ % eligible_assemblies;
+      size_t visited = 0;
+      for (; visited < eligible_assemblies && remaining_index_budget > 0;
+        ++visited)
+      {
+        const size_t candidate_index =
+          (start_index + visited) % eligible_assemblies;
+        CandidateRequest & candidate = candidates[candidate_index];
+        FragmentAssembly & assembly = *candidate.assembly;
+        const size_t candidate_limit = std::min(
+          request_index_limit, remaining_index_budget);
+        if (candidate.missing.size() > candidate_limit) {
+          fragment_nack_index_budget_reductions_.fetch_add(
+            1, std::memory_order_relaxed);
+          candidate.missing.resize(candidate_limit);
+        }
+        fragment_nack_indexes_requested_.fetch_add(
+          static_cast<std::uint64_t>(candidate.missing.size()),
+          std::memory_order_relaxed);
+        remaining_index_budget -= candidate.missing.size();
         assembly.last_nack_ns = now_ns;
         ++assembly.nack_count;
         pending.push_back(PendingRequest{
           assembly.fragment_id,
           assembly.fragment_count,
-          std::move(missing),
+          std::move(candidate.missing),
           assembly.source});
       }
+      const size_t sweep_indexes_requested =
+        kFleetFragmentRepairIndexesPerSweep - remaining_index_budget;
+      size_t previous_max = fragment_nack_max_sweep_indexes_requested_.load(
+        std::memory_order_relaxed);
+      while (previous_max < sweep_indexes_requested &&
+        !fragment_nack_max_sweep_indexes_requested_.compare_exchange_weak(
+          previous_max,
+          sweep_indexes_requested,
+          std::memory_order_relaxed))
+      {
+      }
+      if (remaining_index_budget == 0 && visited < eligible_assemblies) {
+        fragment_nack_sweep_budget_exhaustions_.fetch_add(
+          1, std::memory_order_relaxed);
+      }
+      fragment_nack_sweep_cursor_ =
+        (start_index + std::max<size_t>(visited, 1)) % eligible_assemblies;
     }
     for (const PendingRequest & request : pending) {
       send_fragment_repair_request(
@@ -5634,6 +5731,10 @@ private:
   std::atomic<std::uint64_t> fragment_queue_admission_timeouts_{0};
   std::atomic<std::uint64_t> fragment_queue_admission_wait_ns_{0};
   std::atomic<std::uint64_t> fragment_repair_queue_deferrals_{0};
+  std::atomic<std::uint64_t> fragment_nack_indexes_requested_{0};
+  std::atomic<std::uint64_t> fragment_nack_index_budget_reductions_{0};
+  std::atomic<size_t> fragment_nack_max_sweep_indexes_requested_{0};
+  std::atomic<std::uint64_t> fragment_nack_sweep_budget_exhaustions_{0};
   std::atomic<std::uint64_t> fragment_assembly_evictions_{0};
   std::atomic<std::uint64_t> fragment_assembly_oversize_drops_{0};
   std::atomic<std::uint64_t> fragment_assembly_metadata_mismatch_drops_{0};
@@ -5662,6 +5763,7 @@ private:
   std::mutex fragment_mutex_;
   std::unordered_map<std::string, FragmentAssembly> fragment_assemblies_;
   std::unordered_map<std::string, std::int64_t> completed_fragment_assemblies_;
+  size_t fragment_nack_sweep_cursor_{0};
   std::mutex fragment_history_mutex_;
   std::unordered_map<std::string, FragmentRepairHistory> fragment_history_;
   std::mutex fragment_send_queue_mutex_;
@@ -5678,6 +5780,7 @@ private:
   int loss_resilient_fragment_chunk_bytes_{0};
   int fragment_nack_interval_ms_{50};
   int fragment_nack_max_requests_{6};
+  int fragment_nack_max_indexes_per_request_{8};
   int fragment_history_limit_{1024};
   int fragment_assembly_limit_{1024};
   int fragment_max_assembly_bytes_{16 * 1024 * 1024};
@@ -10681,6 +10784,26 @@ std::uint64_t rmw_fleetqox_cpp_socket_fragment_queue_admission_wait_ns()
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals()
 {
   return socket_transport().fragment_repair_queue_deferrals();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_nack_indexes_requested()
+{
+  return socket_transport().fragment_nack_indexes_requested();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_nack_index_budget_reductions()
+{
+  return socket_transport().fragment_nack_index_budget_reductions();
+}
+
+size_t rmw_fleetqox_cpp_socket_fragment_nack_max_sweep_indexes_requested()
+{
+  return socket_transport().fragment_nack_max_sweep_indexes_requested();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_nack_sweep_budget_exhaustions()
+{
+  return socket_transport().fragment_nack_sweep_budget_exhaustions();
 }
 
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_active_assemblies()

@@ -84,6 +84,10 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
         self.assertIn('"fleetqox_udp_send_pacing_us":', source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_NACK_INTERVAL_MS", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_NACK_MAX_REQUESTS", source)
+        self.assertIn(
+            "FLEETQOX_RMW_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST",
+            source,
+        )
         self.assertIn("FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_ASYNC_SEND", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT", source)

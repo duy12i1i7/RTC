@@ -17,6 +17,7 @@ from scripts.run_large_scale_rmw_comparison import parse_csv_int  # noqa: E402
 from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
     DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
     DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
+    DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST,
     DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS,
     DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
     DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
@@ -85,6 +86,13 @@ def summarize_campaign(
             == DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS
             and int(result.get("fleetqox_fragment_nack_max_requests", 0))
             == DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS
+            and int(
+                result.get(
+                    "fleetqox_fragment_nack_max_indexes_per_request",
+                    0,
+                )
+            )
+            == DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST
             and int(result.get("fleetqox_fragment_history_limit", 0))
             == DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT
             and isinstance(result.get("publisher"), dict)
@@ -131,6 +139,8 @@ def summarize_campaign(
             DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
         "fragment_nack_max_requests":
             DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS,
+        "fragment_nack_max_indexes_per_request":
+            DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST,
         "fragment_history_limit": DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
         "run_count": len(rows),
         "ok_run_count": sum(row_contracts),

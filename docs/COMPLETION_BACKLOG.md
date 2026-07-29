@@ -1472,6 +1472,24 @@ and timeout, repair queue limit/cooldown, async-send mode, total queue limit,
 NACK interval/request count/history limit, relay drain mode, timeout, fragment
 size, retry count, and pacing.
 
+Fragment repair requests now also have a fleet-aware per-NACK index budget.
+`FLEETQOX_RMW_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST` defaults to `8`, while
+each repair sweep shares a hard `512`-index budget across eligible active
+assemblies. A deterministic Docker oversubscription gate creates `513`
+simultaneous assemblies, each missing `15` indexes. Fleet pressure lowers the
+first `512` requests to one index each and caps that sweep at `512`; the
+rotating cursor then serves the remaining assembly with the configured
+eight-index cap in the next sweep. The gate requires `513` unique NACKs,
+`520` cumulative requested indexes, `512` reduction events, a `512`-index
+observed maximum sweep, and one exact budget exhaustion. This
+closes bounded repair-burst fairness and no-starvation at the deterministic
+admission boundary. The separate 16-robot/32-KiB/seed-7 roaming-loss outcome
+remains negative at `120/160` delivery through both relay and subscriber.
+It records `712` relay NACKs, `4240` requested indexes, `3982` selective
+repairs, and zero queue failures/rejections; its concurrency does not trigger
+the 512-index reduction, so it is diagnostic evidence rather than a positive
+fleet-scale reliability claim.
+
 Fragment reassembly admission is now independently bounded and fail-closed.
 `FLEETQOX_RMW_FRAGMENT_ASSEMBLY_LIMIT` caps concurrent partial assemblies,
 `FLEETQOX_RMW_FRAGMENT_MAX_ASSEMBLY_BYTES` rejects oversized declarations,

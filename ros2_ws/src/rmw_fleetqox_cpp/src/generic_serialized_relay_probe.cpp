@@ -340,6 +340,14 @@ int main(int argc, char ** argv)
     "rmw_fleetqox_cpp_socket_fragment_queue_admission_wait_ns", nullptr) << ",";
   std::cout << "\"fragment_repair_queue_deferrals\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals", nullptr) << ",";
+  std::cout << "\"fragment_nack_indexes_requested\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_nack_indexes_requested", nullptr) << ",";
+  std::cout << "\"fragment_nack_index_budget_reductions\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_nack_index_budget_reductions", nullptr) << ",";
+  std::cout << "\"fragment_nack_max_sweep_indexes_requested\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_nack_max_sweep_indexes_requested", nullptr) << ",";
+  std::cout << "\"fragment_nack_sweep_budget_exhaustions\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_nack_sweep_budget_exhaustions", nullptr) << ",";
   std::cout << "\"fragment_active_assemblies\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_active_assemblies", nullptr) << ",";
   std::cout << "\"fragment_active_missing_indexes\":" << fleetqox_metric(

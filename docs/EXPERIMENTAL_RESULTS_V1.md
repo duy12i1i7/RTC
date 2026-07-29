@@ -216,6 +216,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Same-hop 16-robot exact 32768-byte offered-load sensitivity | `results_rmw_socket/same_hop_offered_load_sensitivity_32768b_16robot_3interval_3seed_summary.json` |
 | Docker/netem FleetRMW 32768-byte loss-resilient fragment accumulation, five seeds | `results_rmw_socket/docker_loss_resilient_large_sample_fragment_5run_summary.json` |
 | Docker deterministic FleetRMW fragment-specific NACK/selective repair with whole-sample retry disabled | `results_rmw_socket/docker_selective_fragment_repair_probe_summary.json` |
+| Docker deterministic 513-assembly fleet-aware fragment-NACK hard-cap/rotation fairness | `results_rmw_socket/docker_fragment_nack_fairness_probe_summary.json` |
 | Docker raw-UDP bounded fragment-assembly admission, oversize rejection, and metadata-collision isolation | `results_rmw_socket/docker_fragment_assembly_admission_probe_summary.json` |
 | Docker two-peer AES-256-GCM authenticated fragment-assembly admission and unprotected-fragment fail-closed control | `results_rmw_socket/docker_authenticated_fragment_assembly_probe_summary.json` |
 | Docker three-peer X.509 unauthorized-identity fragment-pressure isolation, five independent runs | `results_rmw_socket/docker_peer_identity_fragment_pressure_probe_summary.json` |

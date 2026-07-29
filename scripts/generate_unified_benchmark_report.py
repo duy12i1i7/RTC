@@ -46,6 +46,9 @@ METRIC_KEYS = (
     "loss_resilient_large_sample_fragment_repair_claim",
     "fragment_specific_nack_selective_retransmission_claim",
     "docker_selective_fragment_repair_without_whole_sample_retry_claim",
+    "fleet_aware_fragment_nack_fairness_claim",
+    "bounded_fragment_repair_burst_claim",
+    "docker_fragment_nack_fairness_probe_claim",
     "bounded_fragment_assembly_admission_claim",
     "fragment_assembly_oversize_fail_closed_claim",
     "fragment_metadata_mismatch_isolation_claim",
@@ -1380,6 +1383,9 @@ CLAIM_BOUNDARY_KEYS = (
     "docker_loss_resilient_large_sample_fragment_5of5_claim",
     "fragment_specific_nack_selective_retransmission_claim",
     "docker_selective_fragment_repair_without_whole_sample_retry_claim",
+    "fleet_aware_fragment_nack_fairness_claim",
+    "bounded_fragment_repair_burst_claim",
+    "docker_fragment_nack_fairness_probe_claim",
     "bounded_fragment_assembly_admission_claim",
     "fragment_assembly_oversize_fail_closed_claim",
     "fragment_metadata_mismatch_isolation_claim",
@@ -2071,7 +2077,9 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
     text = f"{path.name} {data.get('schema_version', '')}".lower()
     if (
         "loss_resilient_large_sample_fragment" in text
+        or "loss_resilient_fleet_fair_nack" in text
         or "selective_fragment_repair" in text
+        or "fragment_nack_fairness" in text
         or "fragment_assembly_admission" in text
         or "peer_identity_fragment_pressure" in text
     ):

@@ -31,6 +31,7 @@ def result(seed: int) -> dict:
         "fleetqox_reliable_max_retransmissions": 6,
         "fleetqox_fragment_nack_interval_ms": 50,
         "fleetqox_fragment_nack_max_requests": 6,
+        "fleetqox_fragment_nack_max_indexes_per_request": 8,
         "fleetqox_fragment_history_limit": 1024,
         "publisher": {
             "ack_wait_supported": True,

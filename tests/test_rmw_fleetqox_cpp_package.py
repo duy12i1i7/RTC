@@ -1091,6 +1091,26 @@ int main()
             source,
         )
         self.assertIn(
+            "FLEETQOX_RMW_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_nack_indexes_requested",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_nack_index_budget_reductions",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_nack_max_sweep_indexes_requested",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_nack_sweep_budget_exhaustions",
+            source,
+        )
+        self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_nack_exhausted_assemblies",
             source,
         )
@@ -4518,6 +4538,9 @@ int main()
             manifest["supported"]["bounded_fragment_repair_queue_admission"]
         )
         self.assertTrue(
+            manifest["supported"]["fleet_aware_fragment_nack_index_budget"]
+        )
+        self.assertTrue(
             manifest["supported"]["completed_fragment_retransmission_deduplication"]
         )
         self.assertTrue(
@@ -4531,6 +4554,11 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "authenticated_fragment_assembly_admission_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "fleet_aware_fragment_nack_fairness_claim"
             ]
         )
         self.assertTrue(

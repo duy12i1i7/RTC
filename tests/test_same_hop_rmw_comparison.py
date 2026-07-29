@@ -57,6 +57,9 @@ def common_relay_result(
         "fleetqox_fragment_nack_max_requests": (
             6 if system == "rmw_fleetqox_cpp" else None
         ),
+        "fleetqox_fragment_nack_max_indexes_per_request": (
+            8 if system == "rmw_fleetqox_cpp" else None
+        ),
         "fleetqox_fragment_history_limit": (
             1024 if system == "rmw_fleetqox_cpp" else None
         ),
