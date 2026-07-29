@@ -6,10 +6,10 @@ project. It is ordered by dependency and regression value.
 
 ## Current Baseline
 
-- The full repository suite passes `667/667` unit/contract tests; ROS-facing
+- The full repository suite passes `671/671` unit/contract tests; ROS-facing
   runtime probes use the pinned ROS 2 Jazzy Docker image. The unified report
-  currently indexes `373`
-  retained artifacts (`309` ok, `19` partial, `41` historical failed, and `4`
+  currently indexes `376`
+  retained artifacts (`309` ok, `20` partial, `43` historical failed, and `4`
   unknown); its overall `partial` status deliberately includes old debug,
   negative-control, superseded, and failed runs rather than hiding them.
 - The ROS 2 sidecar path has repeated four-robot and eight-robot hard-SLO
@@ -1417,6 +1417,19 @@ missing payload-size coverage for delivery/reliability but explicitly blocks
 payload-latency and superiority claims. Offered-load, CPU, memory, and larger
 repetition sweeps remain open.
 
+The first offered-load sweep is now complete for the all-failed 32768-byte
+frontier. At 16 robots and roaming loss, `50/500/2000` ms batch intervals
+produce payload-only offered rates of `167.772/16.777/4.194` Mbit/s. All
+figures are source-publisher application payload only, before ROS/wire
+overhead and excluding the relay hop. All `36/36` requested cells are measured
+and relay delivery is `1149/5760`, but
+no row satisfies the complete contract and no interval is fully successful.
+This rules out a simple average-rate explanation: even the 4.194 Mbit/s
+schedule stays below the nominal 5 Mbit/s link while burst shape,
+IP/transport fragmentation, 7% packet loss, repair granularity, and overhead
+remain. Loss-resilient selective fragment repair is now an explicit transport
+blocker; CPU and memory pressure plus a finer burst/pacing sweep remain open.
+
 The full-scale run exposed a separate FleetRMW initial-sequence reliability
 bug: a reader that first observed sequence 2 could cumulatively acknowledge
 sequence 1 even when sequence 1 was dropped. ACK feedback now carries the
@@ -1435,8 +1448,9 @@ Next continue P0/P2 in this order:
 2. Preserve both completed comparison contracts and the repaired `36/36`
    same-hop common-middle result plus the completed 108-cell profile-by-scale
    campaign plus the complete exact-payload frontier. Next increase beyond
-   five samples and three repetitions, sweep offered load, and add CPU quota
-   and memory-pressure sensitivity before any latency-superiority claim.
+   five samples and three repetitions, add a finer burst/pacing sweep, close
+   large-sample selective fragment repair, and add CPU quota and
+   memory-pressure sensitivity before any latency-superiority claim.
 3. Broaden native C++ type-support regression coverage and close or explicitly
    scope the remaining optional RMW ABI surfaces before production-ready status.
 4. Increase frontier repetitions so the `32`-robot latency-mean confidence

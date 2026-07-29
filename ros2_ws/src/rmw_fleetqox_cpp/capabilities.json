@@ -393,6 +393,8 @@
     "same_hop_payload_size_resume_provenance": true,
     "docker_same_hop_payload_sensitivity_16robot_3size_3seed": true,
     "same_hop_payload_complete_measurement_matrix": true,
+    "docker_same_hop_offered_load_sensitivity_32768b_16robot_3interval_3seed": true,
+    "same_hop_offered_load_complete_measurement_matrix": true,
     "initial_source_sequence_timeout_repair": true,
     "docker_initial_source_sequence_timeout_repair_probe": true,
     "nav2_planner_controller_lifecycle_configure_plugins": true,
@@ -471,6 +473,7 @@
     "benchmark_resume_provenance": "same-hop resume validates image, profile, netem loss scale, sample count, publish interval, generic relay mode/scope, required netem, and publisher reliability horizon before reusing a row. An exact v4-to-v5 control reuses 36/36 rows and preserves 6720/6720 relay payloads. A Docker negative control supplies the roaming artifact to a Wi-Fi run; both keyed candidates are rejected as configuration mismatches, FleetRMW and Cyclone DDS execute again, and both pass with 160/160 relay payloads",
     "benchmark_profile_sensitivity": "the common-middle full-factorial profile-by-scale campaign covers 8,16,32 robots; Wi-Fi, WAN, and roaming; seeds 7,13,29; and FleetRMW, Fast DDS, Cyclone DDS, and Zenoh. Wi-Fi and WAN contribute 72 fresh Docker/netem rows; roaming reuses 36 configuration-matched v4 rows. All 108/108 rows pass and relay 20160/20160 payloads. Profile/scale-scoped delivery/reliability and latency-distribution comparison are allowed; broad cross-RMW, latency, architectural, and production superiority remain disallowed because there are only three repetitions per cell and one sample/resource schedule",
     "benchmark_payload_sensitivity": "the matched common-middle payload campaign fixes roaming, 16 robots, five samples per topic, a 50 ms batch interval, seeds 7,13,29, and exact 256/4096/32768-byte UTF-8 payloads for all four RMWs. Every one of the 36 requested cells is measured with exact min/max byte evidence; 18/36 satisfy the complete delivery/ACK/process contract and the relay forwards 3855/5760 payloads. At 256 bytes all systems pass 3/3; at 4096 bytes Fast DDS and Cyclone DDS pass 3/3 while FleetRMW and Zenoh pass 0/3; at 32768 bytes all systems pass 0/3 under the fixed 5 Mbit/s, 7% loss offered-load schedule. Delivery/reliability payload sensitivity is comparable, but payload-scoped latency distribution, broad superiority, and production claims remain disallowed because the frontier includes all-failed cells, only three repetitions, and no offered-load or host-resource sweep",
+    "benchmark_offered_load_sensitivity": "the matched common-middle offered-load campaign fixes roaming, 16 robots, five samples per topic, exact 32768-byte UTF-8 payloads, seeds 7,13,29, and all four RMWs while changing only the batch interval across 50/500/2000 ms. These intervals correspond to source-publisher application-payload rates of 167.772/16.777/4.194 Mbit/s before ROS/wire overhead and excluding the relay hop. All 36/36 cells are measured with exact schedule and byte evidence, but 0/36 satisfy the full delivery/ACK/process contract and relay delivery is 1149/5760; no fully successful interval is observed. Delivery/reliability offered-load sensitivity is comparable, but latency, sustainable-rate, superiority, and production claims remain disallowed. The lack of recovery even below the nominal 5 Mbit/s source link rate shows that burst shape, IP/transport fragmentation, packet loss, repair granularity, and protocol overhead must be studied rather than attributing the frontier to average offered load alone",
     "serialization_size": "exact recursive size for statically bounded introspection C/C++ messages; artificial bounds for unbounded fields are unsupported",
     "allocations": "publisher/subscription allocation init/fini allocate a type-support-bound, mutex-protected payload scratch buffer; typed and serialized publish/take reuse its capacity. A 5/5 Docker artifact performs eight publish/take pairs per process with exact use counts, stable 65536-byte capacity, zero payload-scratch growths, and rejection of an uninitialized allocation. Frame encoding, reliability history, transport queues, and application-message deserialization can still allocate, so deep/all-hot-path preallocation remains unclaimed",
     "loaned_messages": "middleware-owned publisher/subscription loan lifecycle for introspection C/C++; subscription take currently deserializes into the loan and is not zero-copy"
@@ -488,7 +491,8 @@
     "production_security_hardening",
     "omnetpp_inet_tsn_mesh_runtime_execution",
     "ns3_omnetpp_full_tsn_mesh_wireless_runtime_parity",
-    "full_dds_wait_for_all_acked_semantics"
+    "full_dds_wait_for_all_acked_semantics",
+    "loss_resilient_large_sample_selective_fragment_repair"
   ],
   "claim_boundaries": {
     "docker_router_bounded_shape_service_5run_netem": true,
@@ -570,6 +574,11 @@
     "docker_same_hop_payload_sensitivity_36of36_measured_claim": true,
     "docker_same_hop_payload_delivery_contract_18of36_claim": true,
     "same_hop_payload_latency_distribution_comparison_claim": false,
+    "same_hop_offered_load_sensitivity_comparison_claim": true,
+    "same_hop_offered_load_complete_measurement_matrix_claim": true,
+    "docker_same_hop_offered_load_sensitivity_36of36_measured_claim": true,
+    "docker_same_hop_offered_load_delivery_contract_0of36_claim": true,
+    "same_hop_32768_fully_successful_schedule_claim": false,
     "docker_same_hop_rmw_comparison_8_16_32_3seed": true,
     "docker_same_hop_generic_serialized_rmw_comparison_8_16_32_3seed": true,
     "reception_baseline_cumulative_ack_floor_claim": true,

@@ -41,6 +41,12 @@ METRIC_KEYS = (
     "exact_payload_size_contract_ok",
     "complete_measurement_matrix_contract_ok",
     "payload_sensitivity_comparison_allowed",
+    "publish_interval_ms",
+    "payload_offered_mbit_s",
+    "payload_offered_rate_scope",
+    "fully_successful_publish_interval_ms",
+    "minimum_fully_successful_publish_interval_ms",
+    "offered_load_sensitivity_comparison_allowed",
     "network_profile_contract_ok",
     "profile_robot_scale_coverage_contract_ok",
     "common_middle_contract_ok",
@@ -216,6 +222,11 @@ METRIC_KEYS = (
     "docker_same_hop_payload_sensitivity_36of36_measured_claim",
     "docker_same_hop_payload_delivery_contract_18of36_claim",
     "same_hop_payload_latency_distribution_comparison_claim",
+    "same_hop_offered_load_sensitivity_comparison_claim",
+    "same_hop_offered_load_complete_measurement_matrix_claim",
+    "docker_same_hop_offered_load_sensitivity_36of36_measured_claim",
+    "docker_same_hop_offered_load_delivery_contract_0of36_claim",
+    "same_hop_32768_fully_successful_schedule_claim",
     "same_hop_latency_superiority_claim",
     "expected_relay_payloads_per_run",
     "observed_relay_payloads",
@@ -1335,6 +1346,11 @@ CLAIM_BOUNDARY_KEYS = (
     "docker_same_hop_payload_sensitivity_36of36_measured_claim",
     "docker_same_hop_payload_delivery_contract_18of36_claim",
     "same_hop_payload_latency_distribution_comparison_claim",
+    "same_hop_offered_load_sensitivity_comparison_claim",
+    "same_hop_offered_load_complete_measurement_matrix_claim",
+    "docker_same_hop_offered_load_sensitivity_36of36_measured_claim",
+    "docker_same_hop_offered_load_delivery_contract_0of36_claim",
+    "same_hop_32768_fully_successful_schedule_claim",
     "docker_same_hop_rmw_comparison_8_16_32_3seed",
     "docker_same_hop_generic_serialized_rmw_comparison_8_16_32_3seed",
     "reception_baseline_cumulative_ack_floor_claim",
@@ -2014,6 +2030,7 @@ def classify_path(path: Path, data: dict[str, Any]) -> str:
         or "same_hop_rmw_comparison" in text
         or "same_hop_profile_sensitivity" in text
         or "same_hop_payload_sensitivity" in text
+        or "same_hop_offered_load_sensitivity" in text
     ):
         return "comparison/dds-cyclone-zenoh"
     if "stress_security" in text or "stress-security" in text:

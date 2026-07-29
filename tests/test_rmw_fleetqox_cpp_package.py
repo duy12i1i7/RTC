@@ -5445,6 +5445,25 @@ int main()
             ]
         )
         self.assertTrue(
+            claims["same_hop_offered_load_sensitivity_comparison_claim"]
+        )
+        self.assertTrue(
+            claims["same_hop_offered_load_complete_measurement_matrix_claim"]
+        )
+        self.assertTrue(
+            claims[
+                "docker_same_hop_offered_load_sensitivity_36of36_measured_claim"
+            ]
+        )
+        self.assertTrue(
+            claims[
+                "docker_same_hop_offered_load_delivery_contract_0of36_claim"
+            ]
+        )
+        self.assertFalse(
+            claims["same_hop_32768_fully_successful_schedule_claim"]
+        )
+        self.assertTrue(
             manifest["supported"][
                 "docker_same_hop_common_generic_middle_8_16_32_3seed"
             ]
@@ -5497,6 +5516,20 @@ int main()
             manifest["supported"][
                 "same_hop_payload_complete_measurement_matrix"
             ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "docker_same_hop_offered_load_sensitivity_32768b_16robot_3interval_3seed"
+            ]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "same_hop_offered_load_complete_measurement_matrix"
+            ]
+        )
+        self.assertIn(
+            "loss_resilient_large_sample_selective_fragment_repair",
+            manifest["unsupported"],
         )
         self.assertTrue(
             claims[

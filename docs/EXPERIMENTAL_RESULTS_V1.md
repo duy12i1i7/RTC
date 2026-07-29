@@ -213,6 +213,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Same-hop 16-robot Wi-Fi/WAN/roaming three-seed profile sensitivity | `results_rmw_socket/same_hop_profile_sensitivity_16robot_3profile_3seed_summary.json` |
 | Same-hop 8/16/32-robot × Wi-Fi/WAN/roaming full-factorial sensitivity | `results_rmw_socket/same_hop_profile_scale_sensitivity_8_16_32_3profile_3seed_summary.json` |
 | Same-hop 16-robot exact 256/4096/32768-byte payload sensitivity | `results_rmw_socket/same_hop_payload_sensitivity_16robot_3size_3seed_summary.json` |
+| Same-hop 16-robot exact 32768-byte offered-load sensitivity | `results_rmw_socket/same_hop_offered_load_sensitivity_32768b_16robot_3interval_3seed_summary.json` |
 | Docker ROS two-container POSIX shared-memory + UDP fallback | `results_rmw_socket/docker_shared_memory_probe_summary.json` |
 | Docker ROS SHM-local + UDP-router hybrid de-dup | `results_rmw_socket/docker_shm_udp_hybrid_probe_summary.json` |
 | Docker ROS publisher/subscription payload-scratch allocation ABI | `results_rmw_socket/docker_allocation_probe_summary.json` |
@@ -1730,6 +1731,21 @@ relay forwards `3855/5760` payloads. At 256 bytes every RMW passes `3/3`; at
 offered-load schedule. This permits payload-scoped delivery/reliability
 comparison, not latency superiority: the 32768-byte cells have no successful
 run, repetition remains three, and offered-load/CPU/memory sweeps are absent.
+
+The follow-on 32768-byte offered-load sweep changes only the batch interval
+over `50/500/2000` ms, corresponding to payload-only offered rates of
+`167.772/16.777/4.194` Mbit/s at the source publisher, before ROS/wire overhead
+and excluding the relay hop. Every one of the
+`36/36` interval/system/seed cells is measured, but `0/36` satisfies the full
+delivery/ACK/process contract and relay delivery is `1149/5760`; no fully
+successful interval is observed. Delivery ratios are still valid measured
+outcomes, while latency and sustainable-rate claims remain blocked. In
+particular, failure at 4.194 Mbit/s under a nominal 5 Mbit/s link means average
+offered load alone is not explanatory: batch burst shape, fragmentation under
+7% packet loss, protocol overhead, and repair granularity remain confounded.
+FleetRMW currently has whole-sample repair plus oversized-frame
+fragmentation/reassembly, not loss-resilient selective repair for large
+sub-UDP-limit samples.
 
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK

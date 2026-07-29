@@ -446,6 +446,9 @@ Current verification:
 - exact 256/4096/32768-byte, 16-robot, three-seed common-middle payload
   sensitivity campaign:
   `results_rmw_socket/same_hop_payload_sensitivity_16robot_3size_3seed_summary.json`;
+- exact 32768-byte, 16-robot, three-seed common-middle offered-load
+  sensitivity at 50/500/2000 ms:
+  `results_rmw_socket/same_hop_offered_load_sensitivity_32768b_16robot_3interval_3seed_summary.json`;
 - deterministic middle-sequence NACK and initial-sequence timeout-repair
   regression:
   `results_rmw_socket/docker_rmw_initial_sequence_reliability_probe_summary.json`;
