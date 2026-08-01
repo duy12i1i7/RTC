@@ -188,6 +188,18 @@ ament_target_dependencies(fleetrmw_matched_event_probe
   rmw
 )
 
+add_executable(fleetrmw_callback_teardown_probe
+  src/callback_teardown_probe.cpp
+)
+target_compile_features(fleetrmw_callback_teardown_probe PRIVATE cxx_std_17)
+target_link_libraries(fleetrmw_callback_teardown_probe
+  ${PROJECT_NAME}
+)
+ament_target_dependencies(fleetrmw_callback_teardown_probe
+  rcutils
+  rmw
+)
+
 add_executable(fleetrmw_remote_event_probe
   src/remote_event_probe.cpp
 )
@@ -1163,6 +1175,10 @@ if(BUILD_TESTING)
     NAME fleetrmw_automatic_liveliness_idle_renewal_smoke
     COMMAND fleetrmw_automatic_liveliness_probe
   )
+  add_test(
+    NAME fleetrmw_callback_teardown_quiescence_smoke
+    COMMAND fleetrmw_callback_teardown_probe
+  )
   set_tests_properties(
     fleetrmw_transport_loop_repair_smoke
     fleetrmw_action_frame_roundtrip_smoke
@@ -1174,6 +1190,7 @@ if(BUILD_TESTING)
     fleetrmw_domain_isolation_smoke
     fleetrmw_message_lost_sequence_gap_smoke
     fleetrmw_automatic_liveliness_idle_renewal_smoke
+    fleetrmw_callback_teardown_quiescence_smoke
     PROPERTIES TIMEOUT 15
   )
   set_tests_properties(
@@ -1221,6 +1238,7 @@ install(
     fleetrmw_take_sequence_probe
     fleetrmw_qos_event_probe
     fleetrmw_matched_event_probe
+    fleetrmw_callback_teardown_probe
     fleetrmw_remote_event_probe
     fleetrmw_qos_incompatible_event_probe
     fleetrmw_qos_deadline_incompatible_event_probe

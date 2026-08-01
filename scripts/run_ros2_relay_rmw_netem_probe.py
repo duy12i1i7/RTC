@@ -157,6 +157,7 @@ def write_relay_probe_scripts(
 
 
 def ensure_generic_serialized_relay(*, root: Path, image: str) -> None:
+    package_root = root / "ros2_ws" / "src" / "rmw_fleetqox_cpp"
     executable = (
         root
         / SERIALIZED_RELAY_INSTALL
@@ -165,14 +166,14 @@ def ensure_generic_serialized_relay(*, root: Path, image: str) -> None:
         / "rmw_fleetqox_cpp"
         / "fleetrmw_generic_serialized_relay_probe"
     )
-    build_inputs = (
-        root
-        / "ros2_ws"
-        / "src"
-        / "rmw_fleetqox_cpp"
-        / "src"
-        / "generic_serialized_relay_probe.cpp",
-        root / "ros2_ws" / "src" / "rmw_fleetqox_cpp" / "CMakeLists.txt",
+    build_inputs = tuple(
+        path
+        for path in package_root.rglob("*")
+        if path.is_file()
+        and (
+            path.suffix in {".c", ".cc", ".cpp", ".h", ".hh", ".hpp", ".cmake"}
+            or path.name in {"CMakeLists.txt", "package.xml"}
+        )
     )
     if executable.exists() and all(
         path.exists() and path.stat().st_mtime <= executable.stat().st_mtime

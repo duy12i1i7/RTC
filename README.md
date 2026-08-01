@@ -183,7 +183,15 @@ This repository starts with the part that should be proven first:
   with wait/take/callback/cleared-readiness checks passing `5/5`. The graph
   artifact passes `5/5` runs across both removal
   paths and proves automatic graph-guard add/disconnect wakeups without renewal
-  wakeup noise. The remote MANUAL_BY_TOPIC publisher now also proves
+  wakeup noise. Callback lifetime now has an explicit teardown barrier shared by new-message
+  and QoS-event notifications. A Docker regression passes five fresh processes,
+  each holding eight publisher and eight subscription matched-event callbacks
+  while another thread destroys the owner (`80/80` cases); destroy remains
+  blocked until callback release and all process teardowns are clean. A separate
+  16-robot, 32-KiB, 160-message no-netem stress row delivers `160/160` with
+  publisher/relay/subscriber return codes `0/0/0`. This scopes the claim to
+  callback-owner lifetime and does not permit arbitrary post-destroy API use;
+  The remote MANUAL_BY_TOPIC publisher now also proves
   `RMW_EVENT_LIVELINESS_LOST` twice per run through callback/wait/take/clear.
   A machine-readable aggregate validates at least one repeated real
   UDP/netem multi-container path for all `11` non-invalid Jazzy RMW event

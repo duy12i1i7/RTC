@@ -156,6 +156,8 @@ struct FleetQoxPublisherData
   std::int32_t publication_matched_current_count_change;
   rmw_event_callback_t publication_matched_callback;
   const void * publication_matched_user_data;
+  bool destroying{false};
+  size_t inflight_callbacks{0};
   std::mutex publish_mutex{};
 };
 
@@ -214,7 +216,7 @@ struct FleetQoxSubscriptionData
   const void * subscription_matched_user_data;
   std::uint64_t next_reception_sequence{1};
   bool destroying{false};
-  size_t inflight_new_message_callbacks{0};
+  size_t inflight_callbacks{0};
   std::recursive_mutex take_mutex{};
 };
 
@@ -279,18 +281,13 @@ struct EventCallbackNotification
   rmw_event_callback_t callback;
   const void * user_data;
   size_t event_count;
-};
-
-struct NewMessageCallbackNotification
-{
-  FleetQoxSubscriptionData * subscription;
-  rmw_event_callback_t callback;
-  const void * user_data;
+  FleetQoxPublisherData * publisher_owner{nullptr};
+  FleetQoxSubscriptionData * subscription_owner{nullptr};
 };
 
 std::mutex g_bus_mutex;
 std::condition_variable g_all_acked_condition;
-std::condition_variable g_subscription_callback_condition;
+std::condition_variable g_entity_callback_condition;
 std::vector<FleetQoxPublisherData *> g_publishers;
 std::vector<FleetQoxSubscriptionData *> g_subscriptions;
 std::vector<rmw_subscription_t *> g_subscription_handles;
@@ -6829,6 +6826,34 @@ bool frame_exceeds_lifespan(const rmw_qos_profile_t & qos, std::int64_t source_t
   return now > source_timestamp_ns && now - source_timestamp_ns > lifespan_ns;
 }
 
+void queue_event_callback_locked(
+  std::vector<EventCallbackNotification> * callbacks,
+  rmw_event_callback_t callback,
+  const void * user_data,
+  size_t event_count,
+  FleetQoxPublisherData * publisher_owner = nullptr,
+  FleetQoxSubscriptionData * subscription_owner = nullptr)
+{
+  if (callbacks == nullptr || callback == nullptr || event_count == 0 ||
+    (publisher_owner != nullptr && publisher_owner->destroying) ||
+    (subscription_owner != nullptr && subscription_owner->destroying))
+  {
+    return;
+  }
+  if (publisher_owner != nullptr) {
+    ++publisher_owner->inflight_callbacks;
+  }
+  if (subscription_owner != nullptr) {
+    ++subscription_owner->inflight_callbacks;
+  }
+  callbacks->push_back(EventCallbackNotification{
+    callback,
+    user_data,
+    event_count,
+    publisher_owner,
+    subscription_owner});
+}
+
 std::int32_t missed_deadline_periods(
   const rmw_qos_profile_t & qos,
   std::int64_t previous_ns,
@@ -6868,11 +6893,12 @@ std::int32_t record_offered_deadline_miss_locked(
       static_cast<std::int64_t>(data->offered_deadline_unread_count) + missed,
       std::numeric_limits<std::int32_t>::max());
   if (data->offered_deadline_callback != nullptr) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        data->offered_deadline_callback,
-        data->offered_deadline_user_data,
-        static_cast<size_t>(missed)});
+    queue_event_callback_locked(
+      callbacks,
+      data->offered_deadline_callback,
+      data->offered_deadline_user_data,
+      static_cast<size_t>(missed),
+      data);
   }
   return missed;
 }
@@ -6898,11 +6924,13 @@ std::int32_t record_requested_deadline_miss_locked(
       static_cast<std::int64_t>(data->requested_deadline_unread_count) + missed,
       std::numeric_limits<std::int32_t>::max());
   if (data->requested_deadline_callback != nullptr) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        data->requested_deadline_callback,
-        data->requested_deadline_user_data,
-        static_cast<size_t>(missed)});
+    queue_event_callback_locked(
+      callbacks,
+      data->requested_deadline_callback,
+      data->requested_deadline_user_data,
+      static_cast<size_t>(missed),
+      nullptr,
+      data);
   }
   return missed;
 }
@@ -7204,11 +7232,12 @@ void record_publication_matched_change_locked(
     data->publication_matched_total_count_change,
     data->publication_matched_current_count_change);
   if (data->publication_matched_callback != nullptr && pending > 0) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        data->publication_matched_callback,
-        data->publication_matched_user_data,
-        pending});
+    queue_event_callback_locked(
+      callbacks,
+      data->publication_matched_callback,
+      data->publication_matched_user_data,
+      pending,
+      data);
   }
 }
 
@@ -7245,11 +7274,13 @@ void record_subscription_matched_change_locked(
     data->subscription_matched_total_count_change,
     data->subscription_matched_current_count_change);
   if (data->subscription_matched_callback != nullptr && pending > 0) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        data->subscription_matched_callback,
-        data->subscription_matched_user_data,
-        pending});
+    queue_event_callback_locked(
+      callbacks,
+      data->subscription_matched_callback,
+      data->subscription_matched_user_data,
+      pending,
+      nullptr,
+      data);
   }
 }
 
@@ -7285,6 +7316,20 @@ void notify_event_callbacks(const std::vector<EventCallbackNotification> & callb
 {
   for (const EventCallbackNotification & notification : callbacks) {
     notification.callback(notification.user_data, notification.event_count);
+    {
+      std::lock_guard<std::mutex> lock(g_bus_mutex);
+      if (notification.publisher_owner != nullptr &&
+        notification.publisher_owner->inflight_callbacks > 0)
+      {
+        --notification.publisher_owner->inflight_callbacks;
+      }
+      if (notification.subscription_owner != nullptr &&
+        notification.subscription_owner->inflight_callbacks > 0)
+      {
+        --notification.subscription_owner->inflight_callbacks;
+      }
+    }
+    g_entity_callback_condition.notify_all();
   }
 }
 
@@ -7302,11 +7347,12 @@ void record_offered_qos_incompatible_locked(
     saturating_i32_add(data->offered_incompatible_qos_total_count_change, 1);
   data->offered_incompatible_qos_last_policy_kind = policy_kind;
   if (data->offered_incompatible_qos_callback != nullptr) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        data->offered_incompatible_qos_callback,
-        data->offered_incompatible_qos_user_data,
-        static_cast<size_t>(data->offered_incompatible_qos_total_count_change)});
+    queue_event_callback_locked(
+      callbacks,
+      data->offered_incompatible_qos_callback,
+      data->offered_incompatible_qos_user_data,
+      static_cast<size_t>(data->offered_incompatible_qos_total_count_change),
+      data);
   }
 }
 
@@ -7324,11 +7370,13 @@ void record_requested_qos_incompatible_locked(
     saturating_i32_add(data->requested_incompatible_qos_total_count_change, 1);
   data->requested_incompatible_qos_last_policy_kind = policy_kind;
   if (data->requested_incompatible_qos_callback != nullptr) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        data->requested_incompatible_qos_callback,
-        data->requested_incompatible_qos_user_data,
-        static_cast<size_t>(data->requested_incompatible_qos_total_count_change)});
+    queue_event_callback_locked(
+      callbacks,
+      data->requested_incompatible_qos_callback,
+      data->requested_incompatible_qos_user_data,
+      static_cast<size_t>(data->requested_incompatible_qos_total_count_change),
+      nullptr,
+      data);
   }
 }
 
@@ -7344,11 +7392,12 @@ void record_publisher_incompatible_type_locked(
   data->publisher_incompatible_type_total_count_change =
     saturating_i32_add(data->publisher_incompatible_type_total_count_change, 1);
   if (data->publisher_incompatible_type_callback != nullptr) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        data->publisher_incompatible_type_callback,
-        data->publisher_incompatible_type_user_data,
-        static_cast<size_t>(data->publisher_incompatible_type_total_count_change)});
+    queue_event_callback_locked(
+      callbacks,
+      data->publisher_incompatible_type_callback,
+      data->publisher_incompatible_type_user_data,
+      static_cast<size_t>(data->publisher_incompatible_type_total_count_change),
+      data);
   }
 }
 
@@ -7364,11 +7413,13 @@ void record_subscription_incompatible_type_locked(
   data->subscription_incompatible_type_total_count_change =
     saturating_i32_add(data->subscription_incompatible_type_total_count_change, 1);
   if (data->subscription_incompatible_type_callback != nullptr) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        data->subscription_incompatible_type_callback,
-        data->subscription_incompatible_type_user_data,
-        static_cast<size_t>(data->subscription_incompatible_type_total_count_change)});
+    queue_event_callback_locked(
+      callbacks,
+      data->subscription_incompatible_type_callback,
+      data->subscription_incompatible_type_user_data,
+      static_cast<size_t>(data->subscription_incompatible_type_total_count_change),
+      nullptr,
+      data);
   }
 }
 
@@ -7385,11 +7436,13 @@ void record_subscription_message_lost_locked(
   data->message_lost_total_count_change =
     saturating_size_add(data->message_lost_total_count_change, count);
   if (data->message_lost_callback != nullptr) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        data->message_lost_callback,
-        data->message_lost_user_data,
-        data->message_lost_total_count_change});
+    queue_event_callback_locked(
+      callbacks,
+      data->message_lost_callback,
+      data->message_lost_user_data,
+      data->message_lost_total_count_change,
+      nullptr,
+      data);
   }
 }
 
@@ -7434,9 +7487,7 @@ bool handle_unrecoverable_loss_notice(const std::string & encoded_frame)
     }
   }
   g_unrecoverable_loss_samples_reported.fetch_add(reported, std::memory_order_relaxed);
-  for (const EventCallbackNotification & notification : callbacks) {
-    notification.callback(notification.user_data, notification.event_count);
-  }
+  notify_event_callbacks(callbacks);
   return true;
 }
 
@@ -9663,9 +9714,7 @@ rmw_ret_t publish_payload(FleetQoxPublisherData * data, const std::vector<std::u
     g_retransmit_ledger[retransmit_ledger_key(data->publisher_id, source_sequence)] =
       std::move(retransmit_entry);
   }
-  for (const EventCallbackNotification & notification : deadline_callbacks) {
-    notification.callback(notification.user_data, notification.event_count);
-  }
+  notify_event_callbacks(deadline_callbacks);
   if (data->qos.liveliness == RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC) {
     send_publisher_graph_advertisement(data, "liveliness_assert");
   }
@@ -10095,11 +10144,13 @@ void record_subscription_liveliness_change_locked(
     subscription->liveliness_alive_count_change,
     subscription->liveliness_not_alive_count_change);
   if (subscription->liveliness_changed_callback != nullptr && pending > 0) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        subscription->liveliness_changed_callback,
-        subscription->liveliness_changed_user_data,
-        pending});
+    queue_event_callback_locked(
+      callbacks,
+      subscription->liveliness_changed_callback,
+      subscription->liveliness_changed_user_data,
+      pending,
+      nullptr,
+      subscription);
   }
 }
 
@@ -10127,11 +10178,13 @@ void record_subscription_liveliness_remove_locked(
     subscription->liveliness_alive_count_change,
     subscription->liveliness_not_alive_count_change);
   if (subscription->liveliness_changed_callback != nullptr && pending > 0) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        subscription->liveliness_changed_callback,
-        subscription->liveliness_changed_user_data,
-        pending});
+    queue_event_callback_locked(
+      callbacks,
+      subscription->liveliness_changed_callback,
+      subscription->liveliness_changed_user_data,
+      pending,
+      nullptr,
+      subscription);
   }
 }
 
@@ -10148,11 +10201,12 @@ void record_liveliness_lost_locked(
   publisher->liveliness_lost_total_count_change =
     saturating_i32_add(publisher->liveliness_lost_total_count_change, 1);
   if (publisher->liveliness_lost_callback != nullptr) {
-    callbacks->push_back(
-      EventCallbackNotification{
-        publisher->liveliness_lost_callback,
-        publisher->liveliness_lost_user_data,
-        static_cast<size_t>(publisher->liveliness_lost_total_count_change)});
+    queue_event_callback_locked(
+      callbacks,
+      publisher->liveliness_lost_callback,
+      publisher->liveliness_lost_user_data,
+      static_cast<size_t>(publisher->liveliness_lost_total_count_change),
+      publisher);
   }
   for (FleetQoxSubscriptionData * subscription : g_subscriptions) {
     if (local_pubsub_match_compatible(publisher, subscription)) {
@@ -10540,9 +10594,7 @@ void qos_deadline_monitor_loop()
           &subscription->last_received_ns, subscription->qos, missed, now);
       }
     }
-    for (const EventCallbackNotification & notification : callbacks) {
-      notification.callback(notification.user_data, notification.event_count);
-    }
+    notify_event_callbacks(callbacks);
   }
 }
 
@@ -10916,7 +10968,7 @@ void enqueue_received_frame(const std::string & encoded_frame)
     return;
   }
 
-  std::vector<NewMessageCallbackNotification> callbacks;
+  std::vector<EventCallbackNotification> callbacks;
   std::vector<EventCallbackNotification> event_callbacks;
   std::vector<std::pair<std::string, int>> ack_nack_payloads;
   size_t matched_subscriptions = 0;
@@ -10986,11 +11038,13 @@ void enqueue_received_frame(const std::string & encoded_frame)
         if (!subscription->destroying &&
           subscription->on_new_message_callback != nullptr)
         {
-          ++subscription->inflight_new_message_callbacks;
-          callbacks.push_back(NewMessageCallbackNotification{
-            subscription,
+          queue_event_callback_locked(
+            &callbacks,
             subscription->on_new_message_callback,
-            subscription->on_new_message_user_data});
+            subscription->on_new_message_user_data,
+            1,
+            nullptr,
+            subscription);
         }
       }
     }
@@ -11016,21 +11070,8 @@ void enqueue_received_frame(const std::string & encoded_frame)
       matched_subscriptions,
       callbacks.size());
   }
-  for (const NewMessageCallbackNotification & notification : callbacks) {
-    notification.callback(notification.user_data, 1);
-    {
-      std::lock_guard<std::mutex> lock(g_bus_mutex);
-      if (notification.subscription != nullptr &&
-        notification.subscription->inflight_new_message_callbacks > 0)
-      {
-        --notification.subscription->inflight_new_message_callbacks;
-      }
-    }
-    g_subscription_callback_condition.notify_all();
-  }
-  for (const EventCallbackNotification & notification : event_callbacks) {
-    notification.callback(notification.user_data, notification.event_count);
-  }
+  notify_event_callbacks(callbacks);
+  notify_event_callbacks(event_callbacks);
 }
 
 bool apply_received_graph_advertisement(const std::string & encoded_frame)
@@ -12472,7 +12513,13 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t * node, rmw_publisher_t * publisher)
   send_publisher_graph_advertisement(data, "remove");
   std::vector<EventCallbackNotification> matched_callbacks;
   {
-    std::lock_guard<std::mutex> lock(g_bus_mutex);
+    std::unique_lock<std::mutex> lock(g_bus_mutex);
+    data->destroying = true;
+    data->liveliness_lost_callback = nullptr;
+    data->offered_deadline_callback = nullptr;
+    data->offered_incompatible_qos_callback = nullptr;
+    data->publisher_incompatible_type_callback = nullptr;
+    data->publication_matched_callback = nullptr;
     g_publishers.erase(std::remove(g_publishers.begin(), g_publishers.end(), data), g_publishers.end());
     if (data != nullptr) {
       const std::string prefix = data->publisher_id + "|";
@@ -12491,6 +12538,9 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t * node, rmw_publisher_t * publisher)
       }
     }
     refresh_subscription_matched_events_locked(&matched_callbacks);
+    g_entity_callback_condition.wait(lock, [data]() {
+      return data->inflight_callbacks == 0;
+    });
   }
   notify_event_callbacks(matched_callbacks);
   bool stop_retransmit = false;
@@ -12699,6 +12749,12 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t * node, rmw_subscription_t * subsc
     data->destroying = true;
     data->on_new_message_callback = nullptr;
     data->on_new_message_user_data = nullptr;
+    data->liveliness_changed_callback = nullptr;
+    data->requested_deadline_callback = nullptr;
+    data->requested_incompatible_qos_callback = nullptr;
+    data->subscription_incompatible_type_callback = nullptr;
+    data->message_lost_callback = nullptr;
+    data->subscription_matched_callback = nullptr;
     g_subscriptions.erase(
       std::remove(g_subscriptions.begin(), g_subscriptions.end(), data),
       g_subscriptions.end());
@@ -12706,8 +12762,8 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t * node, rmw_subscription_t * subsc
       std::remove(g_subscription_handles.begin(), g_subscription_handles.end(), subscription),
       g_subscription_handles.end());
     refresh_publication_matched_events_locked(&matched_callbacks);
-    g_subscription_callback_condition.wait(lock, [data]() {
-      return data->inflight_new_message_callbacks == 0;
+    g_entity_callback_condition.wait(lock, [data]() {
+      return data->inflight_callbacks == 0;
     });
   }
   notify_event_callbacks(matched_callbacks);
@@ -13231,8 +13287,13 @@ rmw_ret_t rmw_fleetqox_cpp_set_publisher_qos_event_callback(
     return RMW_RET_OK;
   }
   size_t pending = 0;
+  std::vector<EventCallbackNotification> callbacks;
   {
     std::lock_guard<std::mutex> lock(g_bus_mutex);
+    if (data->destroying) {
+      RMW_SET_ERROR_MSG("publisher is being destroyed");
+      return RMW_RET_INVALID_ARGUMENT;
+    }
     if (event_type == RMW_EVENT_OFFERED_DEADLINE_MISSED) {
       data->offered_deadline_callback = callback;
       data->offered_deadline_user_data = user_data;
@@ -13260,10 +13321,10 @@ rmw_ret_t rmw_fleetqox_cpp_set_publisher_qos_event_callback(
         data->publication_matched_total_count_change,
         data->publication_matched_current_count_change);
     }
+    queue_event_callback_locked(
+      &callbacks, callback, user_data, pending, data);
   }
-  if (callback != nullptr && pending > 0) {
-    callback(user_data, pending);
-  }
+  notify_event_callbacks(callbacks);
   return RMW_RET_OK;
 }
 
@@ -13324,8 +13385,13 @@ rmw_ret_t rmw_fleetqox_cpp_set_subscription_qos_event_callback(
     return RMW_RET_OK;
   }
   size_t pending = 0;
+  std::vector<EventCallbackNotification> callbacks;
   {
     std::lock_guard<std::mutex> lock(g_bus_mutex);
+    if (data->destroying) {
+      RMW_SET_ERROR_MSG("subscription is being destroyed");
+      return RMW_RET_INVALID_ARGUMENT;
+    }
     if (event_type == RMW_EVENT_REQUESTED_DEADLINE_MISSED) {
       data->requested_deadline_callback = callback;
       data->requested_deadline_user_data = user_data;
@@ -13358,10 +13424,10 @@ rmw_ret_t rmw_fleetqox_cpp_set_subscription_qos_event_callback(
         data->subscription_matched_total_count_change,
         data->subscription_matched_current_count_change);
     }
+    queue_event_callback_locked(
+      &callbacks, callback, user_data, pending, nullptr, data);
   }
-  if (callback != nullptr && pending > 0) {
-    callback(user_data, pending);
-  }
+  notify_event_callbacks(callbacks);
   return RMW_RET_OK;
 }
 

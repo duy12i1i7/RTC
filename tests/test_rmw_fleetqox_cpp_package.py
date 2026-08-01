@@ -38,6 +38,8 @@ class RmwFleetQoxCppPackageTest(unittest.TestCase):
         self.assertIn("fleetrmw_take_sequence_ordering_smoke", cmake)
         self.assertIn("fleetrmw_qos_event_probe", cmake)
         self.assertIn("fleetrmw_matched_event_probe", cmake)
+        self.assertIn("fleetrmw_callback_teardown_probe", cmake)
+        self.assertIn("fleetrmw_callback_teardown_quiescence_smoke", cmake)
         self.assertIn("fleetrmw_remote_event_probe", cmake)
         self.assertIn("fleetrmw_remote_deadline_event_probe", cmake)
         self.assertIn("fleetrmw_qos_incompatible_event_probe", cmake)
@@ -1021,9 +1023,25 @@ int main()
         self.assertIn("rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions", source)
         self.assertIn("rmw_subscription_set_on_new_message_callback", source)
         self.assertIn("on_new_message_callback", source)
-        self.assertIn("inflight_new_message_callbacks", source)
-        self.assertIn("g_subscription_callback_condition.wait", source)
+        self.assertIn("queue_event_callback_locked", source)
+        self.assertIn("inflight_callbacks", source)
+        self.assertIn("g_entity_callback_condition.wait", source)
         self.assertIn("data->destroying = true", source)
+        callback_teardown_probe = PKG / "src" / "callback_teardown_probe.cpp"
+        self.assertTrue(callback_teardown_probe.exists())
+        callback_teardown_source = callback_teardown_probe.read_text()
+        self.assertIn("destroy_blocked_before_release", callback_teardown_source)
+        self.assertIn("fleetrmw.callback_teardown_probe.v1", callback_teardown_source)
+        callback_teardown_runner = (
+            ROOT / "scripts" / "run_rmw_docker_callback_teardown_probe.py"
+        )
+        self.assertTrue(callback_teardown_runner.exists())
+        callback_teardown_runner_source = callback_teardown_runner.read_text()
+        self.assertIn(
+            "callback_teardown_quiescence_claim",
+            callback_teardown_runner_source,
+        )
+        self.assertIn("callback_teardown_repeated_claim", callback_teardown_runner_source)
         self.assertIn("rmw_fleetqox_cpp_waitable_subscription_has_data", source)
         self.assertIn("make_endpoint_gid", source)
         self.assertIn("endpoint_gid", source)

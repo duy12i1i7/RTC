@@ -60,6 +60,12 @@ surfaces; prose and benchmark claims must not exceed that manifest.
   `rmw_take_sequence`, and all-acknowledged slices execute real behavior;
 - expose UDP/IPv4 network-flow metadata and invoke on-new-message/request/
   response callbacks outside internal transport locks;
+- quiesce publisher/subscription new-message and QoS-event callbacks before
+  freeing their owning entity. A Docker regression repeats five fresh
+  processes with eight publisher and eight subscription cases each (`80/80`
+  total): every destroy blocks while its matched-event callback is held, then
+  completes cleanly after release. This is entity callback-lifetime evidence,
+  not a general guarantee for concurrent use of an entity after destruction;
 - produce publication/subscription matched,
   reliability/durability/deadline-incompatible QoS, exact type-incompatible,
   and finite-liveliness changed events from both local

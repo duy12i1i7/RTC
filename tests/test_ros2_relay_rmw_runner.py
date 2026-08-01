@@ -112,6 +112,8 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
         self.assertIn('"publisher_stderr_excerpt":', source)
         self.assertIn("netem_shell_prefix", source)
         self.assertIn("publisher_linger_s", source)
+        self.assertIn('package_root.rglob("*")', source)
+        self.assertIn('path.name in {"CMakeLists.txt", "package.xml"}', source)
 
     def test_cpp_generic_relay_forwards_serialized_messages(self):
         source = RELAY_SOURCE.read_text()
