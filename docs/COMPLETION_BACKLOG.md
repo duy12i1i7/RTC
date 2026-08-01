@@ -1549,8 +1549,26 @@ reaches `58/160`; those UDP datagrams exceed a normal path MTU and incur IP
 fragmentation, so that configuration is retained as negative diagnostic
 evidence and is not a production reliability setting. Completion signaling
 and repair-amplification reduction are closed at the deterministic boundary;
-multi-seed fleet completion, MTU-aware wire budgeting, and stochastic
-publisher/relay teardown stress remain open.
+multi-seed fleet completion, automatic path-MTU discovery, secure credential
+amortization, and stochastic publisher/relay teardown stress remain open.
+
+Application-level UDP wire budgeting is now implemented. The opt-in
+`FLEETQOX_RMW_UDP_DATAGRAM_BUDGET_BYTES` bound accounts for fragment metadata,
+AES-GCM overhead, and the upper bound of the configured certificate/signature
+wrapper when deriving the effective chunk. Payloads whose protected form would
+exceed the bound enter repair-capable fragmentation before protection, and the
+final datagram send path fails closed if the bound is still exceeded. The
+Docker/benchmark runner defaults to `1472` bytes (MTU 1500 minus IPv4/UDP
+headers), while the C++ default remains disabled for backward compatibility.
+A deterministic Docker gate requests `4096`-byte chunks and observes exact
+`1409`-byte effective chunks, `1472`-byte publisher/relay wire high-water,
+eight reductions, zero budget/send failures, `8/8` delivery, complete ACK, and
+clean `0/0/0` teardown. The selective-loss gate remains `2/2` with exactly two
+repairs and no whole-frame retry. At fleet scale, the matched 2.5-ms-pacing run
+reaches `152/160`, below the prior 1024-byte run's `154/160`; the slower 8-ms
+run reaches `42/160` and reproduces relay/subscriber `rc=133`. Thus bounded
+wire size is proven, but no delivery improvement is claimed; PMTU discovery,
+multi-seed tuning, and the allocator teardown fault remain P0.
 
 Fragment repair admission and coalescing are now scoped by the exact UDP reader
 endpoint instead of only `fragment_id|index`. Retry exhaustion by one reader

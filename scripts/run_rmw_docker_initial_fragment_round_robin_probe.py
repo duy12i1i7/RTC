@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
     DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT,
+    DEFAULT_FLEETQOX_UDP_DATAGRAM_BUDGET_BYTES,
     DEFAULT_IMAGE,
     FLEETQOX_RMW,
     run_probe as run_relay,
@@ -33,6 +34,7 @@ def summarize_probe(
     fragment_chunk_bytes: int,
     pacing_us: int,
     fallback_grace_ms: int = DEFAULT_FALLBACK_GRACE_MS,
+    datagram_budget_bytes: int = DEFAULT_FLEETQOX_UDP_DATAGRAM_BUDGET_BYTES,
 ) -> dict[str, Any]:
     publisher = result.get("publisher")
     relay = result.get("relay")
@@ -61,6 +63,8 @@ def summarize_probe(
         )
         == fragment_chunk_bytes
         and int(result.get("fleetqox_udp_send_pacing_us", 0)) == pacing_us
+        and int(result.get("fleetqox_udp_datagram_budget_bytes", 0))
+        == datagram_budget_bytes
         and int(result.get("fleetqox_reliable_max_retransmissions", -1)) == 1
         and int(
             result.get("fleetqox_fragment_whole_fallback_grace_ms", -1)
@@ -101,6 +105,17 @@ def summarize_probe(
         and int(metrics.get("fragment_send_queue_high_water", 0)) > 0
         and int(metrics.get("fragment_send_queue_rejections", -1)) == 0
         and int(metrics.get("fragment_send_failures", -1)) == 0
+        and 0 < int(metrics.get("udp_datagram_size_high_water", 0))
+        <= datagram_budget_bytes
+        and 0 < int(metrics.get("fragment_effective_chunk_bytes_min", 0))
+        <= int(metrics.get("fragment_effective_chunk_bytes_max", 0))
+        <= min(fragment_chunk_bytes, datagram_budget_bytes)
+        and (
+            int(metrics.get("fragment_chunk_budget_reductions", 0)) > 0
+            if fragment_chunk_bytes > datagram_budget_bytes
+            else int(metrics.get("fragment_chunk_budget_reductions", -1)) >= 0
+        )
+        and int(metrics.get("udp_datagram_budget_failures", -1)) == 0
         and int(metrics.get("fragment_completion_markers_sent", -1))
         >= expected_frames
         and int(metrics.get("fragment_completion_markers_sent", -1))
@@ -123,10 +138,12 @@ def summarize_probe(
         "fragment_chunk_bytes": fragment_chunk_bytes,
         "pacing_us": pacing_us,
         "fallback_grace_ms": fallback_grace_ms,
+        "datagram_budget_bytes": datagram_budget_bytes,
         "round_robin_initial_fragment_scheduling_claim": contract_ok,
         "correlated_whole_frame_loss_mitigation_claim": contract_ok,
         "async_fragment_ack_timeout_after_drain_claim": contract_ok,
         "fragment_sender_completion_marker_claim": contract_ok,
+        "mtu_aware_udp_datagram_budget_claim": contract_ok,
         "fleet_scale_selective_fragment_repair_claim": False,
         "production_large_sample_reliability_claim": False,
         "result": result,
@@ -142,6 +159,7 @@ def run_probe(
     fragment_chunk_bytes: int,
     pacing_us: int,
     fallback_grace_ms: int = DEFAULT_FALLBACK_GRACE_MS,
+    datagram_budget_bytes: int = DEFAULT_FLEETQOX_UDP_DATAGRAM_BUDGET_BYTES,
 ) -> dict[str, Any]:
     result = run_relay(
         root=root,
@@ -163,6 +181,7 @@ def run_probe(
         fleetqox_reliable_max_retransmissions=1,
         fleetqox_fragment_whole_fallback_grace_ms=fallback_grace_ms,
         fleetqox_udp_send_pacing_us=pacing_us,
+        fleetqox_udp_datagram_budget_bytes=datagram_budget_bytes,
         fleetqox_fragment_async_send=True,
         fleetqox_fragment_send_queue_limit=(
             DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT
@@ -175,6 +194,7 @@ def run_probe(
         fragment_chunk_bytes=fragment_chunk_bytes,
         pacing_us=pacing_us,
         fallback_grace_ms=fallback_grace_ms,
+        datagram_budget_bytes=datagram_budget_bytes,
     )
 
 
@@ -189,6 +209,11 @@ def main() -> int:
         "--fallback-grace-ms",
         type=int,
         default=DEFAULT_FALLBACK_GRACE_MS,
+    )
+    parser.add_argument(
+        "--datagram-budget-bytes",
+        type=int,
+        default=DEFAULT_FLEETQOX_UDP_DATAGRAM_BUDGET_BYTES,
     )
     parser.add_argument(
         "--summary-json",
@@ -207,6 +232,7 @@ def main() -> int:
         fragment_chunk_bytes=max(min(args.fragment_chunk_bytes, 60000), 1),
         pacing_us=max(min(args.pacing_us, 100000), 1),
         fallback_grace_ms=max(min(args.fallback_grace_ms, 60000), 1),
+        datagram_budget_bytes=max(min(args.datagram_budget_bytes, 65507), 512),
     )
     path = ROOT / args.summary_json
     path.parent.mkdir(parents=True, exist_ok=True)

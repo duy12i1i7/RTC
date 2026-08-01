@@ -58,6 +58,7 @@ SERIALIZED_RELAY_EXECUTABLE = (
 FLEETQOX_RMW = "rmw_fleetqox_cpp"
 DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES = 1024
 DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS = 6
+DEFAULT_FLEETQOX_UDP_DATAGRAM_BUDGET_BYTES = 1472
 DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS = 50
 DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS = 6
 DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST = 8
@@ -285,6 +286,9 @@ def run_probe(
     ),
     fleetqox_reliable_ack_timeout_ms: int | None = None,
     fleetqox_udp_send_pacing_us: int = 0,
+    fleetqox_udp_datagram_budget_bytes: int = (
+        DEFAULT_FLEETQOX_UDP_DATAGRAM_BUDGET_BYTES
+    ),
     fleetqox_fragment_nack_interval_ms: int = (
         DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS
     ),
@@ -356,6 +360,13 @@ def run_probe(
         raise ValueError("fleetqox_reliable_ack_timeout_ms is outside 1..60000")
     if not 0 <= fleetqox_udp_send_pacing_us <= 100000:
         raise ValueError("fleetqox_udp_send_pacing_us is outside 0..100000")
+    if (
+        fleetqox_udp_datagram_budget_bytes != 0
+        and not 512 <= fleetqox_udp_datagram_budget_bytes <= 65507
+    ):
+        raise ValueError(
+            "fleetqox_udp_datagram_budget_bytes is outside 512..65507 or zero"
+        )
     if not 10 <= fleetqox_fragment_nack_interval_ms <= 1000:
         raise ValueError(
             "fleetqox_fragment_nack_interval_ms is outside 10..1000"
@@ -563,6 +574,8 @@ def run_probe(
                             ),
                         "FLEETQOX_RMW_UDP_SEND_PACING_US":
                             str(fleetqox_udp_send_pacing_us),
+                        "FLEETQOX_RMW_UDP_DATAGRAM_BUDGET_BYTES":
+                            str(fleetqox_udp_datagram_budget_bytes),
                         "FLEETQOX_RMW_FRAGMENT_NACK_INTERVAL_MS":
                             str(fleetqox_fragment_nack_interval_ms),
                         "FLEETQOX_RMW_FRAGMENT_NACK_MAX_REQUESTS":
@@ -795,6 +808,10 @@ def run_probe(
                 fleetqox_udp_send_pacing_us
                 if use_fleetqox_direct_peers else None
             ),
+            "fleetqox_udp_datagram_budget_bytes": (
+                fleetqox_udp_datagram_budget_bytes
+                if use_fleetqox_direct_peers else None
+            ),
             "fleetqox_fragment_nack_interval_ms": (
                 fleetqox_fragment_nack_interval_ms
                 if use_fleetqox_direct_peers else None
@@ -1010,6 +1027,12 @@ def main() -> int:
         default=0,
     )
     parser.add_argument(
+        "--fleetqox-udp-datagram-budget-bytes",
+        type=int,
+        default=DEFAULT_FLEETQOX_UDP_DATAGRAM_BUDGET_BYTES,
+        help="zero disables the application-level UDP wire-size budget",
+    )
+    parser.add_argument(
         "--fleetqox-fragment-nack-interval-ms",
         type=int,
         default=DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
@@ -1137,6 +1160,11 @@ def main() -> int:
         fleetqox_udp_send_pacing_us=max(
             min(args.fleetqox_udp_send_pacing_us, 100000),
             0,
+        ),
+        fleetqox_udp_datagram_budget_bytes=(
+            max(min(args.fleetqox_udp_datagram_budget_bytes, 65507), 512)
+            if args.fleetqox_udp_datagram_budget_bytes > 0
+            else 0
         ),
         fleetqox_fragment_nack_interval_ms=max(
             min(args.fleetqox_fragment_nack_interval_ms, 1000),

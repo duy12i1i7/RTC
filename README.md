@@ -150,6 +150,17 @@ This repository starts with the part that should be proven first:
   indexes from `19295` to `17656`, and relay admission wait from `30.9` to
   `21.6` seconds; five publisher topics are still unacknowledged. Therefore
   secure-fragment fleet-scale evidence and production reliability remain open;
+- opt-in MTU-aware UDP wire budgeting. The runtime derives an effective chunk
+  from fragment metadata plus AEAD and X.509/signature overhead, routes an
+  oversized wire payload through repair-capable fragmentation before applying
+  protection, and rejects any final datagram above the configured budget. The
+  Docker/benchmark runner uses a `1472`-byte IPv4/UDP budget by default. A
+  deterministic gate requests `4096`-byte chunks, measures `1409` effective
+  bytes and exact `1472` wire high-water on both hops, records eight reductions
+  with zero budget/send failures, delivers `8/8`, completes ACK, and exits
+  `0/0/0`. One lossy 16-robot run reaches only `152/160`, so automatic PMTU
+  discovery, secure credential amortization, and fleet reliability remain
+  open;
 - a QoS event ABI surface where publisher/subscription event init/fini,
   event callback setters, support checks, and offered/requested deadline missed
   event production pass in Docker; deadline misses are produced by a timer

@@ -95,6 +95,7 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
             source,
         )
         self.assertIn("FLEETQOX_RMW_FRAGMENT_TAIL_GUARD_MS", source)
+        self.assertIn("FLEETQOX_RMW_UDP_DATAGRAM_BUDGET_BYTES", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_ASYNC_SEND", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_SEND_QUEUE_LIMIT", source)
         self.assertIn(

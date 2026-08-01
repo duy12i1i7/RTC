@@ -1051,6 +1051,12 @@ int main()
         )
         self.assertIn("FLEETQOX_RMW_UDP_SOCKET_BUFFER_BYTES", source)
         self.assertIn("FLEETQOX_RMW_UDP_SEND_PACING_US", source)
+        self.assertIn("FLEETQOX_RMW_UDP_DATAGRAM_BUDGET_BYTES", source)
+        self.assertIn(
+            "effective_loss_resilient_fragment_chunk_bytes",
+            source,
+        )
+        self.assertIn("udp_protection_overhead_upper_bound", source)
         self.assertIn("pace_udp_send_locked", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_NACK_INTERVAL_MS", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_NACK_MAX_REQUESTS", source)
@@ -1162,7 +1168,22 @@ int main()
             "rmw_fleetqox_cpp_socket_fragment_async_send_completions",
             source,
         )
-        self.assertIn("queues_async_udp_fragments", source)
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_udp_datagram_size_high_water",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_effective_chunk_bytes_min",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_chunk_budget_reductions",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_udp_datagram_budget_failures",
+            source,
+        )
         self.assertIn("!shared_memory_only()", source)
         self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_initial_pending_timeout_suppressions",
@@ -4654,6 +4675,14 @@ int main()
             ]
         )
         self.assertTrue(
+            manifest["supported"]["mtu_aware_udp_datagram_budget"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "protected_fragment_effective_chunk_sizing"
+            ]
+        )
+        self.assertTrue(
             manifest["supported"]["completed_fragment_retransmission_deduplication"]
         )
         self.assertTrue(
@@ -4697,6 +4726,11 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "fragment_sender_completion_marker_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "mtu_aware_udp_datagram_budget_claim"
             ]
         )
         self.assertTrue(

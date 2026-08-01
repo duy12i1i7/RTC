@@ -2095,20 +2095,6 @@ public:
     return send_frame_with_qos(encoded_frame, &qos);
   }
 
-  bool queues_async_udp_fragments(const std::string & encoded_frame) const
-  {
-    const bool udp_target_available =
-      !peer_addresses_.empty() ||
-      address_.sin_addr.s_addr != htonl(INADDR_ANY);
-    return ready_ &&
-           fragment_async_send_enabled_ &&
-           loss_resilient_fragment_chunk_bytes_ > 0 &&
-           encoded_frame.size() >
-           static_cast<size_t>(loss_resilient_fragment_chunk_bytes_) &&
-           !shared_memory_only() &&
-           udp_target_available;
-  }
-
   rmw_ret_t send_frame_with_qos(
     const std::string & encoded_frame,
     const rmw_qos_profile_t * qos)
@@ -2461,6 +2447,34 @@ public:
   size_t fragment_repair_queue_high_water() const
   {
     return fragment_repair_queue_high_water_.load(std::memory_order_relaxed);
+  }
+
+  size_t udp_datagram_size_high_water() const
+  {
+    return udp_datagram_size_high_water_.load(std::memory_order_relaxed);
+  }
+
+  size_t fragment_effective_chunk_bytes_min() const
+  {
+    return fragment_effective_chunk_bytes_min_.load(
+      std::memory_order_relaxed);
+  }
+
+  size_t fragment_effective_chunk_bytes_max() const
+  {
+    return fragment_effective_chunk_bytes_max_.load(
+      std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_chunk_budget_reductions() const
+  {
+    return fragment_chunk_budget_reductions_.load(
+      std::memory_order_relaxed);
+  }
+
+  std::uint64_t udp_datagram_budget_failures() const
+  {
+    return udp_datagram_budget_failures_.load(std::memory_order_relaxed);
   }
 
   std::uint64_t fragment_queue_admission_waits() const
@@ -4132,6 +4146,23 @@ private:
       return send_loss_resilient_fragmented_payload_to_targets(
         payload, targets, label, is_data_frame);
     }
+    if (udp_datagram_budget_bytes_ > 0) {
+      const size_t budget = static_cast<size_t>(udp_datagram_budget_bytes_);
+      const size_t protection_overhead =
+        udp_protection_overhead_upper_bound();
+      if (protection_overhead > budget ||
+        payload.size() > budget - protection_overhead)
+      {
+        return send_loss_resilient_fragmented_payload_to_targets(
+          payload,
+          targets,
+          label,
+          is_data_frame,
+          loss_resilient_fragment_chunk_bytes_ > 0 ?
+          static_cast<size_t>(loss_resilient_fragment_chunk_bytes_) :
+          kMaxUdpPayloadBytes);
+      }
+    }
     std::string wire_payload;
     if (!protect_udp_payload(payload, &wire_payload)) {
       RMW_SET_ERROR_MSG("failed to encrypt FleetRMW UDP payload with AES-256-GCM");
@@ -4147,6 +4178,18 @@ private:
       return RMW_RET_ERROR;
     }
     wire_payload = std::move(authenticated_payload);
+    if (udp_datagram_budget_bytes_ > 0 &&
+      wire_payload.size() > static_cast<size_t>(udp_datagram_budget_bytes_))
+    {
+      return send_loss_resilient_fragmented_payload_to_targets(
+        payload,
+        targets,
+        label,
+        is_data_frame,
+        loss_resilient_fragment_chunk_bytes_ > 0 ?
+        static_cast<size_t>(loss_resilient_fragment_chunk_bytes_) :
+        kMaxUdpPayloadBytes);
+    }
     if (wire_payload.size() > kMaxUdpPayloadBytes) {
       if (udp_aead_enabled_ || udp_peer_auth_enabled_) {
         return send_loss_resilient_fragmented_payload_to_targets(
@@ -4170,6 +4213,100 @@ private:
     return output.str();
   }
 
+  size_t udp_protection_overhead_upper_bound() const
+  {
+    size_t overhead = 0;
+    if (udp_aead_enabled_) {
+      overhead += 8 + 16 + 12 + 16;
+    }
+    if (udp_peer_auth_enabled_) {
+      const int signature_size = udp_peer_auth_local_private_key_ == nullptr ?
+        0 : EVP_PKEY_get_size(udp_peer_auth_local_private_key_);
+      if (signature_size <= 0) {
+        return std::numeric_limits<size_t>::max();
+      }
+      overhead += 9 + 2 * sizeof(std::uint32_t) +
+        udp_peer_auth_local_certificate_der_.size() +
+        static_cast<size_t>(signature_size);
+    }
+    return overhead;
+  }
+
+  size_t effective_loss_resilient_fragment_chunk_bytes(
+    const std::string & payload,
+    const std::string & fragment_id,
+    size_t requested_chunk_bytes)
+  {
+    if (payload.empty() || fragment_id.empty() || requested_chunk_bytes == 0) {
+      return 0;
+    }
+    if (udp_datagram_budget_bytes_ <= 0) {
+      return requested_chunk_bytes;
+    }
+    const size_t protection_overhead = udp_protection_overhead_upper_bound();
+    if (protection_overhead == std::numeric_limits<size_t>::max()) {
+      return 0;
+    }
+    const size_t budget = static_cast<size_t>(udp_datagram_budget_bytes_);
+    size_t effective_chunk_bytes = std::min(requested_chunk_bytes, budget);
+    for (size_t iteration = 0; iteration < 8; ++iteration) {
+      if (effective_chunk_bytes == 0) {
+        return 0;
+      }
+      const size_t fragment_count =
+        (payload.size() + effective_chunk_bytes - 1) /
+        effective_chunk_bytes;
+      const size_t largest_index = fragment_count == 0 ? 0 : fragment_count - 1;
+      const size_t wrapper_bytes =
+        std::char_traits<char>::length(kRepairFragmentPrefix) +
+        fragment_id.size() + 4 +
+        std::to_string(largest_index).size() +
+        std::to_string(fragment_count).size() +
+        std::to_string(payload.size()).size();
+      if (wrapper_bytes > budget ||
+        protection_overhead > budget - wrapper_bytes)
+      {
+        return 0;
+      }
+      const size_t allowed_chunk_bytes =
+        budget - wrapper_bytes - protection_overhead;
+      const size_t next_chunk_bytes =
+        std::min(requested_chunk_bytes, allowed_chunk_bytes);
+      if (next_chunk_bytes == effective_chunk_bytes) {
+        return effective_chunk_bytes;
+      }
+      effective_chunk_bytes = next_chunk_bytes;
+    }
+    return effective_chunk_bytes;
+  }
+
+  void record_effective_fragment_chunk_bytes(
+    size_t requested_chunk_bytes,
+    size_t effective_chunk_bytes)
+  {
+    if (effective_chunk_bytes == 0) {
+      return;
+    }
+    if (effective_chunk_bytes < requested_chunk_bytes) {
+      fragment_chunk_budget_reductions_.fetch_add(
+        1, std::memory_order_relaxed);
+    }
+    size_t previous_min = fragment_effective_chunk_bytes_min_.load(
+      std::memory_order_relaxed);
+    while ((previous_min == 0 || effective_chunk_bytes < previous_min) &&
+      !fragment_effective_chunk_bytes_min_.compare_exchange_weak(
+        previous_min, effective_chunk_bytes, std::memory_order_relaxed))
+    {
+    }
+    size_t previous_max = fragment_effective_chunk_bytes_max_.load(
+      std::memory_order_relaxed);
+    while (effective_chunk_bytes > previous_max &&
+      !fragment_effective_chunk_bytes_max_.compare_exchange_weak(
+        previous_max, effective_chunk_bytes, std::memory_order_relaxed))
+    {
+    }
+  }
+
   rmw_ret_t send_loss_resilient_fragmented_payload_to_targets(
     const std::string & payload,
     const std::vector<sockaddr_in> & targets,
@@ -4177,20 +4314,29 @@ private:
     bool is_data_frame,
     size_t protected_chunk_bytes = 0)
   {
-    const size_t chunk_bytes =
+    const size_t requested_chunk_bytes =
       protected_chunk_bytes > 0 ?
       protected_chunk_bytes :
       static_cast<size_t>(loss_resilient_fragment_chunk_bytes_);
-    if (payload.empty() || chunk_bytes == 0) {
+    if (payload.empty() || requested_chunk_bytes == 0) {
       return RMW_RET_INVALID_ARGUMENT;
     }
+    const std::string fragment_id = stable_fragment_id(payload);
+    const size_t chunk_bytes = effective_loss_resilient_fragment_chunk_bytes(
+      payload, fragment_id, requested_chunk_bytes);
+    if (chunk_bytes == 0) {
+      udp_datagram_budget_failures_.fetch_add(1, std::memory_order_relaxed);
+      RMW_SET_ERROR_MSG(
+        "FleetRMW UDP datagram budget cannot fit a protected fragment");
+      return RMW_RET_ERROR;
+    }
+    record_effective_fragment_chunk_bytes(requested_chunk_bytes, chunk_bytes);
     const size_t fragment_count =
       (payload.size() + chunk_bytes - 1) / chunk_bytes;
     if (fragment_count == 0 || fragment_count > 4096) {
       RMW_SET_ERROR_MSG("loss-resilient FleetRMW fragment count is out of range");
       return RMW_RET_ERROR;
     }
-    const std::string fragment_id = stable_fragment_id(payload);
     const auto shared_payload = std::make_shared<const std::string>(payload);
     remember_fragment_history(
       fragment_id,
@@ -4859,6 +5005,21 @@ private:
     const std::vector<sockaddr_in> & targets,
     const char * label)
   {
+    const size_t payload_size = payload.size();
+    size_t previous_high_water = udp_datagram_size_high_water_.load(
+      std::memory_order_relaxed);
+    while (payload_size > previous_high_water &&
+      !udp_datagram_size_high_water_.compare_exchange_weak(
+        previous_high_water, payload_size, std::memory_order_relaxed))
+    {
+    }
+    if (udp_datagram_budget_bytes_ > 0 &&
+      payload_size > static_cast<size_t>(udp_datagram_budget_bytes_))
+    {
+      udp_datagram_budget_failures_.fetch_add(1, std::memory_order_relaxed);
+      RMW_SET_ERROR_MSG("FleetRMW UDP payload exceeds configured datagram budget");
+      return RMW_RET_ERROR;
+    }
     std::lock_guard<std::mutex> lock(udp_send_mutex_);
     for (const sockaddr_in & target : targets) {
       pace_udp_send_locked();
@@ -5048,6 +5209,12 @@ private:
     }
     udp_send_pacing_us_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_UDP_SEND_PACING_US", 0, 100000);
+    udp_datagram_budget_bytes_ = parse_nonnegative_int_env(
+      "FLEETQOX_RMW_UDP_DATAGRAM_BUDGET_BYTES", 0,
+      static_cast<int>(kMaxUdpPayloadBytes));
+    if (udp_datagram_budget_bytes_ > 0) {
+      udp_datagram_budget_bytes_ = std::max(512, udp_datagram_budget_bytes_);
+    }
     loss_resilient_fragment_chunk_bytes_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES", 0, 60000);
     fragment_nack_interval_ms_ = std::max(
@@ -6227,6 +6394,11 @@ private:
   std::atomic<std::uint64_t> fragment_send_failures_{0};
   std::atomic<size_t> fragment_send_queue_high_water_{0};
   std::atomic<size_t> fragment_repair_queue_high_water_{0};
+  std::atomic<size_t> udp_datagram_size_high_water_{0};
+  std::atomic<size_t> fragment_effective_chunk_bytes_min_{0};
+  std::atomic<size_t> fragment_effective_chunk_bytes_max_{0};
+  std::atomic<std::uint64_t> fragment_chunk_budget_reductions_{0};
+  std::atomic<std::uint64_t> udp_datagram_budget_failures_{0};
   std::atomic<std::uint64_t> fragment_queue_admission_waits_{0};
   std::atomic<std::uint64_t> fragment_queue_admission_timeouts_{0};
   std::atomic<std::uint64_t> fragment_queue_admission_wait_ns_{0};
@@ -6295,6 +6467,7 @@ private:
   std::chrono::steady_clock::time_point next_udp_send_time_{};
   int udp_socket_buffer_bytes_{0};
   int udp_send_pacing_us_{0};
+  int udp_datagram_budget_bytes_{0};
   int loss_resilient_fragment_chunk_bytes_{0};
   int fragment_nack_interval_ms_{50};
   int fragment_nack_max_requests_{6};
@@ -11407,6 +11580,31 @@ size_t rmw_fleetqox_cpp_socket_fragment_send_queue_high_water()
 size_t rmw_fleetqox_cpp_socket_fragment_repair_queue_high_water()
 {
   return socket_transport().fragment_repair_queue_high_water();
+}
+
+size_t rmw_fleetqox_cpp_socket_udp_datagram_size_high_water()
+{
+  return socket_transport().udp_datagram_size_high_water();
+}
+
+size_t rmw_fleetqox_cpp_socket_fragment_effective_chunk_bytes_min()
+{
+  return socket_transport().fragment_effective_chunk_bytes_min();
+}
+
+size_t rmw_fleetqox_cpp_socket_fragment_effective_chunk_bytes_max()
+{
+  return socket_transport().fragment_effective_chunk_bytes_max();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_chunk_budget_reductions()
+{
+  return socket_transport().fragment_chunk_budget_reductions();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_udp_datagram_budget_failures()
+{
+  return socket_transport().udp_datagram_budget_failures();
 }
 
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_queue_admission_waits()

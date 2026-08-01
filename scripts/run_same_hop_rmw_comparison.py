@@ -44,6 +44,7 @@ from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
     DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT,
     DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
     DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
+    DEFAULT_FLEETQOX_UDP_DATAGRAM_BUDGET_BYTES,
     FLEETQOX_RMW,
     run_probe as run_relay,
 )
@@ -175,6 +176,9 @@ def prior_row_matches_configuration(
         recorded_udp_send_pacing_us = int(
             result.get("fleetqox_udp_send_pacing_us") or 0
         )
+        recorded_udp_datagram_budget_bytes = int(
+            result.get("fleetqox_udp_datagram_budget_bytes") or 0
+        )
         recorded_fragment_nack_interval_ms = int(
             result.get("fleetqox_fragment_nack_interval_ms") or 0
         )
@@ -300,6 +304,11 @@ def prior_row_matches_configuration(
         and recorded_fragment_chunk_bytes == expected_fragment_chunk_bytes
         and recorded_max_retransmissions == expected_max_retransmissions
         and recorded_udp_send_pacing_us == expected_udp_send_pacing_us
+        and recorded_udp_datagram_budget_bytes
+        == (
+          DEFAULT_FLEETQOX_UDP_DATAGRAM_BUDGET_BYTES
+          if recorded_rmw == FLEETQOX_RMW else 0
+        )
         and recorded_fragment_nack_interval_ms
         == expected_fragment_nack_interval_ms
         and recorded_fragment_nack_max_requests
@@ -692,6 +701,8 @@ def run_comparison(
         "fleetqox_reliable_max_retransmissions":
             fleetqox_reliable_max_retransmissions,
         "fleetqox_udp_send_pacing_us": fleetqox_udp_send_pacing_us,
+        "fleetqox_udp_datagram_budget_bytes":
+            DEFAULT_FLEETQOX_UDP_DATAGRAM_BUDGET_BYTES,
         "fleetqox_fragment_nack_interval_ms":
             DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
         "fleetqox_fragment_nack_max_requests":
@@ -749,6 +760,7 @@ def run_comparison(
             "fleetqox_loss_resilient_fragment_chunk_bytes",
             "fleetqox_reliable_max_retransmissions",
             "fleetqox_udp_send_pacing_us",
+            "fleetqox_udp_datagram_budget_bytes",
             "fleetqox_fragment_nack_interval_ms",
             "fleetqox_fragment_nack_max_requests",
             "fleetqox_fragment_nack_max_indexes_per_request",

@@ -220,6 +220,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker two-reader source-scoped fragment repair plus untargeted-source fail-closed control | `results_rmw_socket/docker_multireader_fragment_repair_probe_summary.json` |
 | Docker deterministic 8-frame contended initial-fragment round-robin scheduling | `results_rmw_socket/docker_initial_fragment_round_robin_probe_summary.json` |
 | Docker deterministic authenticated fragment completion-marker plus callback-quiescent teardown | `results_rmw_socket/docker_completion_marker_subscription_lifecycle_probe_summary.json` |
+| Docker deterministic MTU-aware 4096-byte requested to 1409-byte effective fragment budget | `results_rmw_socket/docker_mtu_aware_fragment_budget_probe_summary.json` |
 | Docker deterministic completion-marker selective repair with whole-sample retry disabled | `results_rmw_socket/docker_completion_marker_selective_repair_probe_summary.json` |
 | Docker/netem 16-robot 32-KiB configurable assembly-retention frontier, seed 7 | `results_rmw_socket/loss_resilient_retained_assembly_32768_16robot_seed7_summary.json` |
 | Docker/netem 16-robot 32-KiB round-robin initial-fragment frontier, seed 7 | `results_rmw_socket/loss_resilient_round_robin_initial_32768_16robot_seed7_summary.json` |

@@ -51,6 +51,9 @@ def common_relay_result(
         "fleetqox_udp_send_pacing_us": (
             0 if system == "rmw_fleetqox_cpp" else None
         ),
+        "fleetqox_udp_datagram_budget_bytes": (
+            1472 if system == "rmw_fleetqox_cpp" else None
+        ),
         "fleetqox_fragment_nack_interval_ms": (
             50 if system == "rmw_fleetqox_cpp" else None
         ),
