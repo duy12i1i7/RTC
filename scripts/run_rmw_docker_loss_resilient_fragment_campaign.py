@@ -20,6 +20,7 @@ from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
     DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS,
     DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST,
     DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS,
+    DEFAULT_FLEETQOX_FRAGMENT_TAIL_GUARD_MS,
     DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_GRACE_MS,
     DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
     DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
@@ -103,6 +104,8 @@ def summarize_campaign(
                 result.get("fleetqox_fragment_whole_fallback_grace_ms", 0)
             )
             == DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_GRACE_MS
+            and int(result.get("fleetqox_fragment_tail_guard_ms", 0))
+            == DEFAULT_FLEETQOX_FRAGMENT_TAIL_GUARD_MS
             and isinstance(result.get("publisher"), dict)
             and result["publisher"].get("ack_wait_supported") is True
             and result["publisher"].get("ack_wait_complete") is True
@@ -154,6 +157,7 @@ def summarize_campaign(
             DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_TTL_MS,
         "fragment_whole_fallback_grace_ms":
             DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_GRACE_MS,
+        "fragment_tail_guard_ms": DEFAULT_FLEETQOX_FRAGMENT_TAIL_GUARD_MS,
         "run_count": len(rows),
         "ok_run_count": sum(row_contracts),
         "failed_run_count": len(rows) - sum(row_contracts),

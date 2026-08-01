@@ -40,6 +40,7 @@ from scripts.run_ros2_relay_rmw_netem_probe import (  # noqa: E402
     DEFAULT_FLEETQOX_FRAGMENT_REPAIR_COOLDOWN_MS,
     DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_INTERVAL_MS,
     DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_GRACE_MS,
+    DEFAULT_FLEETQOX_FRAGMENT_TAIL_GUARD_MS,
     DEFAULT_FLEETQOX_FRAGMENT_SEND_QUEUE_LIMIT,
     DEFAULT_FLEETQOX_LOSS_RESILIENT_FRAGMENT_CHUNK_BYTES,
     DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS,
@@ -225,6 +226,9 @@ def prior_row_matches_configuration(
                 "fleetqox_fragment_whole_fallback_grace_ms"
             ) or 0
         )
+        recorded_fragment_tail_guard_ms = int(
+            result.get("fleetqox_fragment_tail_guard_ms") or 0
+        )
         recorded_relay_executor_drain_mode = str(
             result.get("relay_executor_drain_mode") or ""
         )
@@ -349,6 +353,11 @@ def prior_row_matches_configuration(
         and recorded_fragment_whole_fallback_grace_ms
         == (
           DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_GRACE_MS
+          if recorded_rmw == FLEETQOX_RMW else 0
+        )
+        and recorded_fragment_tail_guard_ms
+        == (
+          DEFAULT_FLEETQOX_FRAGMENT_TAIL_GUARD_MS
           if recorded_rmw == FLEETQOX_RMW else 0
         )
         and recorded_relay_executor_drain_mode == "spin_some_bounded"
@@ -712,6 +721,8 @@ def run_comparison(
             DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_INTERVAL_MS,
         "fleetqox_fragment_whole_fallback_grace_ms":
             DEFAULT_FLEETQOX_FRAGMENT_WHOLE_FALLBACK_GRACE_MS,
+        "fleetqox_fragment_tail_guard_ms":
+            DEFAULT_FLEETQOX_FRAGMENT_TAIL_GUARD_MS,
         "relay_executor_drain_mode": "spin_some_bounded",
         "prior_row_count": len(prior_rows or []),
         "reused_row_count": reused_row_count,
@@ -753,6 +764,7 @@ def run_comparison(
             "fleetqox_fragment_repair_queue_limit",
             "fleetqox_fragment_whole_fallback_interval_ms",
             "fleetqox_fragment_whole_fallback_grace_ms",
+            "fleetqox_fragment_tail_guard_ms",
         ],
         "resume_configuration_mismatch_policy":
             "execute_current_configuration",

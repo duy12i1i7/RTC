@@ -1021,6 +1021,9 @@ int main()
         self.assertIn("rmw_fleetqox_cpp_socket_reliable_timeout_retransmissions", source)
         self.assertIn("rmw_subscription_set_on_new_message_callback", source)
         self.assertIn("on_new_message_callback", source)
+        self.assertIn("inflight_new_message_callbacks", source)
+        self.assertIn("g_subscription_callback_condition.wait", source)
+        self.assertIn("data->destroying = true", source)
         self.assertIn("rmw_fleetqox_cpp_waitable_subscription_has_data", source)
         self.assertIn("make_endpoint_gid", source)
         self.assertIn("endpoint_gid", source)
@@ -1065,10 +1068,18 @@ int main()
         self.assertIn("FLEETQOX_RMW_FRAGMENT_REPAIR_COOLDOWN_MS", source)
         self.assertIn("FLEETQOX_RMW_FRAGMENT_REPAIR_QUEUE_LIMIT", source)
         self.assertIn("fragment_repair_recent_send_ns_", source)
-        self.assertIn("consecutive_initial_fragments >= 8", source)
+        self.assertIn(
+            "consecutive_initial_fragments >= effective_initial_burst",
+            source,
+        )
         self.assertIn("completed_fragment_assemblies_", source)
         self.assertIn("include_trailing_indexes", source)
         self.assertIn("tail_guard_ns", source)
+        self.assertIn(
+            "now_ns - assembly.last_update_ns >= tail_guard_ns",
+            source,
+        )
+        self.assertIn("FLEETQOX_RMW_FRAGMENT_TAIL_GUARD_MS", source)
         self.assertIn("fragment_repair_pending_keys_", source)
         self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_repair_requests_coalesced",
@@ -1090,6 +1101,27 @@ int main()
             "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals",
             source,
         )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_queue_high_water",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_pressure_priority_promotions",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_completion_markers_sent",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_completion_markers_received",
+            source,
+        )
+        self.assertIn("FLEETQOX_REPAIR_FRAGMENT_END_V1", source)
+        self.assertIn("sender_complete_observed", source)
+        self.assertIn("effective_initial_burst = 1", source)
+        self.assertIn("effective_initial_burst = 2", source)
+        self.assertIn("effective_initial_burst = 4", source)
         self.assertIn(
             "FLEETQOX_RMW_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST",
             source,
@@ -4611,6 +4643,17 @@ int main()
             manifest["supported"]["fragment_whole_fallback_grace"]
         )
         self.assertTrue(
+            manifest["supported"]["fragment_sender_completion_marker"]
+        )
+        self.assertTrue(
+            manifest["supported"]["idle_based_fragment_tail_guard"]
+        )
+        self.assertTrue(
+            manifest["supported"][
+                "adaptive_fragment_repair_pressure_priority"
+            ]
+        )
+        self.assertTrue(
             manifest["supported"]["completed_fragment_retransmission_deduplication"]
         )
         self.assertTrue(
@@ -4649,6 +4692,11 @@ int main()
         self.assertTrue(
             manifest["claim_boundaries"][
                 "async_fragment_ack_timeout_after_drain_claim"
+            ]
+        )
+        self.assertTrue(
+            manifest["claim_boundaries"][
+                "fragment_sender_completion_marker_claim"
             ]
         )
         self.assertTrue(

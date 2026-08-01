@@ -332,6 +332,8 @@ int main(int argc, char ** argv)
     "rmw_fleetqox_cpp_socket_fragment_send_failures", nullptr) << ",";
   std::cout << "\"fragment_send_queue_high_water\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_send_queue_high_water", nullptr) << ",";
+  std::cout << "\"fragment_repair_queue_high_water\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_repair_queue_high_water", nullptr) << ",";
   std::cout << "\"fragment_queue_admission_waits\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_queue_admission_waits", nullptr) << ",";
   std::cout << "\"fragment_queue_admission_timeouts\":" << fleetqox_metric(
@@ -340,6 +342,17 @@ int main(int argc, char ** argv)
     "rmw_fleetqox_cpp_socket_fragment_queue_admission_wait_ns", nullptr) << ",";
   std::cout << "\"fragment_repair_queue_deferrals\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals", nullptr) << ",";
+  std::cout << "\"fragment_repair_pressure_priority_promotions\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_repair_pressure_priority_promotions",
+    nullptr) << ",";
+  std::cout << "\"fragment_completion_markers_sent\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_completion_markers_sent", nullptr) << ",";
+  std::cout << "\"fragment_completion_markers_received\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_completion_markers_received", nullptr) << ",";
+  std::cout << "\"fragment_completion_marker_orphans\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_completion_marker_orphans", nullptr) << ",";
+  std::cout << "\"fragment_completion_marker_failures\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_completion_marker_failures", nullptr) << ",";
   std::cout << "\"fragment_repair_source_denials\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_repair_source_denials", nullptr) << ",";
   std::cout << "\"fragment_repair_reader_budget_exhausted\":" << fleetqox_metric(

@@ -35,6 +35,7 @@ def result(seed: int) -> dict:
         "fleetqox_fragment_history_limit": 1024,
         "fleetqox_fragment_assembly_ttl_ms": 60000,
         "fleetqox_fragment_whole_fallback_grace_ms": 1000,
+        "fleetqox_fragment_tail_guard_ms": 1000,
         "publisher": {
             "ack_wait_supported": True,
             "ack_wait_complete": True,

@@ -1526,6 +1526,32 @@ root cause; feedback/repair amplification and the stochastic high-load
 teardown allocator failure remain open. No fleet-scale or production claim is
 made from these runs.
 
+Fragment completion is now explicit rather than inferred only from a fixed
+wall-clock delay. Each asynchronous initial-send batch tracks its own terminal
+task and emits a protected `FLEETQOX_REPAIR_FRAGMENT_END_V1` marker after the
+last fragment is physically sent. A receiver includes trailing missing indexes
+after a validated marker, an observed final fragment, or a configurable idle
+tail guard measured from the most recent fragment progress. The deterministic
+Docker gates remain complete: the contended path delivers `8/8` with complete
+ACK, marker delivery, zero timeout retry, and `0/0/0` teardown; the injected
+loss path delivers `2/2` with exactly two selective repairs and no whole-frame
+retry. Subscription destruction now removes the callback under the bus lock
+and waits for in-flight new-message callbacks before allocator teardown; the
+previous deterministic subscriber `rc=133` does not recur in these gates.
+
+The matched 16-robot/32-KiB/1024-byte-chunk/seed-7 frontier remains negative at
+`154/160` with five unacknowledged publisher topics. Against the preceding
+adaptive-priority run at equal delivery, publisher selective repair decreases
+from `13345` to `12800`, publisher admission wait from `73.6` to `55.4`
+seconds, relay requested indexes from `19295` to `17656`, and relay admission
+wait from `30.9` to `21.6` seconds. A separate 4096-byte-chunk experiment only
+reaches `58/160`; those UDP datagrams exceed a normal path MTU and incur IP
+fragmentation, so that configuration is retained as negative diagnostic
+evidence and is not a production reliability setting. Completion signaling
+and repair-amplification reduction are closed at the deterministic boundary;
+multi-seed fleet completion, MTU-aware wire budgeting, and stochastic
+publisher/relay teardown stress remain open.
+
 Fragment repair admission and coalescing are now scoped by the exact UDP reader
 endpoint instead of only `fragment_id|index`. Retry exhaustion by one reader
 therefore cannot consume another reader's history budget, and pending/cooldown

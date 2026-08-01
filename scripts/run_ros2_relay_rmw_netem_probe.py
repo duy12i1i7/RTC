@@ -61,6 +61,7 @@ DEFAULT_FLEETQOX_RELIABLE_MAX_RETRANSMISSIONS = 6
 DEFAULT_FLEETQOX_FRAGMENT_NACK_INTERVAL_MS = 50
 DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_REQUESTS = 6
 DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST = 8
+DEFAULT_FLEETQOX_FRAGMENT_TAIL_GUARD_MS = 1000
 DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT = 1024
 DEFAULT_FLEETQOX_FRAGMENT_ASSEMBLY_LIMIT = 1024
 DEFAULT_FLEETQOX_FRAGMENT_MAX_ASSEMBLY_BYTES = 16 * 1024 * 1024
@@ -293,6 +294,9 @@ def run_probe(
     fleetqox_fragment_nack_max_indexes_per_request: int = (
         DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST
     ),
+    fleetqox_fragment_tail_guard_ms: int = (
+        DEFAULT_FLEETQOX_FRAGMENT_TAIL_GUARD_MS
+    ),
     fleetqox_fragment_history_limit: int = (
         DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT
     ),
@@ -363,6 +367,10 @@ def run_probe(
     if not 1 <= fleetqox_fragment_nack_max_indexes_per_request <= 64:
         raise ValueError(
             "fleetqox_fragment_nack_max_indexes_per_request is outside 1..64"
+        )
+    if not 100 <= fleetqox_fragment_tail_guard_ms <= 60000:
+        raise ValueError(
+            "fleetqox_fragment_tail_guard_ms is outside 100..60000"
         )
     if not 0 <= fleetqox_fragment_history_limit <= 4096:
         raise ValueError("fleetqox_fragment_history_limit is outside 0..4096")
@@ -563,6 +571,8 @@ def run_probe(
                             str(
                                 fleetqox_fragment_nack_max_indexes_per_request
                             ),
+                        "FLEETQOX_RMW_FRAGMENT_TAIL_GUARD_MS":
+                            str(fleetqox_fragment_tail_guard_ms),
                         "FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT":
                             str(fleetqox_fragment_history_limit),
                         "FLEETQOX_RMW_FRAGMENT_ASSEMBLY_LIMIT":
@@ -797,6 +807,10 @@ def run_probe(
                 fleetqox_fragment_nack_max_indexes_per_request
                 if use_fleetqox_direct_peers else None
             ),
+            "fleetqox_fragment_tail_guard_ms": (
+                fleetqox_fragment_tail_guard_ms
+                if use_fleetqox_direct_peers else None
+            ),
             "fleetqox_fragment_history_limit": (
                 fleetqox_fragment_history_limit
                 if use_fleetqox_direct_peers else None
@@ -1011,6 +1025,11 @@ def main() -> int:
         default=DEFAULT_FLEETQOX_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST,
     )
     parser.add_argument(
+        "--fleetqox-fragment-tail-guard-ms",
+        type=int,
+        default=DEFAULT_FLEETQOX_FRAGMENT_TAIL_GUARD_MS,
+    )
+    parser.add_argument(
         "--fleetqox-fragment-history-limit",
         type=int,
         default=DEFAULT_FLEETQOX_FRAGMENT_HISTORY_LIMIT,
@@ -1130,6 +1149,10 @@ def main() -> int:
         fleetqox_fragment_nack_max_indexes_per_request=max(
             min(args.fleetqox_fragment_nack_max_indexes_per_request, 64),
             1,
+        ),
+        fleetqox_fragment_tail_guard_ms=max(
+            min(args.fleetqox_fragment_tail_guard_ms, 60000),
+            100,
         ),
         fleetqox_fragment_history_limit=max(
             min(args.fleetqox_fragment_history_limit, 4096),

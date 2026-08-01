@@ -213,6 +213,8 @@ struct FleetQoxSubscriptionData
   rmw_event_callback_t subscription_matched_callback;
   const void * subscription_matched_user_data;
   std::uint64_t next_reception_sequence{1};
+  bool destroying{false};
+  size_t inflight_new_message_callbacks{0};
   std::recursive_mutex take_mutex{};
 };
 
@@ -233,7 +235,7 @@ struct ReliableRetransmitEntry
   std::unordered_set<std::string> pending_subscriber_ids{};
   bool fragment_observed_by_reader{false};
   bool fragment_timeout_suppression_recorded{false};
-  bool fragment_initial_send_pending{false};
+  size_t fragment_initial_send_batches_pending{0};
   bool fragment_initial_pending_suppression_recorded{false};
   bool fragment_fallback_grace_deferral_recorded{false};
 };
@@ -279,8 +281,16 @@ struct EventCallbackNotification
   size_t event_count;
 };
 
+struct NewMessageCallbackNotification
+{
+  FleetQoxSubscriptionData * subscription;
+  rmw_event_callback_t callback;
+  const void * user_data;
+};
+
 std::mutex g_bus_mutex;
 std::condition_variable g_all_acked_condition;
+std::condition_variable g_subscription_callback_condition;
 std::vector<FleetQoxPublisherData *> g_publishers;
 std::vector<FleetQoxSubscriptionData *> g_subscriptions;
 std::vector<rmw_subscription_t *> g_subscription_handles;
@@ -354,6 +364,7 @@ bool apply_received_graph_advertisement(const std::string & encoded_frame);
 bool handle_ack_nack_feedback(const std::string & encoded_frame);
 bool handle_unrecoverable_loss_notice(const std::string & encoded_frame);
 void record_fragment_repair_observation(const std::string & encoded_frame);
+void record_fragment_async_send_started(const std::string & encoded_frame);
 void record_fragment_async_send_complete(const std::string & encoded_frame);
 void record_fragment_async_send_failed(const std::string & encoded_frame);
 int loss_resilient_fragment_chunk_bytes();
@@ -2447,6 +2458,11 @@ public:
     return fragment_send_queue_high_water_.load(std::memory_order_relaxed);
   }
 
+  size_t fragment_repair_queue_high_water() const
+  {
+    return fragment_repair_queue_high_water_.load(std::memory_order_relaxed);
+  }
+
   std::uint64_t fragment_queue_admission_waits() const
   {
     return fragment_queue_admission_waits_.load(std::memory_order_relaxed);
@@ -2465,6 +2481,35 @@ public:
   std::uint64_t fragment_repair_queue_deferrals() const
   {
     return fragment_repair_queue_deferrals_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_repair_pressure_priority_promotions() const
+  {
+    return fragment_repair_pressure_priority_promotions_.load(
+      std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_completion_markers_sent() const
+  {
+    return fragment_completion_markers_sent_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_completion_markers_received() const
+  {
+    return fragment_completion_markers_received_.load(
+      std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_completion_marker_orphans() const
+  {
+    return fragment_completion_marker_orphans_.load(
+      std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_completion_marker_failures() const
+  {
+    return fragment_completion_marker_failures_.load(
+      std::memory_order_relaxed);
   }
 
   std::uint64_t fragment_repair_source_denials() const
@@ -3117,6 +3162,8 @@ private:
     "FLEETQOX_REPAIR_FRAGMENT_V1|";
   static constexpr const char * kRepairFragmentNackPrefix =
     "FLEETQOX_REPAIR_FRAGMENT_NACK_V1|";
+  static constexpr const char * kRepairFragmentCompletionPrefix =
+    "FLEETQOX_REPAIR_FRAGMENT_END_V1|";
 
   struct FragmentAssembly
   {
@@ -3134,6 +3181,7 @@ private:
     size_t nack_count{0};
     std::string fragment_id;
     bool repair_capable{false};
+    bool sender_complete_observed{false};
   };
 
   struct FragmentRepairHistory
@@ -4156,7 +4204,8 @@ private:
       indexes[index] = index;
     }
     if (fragment_async_send_enabled_) {
-      return enqueue_loss_resilient_fragment_indexes(
+      record_fragment_async_send_started(payload);
+      const rmw_ret_t enqueue_ret = enqueue_loss_resilient_fragment_indexes(
         shared_payload,
         targets,
         is_data_frame,
@@ -4165,8 +4214,12 @@ private:
         fragment_count,
         indexes,
         false);
+      if (enqueue_ret != RMW_RET_OK) {
+        record_fragment_async_send_failed(payload);
+      }
+      return enqueue_ret;
     }
-    return send_loss_resilient_fragment_indexes(
+    const rmw_ret_t send_ret = send_loss_resilient_fragment_indexes(
       *shared_payload,
       targets,
       label,
@@ -4176,6 +4229,15 @@ private:
       fragment_count,
       indexes,
       false);
+    if (send_ret != RMW_RET_OK) {
+      return send_ret;
+    }
+    return send_fragment_completion_marker(
+      targets,
+      fragment_id,
+      fragment_count,
+      payload.size(),
+      is_data_frame);
   }
 
   void cleanup_fragment_history_locked(std::int64_t now_ns)
@@ -4396,6 +4458,16 @@ private:
             fragment_repair_queue_key(
               fragment_id, index, repair_target_scope)});
         }
+        const size_t repair_queue_size = fragment_repair_send_queue_.size();
+        size_t observed_repair_high_water =
+          fragment_repair_queue_high_water_.load(std::memory_order_relaxed);
+        while (repair_queue_size > observed_repair_high_water &&
+          !fragment_repair_queue_high_water_.compare_exchange_weak(
+            observed_repair_high_water,
+            repair_queue_size,
+            std::memory_order_relaxed))
+        {
+        }
       } else {
         auto found = fragment_initial_send_queues_.find(fragment_id);
         if (found == fragment_initial_send_queues_.end()) {
@@ -4427,6 +4499,7 @@ private:
             std::string{}});
           ++fragment_initial_send_queue_size_;
         }
+        found->second.back().initial_send_completion = true;
       }
       const size_t updated_count =
         fragment_initial_send_queue_size_ + fragment_repair_send_queue_.size();
@@ -4463,11 +4536,32 @@ private:
         if (!fragment_sender_running_.load(std::memory_order_acquire)) {
           break;
         }
+        size_t effective_initial_burst = 8;
+        if (!fragment_repair_send_queue_.empty() &&
+          fragment_repair_queue_limit_ > 0)
+        {
+          const size_t repair_queue_size = fragment_repair_send_queue_.size();
+          const size_t repair_capacity =
+            static_cast<size_t>(fragment_repair_queue_limit_);
+          if (repair_queue_size * 4 >= repair_capacity * 3) {
+            effective_initial_burst = 1;
+          } else if (repair_queue_size * 2 >= repair_capacity) {
+            effective_initial_burst = 2;
+          } else if (repair_queue_size * 4 >= repair_capacity) {
+            effective_initial_burst = 4;
+          }
+        }
         const bool choose_repair =
           !fragment_repair_send_queue_.empty() &&
           (fragment_initial_send_queue_size_ == 0 ||
-          consecutive_initial_fragments >= 8);
+          consecutive_initial_fragments >= effective_initial_burst);
         if (choose_repair) {
+          if (fragment_initial_send_queue_size_ > 0 &&
+            effective_initial_burst < 8)
+          {
+            fragment_repair_pressure_priority_promotions_.fetch_add(
+              1, std::memory_order_relaxed);
+          }
           task = std::move(fragment_repair_send_queue_.front());
           fragment_repair_send_queue_.pop_front();
         } else {
@@ -4486,7 +4580,6 @@ private:
           found->second.pop_front();
           --fragment_initial_send_queue_size_;
           if (found->second.empty()) {
-            task.initial_send_completion = true;
             fragment_initial_send_queues_.erase(found);
           } else {
             fragment_initial_send_order_.push_back(fragment_id);
@@ -4557,9 +4650,21 @@ private:
         fragment_send_failures_.fetch_add(1, std::memory_order_relaxed);
       }
       if (!task.selective_retransmission && task.initial_send_completion) {
-        if (ret == RMW_RET_OK) {
+        const rmw_ret_t completion_ret =
+          ret == RMW_RET_OK ?
+          send_fragment_completion_marker(
+            task.targets,
+            task.fragment_id,
+            task.fragment_count,
+            task.payload->size(),
+            task.is_data_frame) :
+          ret;
+        if (completion_ret == RMW_RET_OK) {
           record_fragment_async_send_complete(*task.payload);
         } else {
+          if (ret == RMW_RET_OK) {
+            fragment_send_failures_.fetch_add(1, std::memory_order_relaxed);
+          }
           record_fragment_async_send_failed(*task.payload);
         }
       }
@@ -4635,6 +4740,54 @@ private:
       }
       fragment_repair_recent_send_ns_.erase(oldest);
     }
+  }
+
+  rmw_ret_t send_fragment_completion_marker(
+    const std::vector<sockaddr_in> & targets,
+    const std::string & fragment_id,
+    size_t fragment_count,
+    size_t total_size,
+    bool is_data_frame)
+  {
+    if (targets.empty() || fragment_id.empty() ||
+      fragment_count == 0 || total_size == 0)
+    {
+      fragment_completion_marker_failures_.fetch_add(
+        1, std::memory_order_relaxed);
+      return RMW_RET_INVALID_ARGUMENT;
+    }
+    std::string marker(kRepairFragmentCompletionPrefix);
+    marker.append(fragment_id);
+    marker.push_back('|');
+    marker.append(std::to_string(fragment_count));
+    marker.push_back('|');
+    marker.append(std::to_string(total_size));
+    std::string protected_marker;
+    if (!protect_udp_payload(marker, &protected_marker)) {
+      fragment_completion_marker_failures_.fetch_add(
+        1, std::memory_order_relaxed);
+      return RMW_RET_ERROR;
+    }
+    std::string authenticated_marker;
+    if (!protect_udp_peer_authenticated_payload(
+        protected_marker, is_data_frame, &authenticated_marker))
+    {
+      fragment_completion_marker_failures_.fetch_add(
+        1, std::memory_order_relaxed);
+      return RMW_RET_ERROR;
+    }
+    const rmw_ret_t ret = send_datagram_to_targets(
+      authenticated_marker,
+      targets,
+      "FleetRMW fragment completion marker");
+    if (ret == RMW_RET_OK) {
+      fragment_completion_markers_sent_.fetch_add(
+        1, std::memory_order_relaxed);
+    } else {
+      fragment_completion_marker_failures_.fetch_add(
+        1, std::memory_order_relaxed);
+    }
+    return ret;
   }
 
   rmw_ret_t send_loss_resilient_fragment_indexes(
@@ -4907,6 +5060,10 @@ private:
       1,
       parse_nonnegative_int_env(
         "FLEETQOX_RMW_FRAGMENT_NACK_MAX_INDEXES_PER_REQUEST", 8, 64));
+    fragment_tail_guard_ms_ = std::max(
+      100,
+      parse_nonnegative_int_env(
+        "FLEETQOX_RMW_FRAGMENT_TAIL_GUARD_MS", 1000, 60000));
     fragment_history_limit_ = parse_nonnegative_int_env(
       "FLEETQOX_RMW_FRAGMENT_HISTORY_LIMIT", 1024, 4096);
     fragment_assembly_limit_ = parse_nonnegative_int_env(
@@ -5431,13 +5588,14 @@ private:
           continue;
         }
         const std::int64_t tail_guard_ns = std::max<std::int64_t>(
-          1000000000ll,
+          static_cast<std::int64_t>(fragment_tail_guard_ms_) * 1000000ll,
           interval_ns * 4);
         const bool last_fragment_observed =
           !assembly.received.empty() && assembly.received.back();
         const bool include_trailing_indexes =
           last_fragment_observed ||
-          now_ns - assembly.first_update_ns >= tail_guard_ns;
+          assembly.sender_complete_observed ||
+          now_ns - assembly.last_update_ns >= tail_guard_ns;
         std::vector<size_t> missing = missing_fragment_indexes(
           assembly,
           include_trailing_indexes,
@@ -5572,6 +5730,79 @@ private:
       start = end + 1;
     }
     return !indexes->empty();
+  }
+
+  bool handle_fragment_completion_marker(
+    const std::string & payload,
+    const sockaddr_in * source)
+  {
+    const std::string prefix(kRepairFragmentCompletionPrefix);
+    if (payload.rfind(prefix, 0) != 0) {
+      return false;
+    }
+    const size_t first_separator = payload.find('|', prefix.size());
+    const size_t second_separator =
+      first_separator == std::string::npos ?
+      std::string::npos : payload.find('|', first_separator + 1);
+    if (first_separator == std::string::npos ||
+      second_separator == std::string::npos)
+    {
+      fragment_completion_marker_failures_.fetch_add(
+        1, std::memory_order_relaxed);
+      return true;
+    }
+    const std::string fragment_id =
+      payload.substr(prefix.size(), first_separator - prefix.size());
+    size_t fragment_count = 0;
+    size_t total_size = 0;
+    if (fragment_id.empty() ||
+      !parse_size_token(
+        payload.substr(
+          first_separator + 1,
+          second_separator - first_separator - 1),
+        &fragment_count) ||
+      !parse_size_token(payload.substr(second_separator + 1), &total_size) ||
+      fragment_count == 0 || total_size == 0)
+    {
+      fragment_completion_marker_failures_.fetch_add(
+        1, std::memory_order_relaxed);
+      return true;
+    }
+    fragment_completion_markers_received_.fetch_add(
+      1, std::memory_order_relaxed);
+    const std::int64_t now_ns = monotonic_timestamp_ns();
+    std::lock_guard<std::mutex> lock(fragment_mutex_);
+    cleanup_stale_fragment_assemblies_locked(now_ns);
+    const std::string assembly_key =
+      std::string(kRepairFragmentPrefix) + fragment_id;
+    if (completed_fragment_assemblies_.find(assembly_key) !=
+      completed_fragment_assemblies_.end())
+    {
+      return true;
+    }
+    const auto found = fragment_assemblies_.find(assembly_key);
+    if (found == fragment_assemblies_.end()) {
+      fragment_completion_marker_orphans_.fetch_add(
+        1, std::memory_order_relaxed);
+      return true;
+    }
+    FragmentAssembly & assembly = found->second;
+    if (assembly.fragment_count != fragment_count ||
+      assembly.total_size != total_size ||
+      (source != nullptr && assembly.source_available &&
+      !endpoints_match(*source, assembly.source)))
+    {
+      fragment_completion_marker_failures_.fetch_add(
+        1, std::memory_order_relaxed);
+      return true;
+    }
+    if (source != nullptr) {
+      assembly.source = *source;
+      assembly.source_available = true;
+    }
+    assembly.sender_complete_observed = true;
+    assembly.last_update_ns = now_ns;
+    return true;
   }
 
   bool handle_fragment_repair_request(
@@ -5856,6 +6087,7 @@ private:
     const bool strict_protected_fragment_wrapper =
       udp_wire_payload && (udp_aead_required_ || udp_peer_auth_required_) &&
       (datagram.rfind(kRepairFragmentPrefix, 0) == 0 ||
+      datagram.rfind(kRepairFragmentCompletionPrefix, 0) == 0 ||
       datagram.rfind(kFragmentPrefix, 0) == 0);
     if (!strict_protected_fragment_wrapper &&
       try_reassemble_fragment(datagram, &complete_payload, source))
@@ -5882,6 +6114,9 @@ private:
       return;
     }
     std::string repaired_payload;
+    if (handle_fragment_completion_marker(plaintext, source)) {
+      return;
+    }
     if (handle_fragment_repair_request(plaintext, source)) {
       return;
     }
@@ -5991,10 +6226,16 @@ private:
   std::atomic<std::uint64_t> fragment_send_queue_rejections_{0};
   std::atomic<std::uint64_t> fragment_send_failures_{0};
   std::atomic<size_t> fragment_send_queue_high_water_{0};
+  std::atomic<size_t> fragment_repair_queue_high_water_{0};
   std::atomic<std::uint64_t> fragment_queue_admission_waits_{0};
   std::atomic<std::uint64_t> fragment_queue_admission_timeouts_{0};
   std::atomic<std::uint64_t> fragment_queue_admission_wait_ns_{0};
   std::atomic<std::uint64_t> fragment_repair_queue_deferrals_{0};
+  std::atomic<std::uint64_t> fragment_repair_pressure_priority_promotions_{0};
+  std::atomic<std::uint64_t> fragment_completion_markers_sent_{0};
+  std::atomic<std::uint64_t> fragment_completion_markers_received_{0};
+  std::atomic<std::uint64_t> fragment_completion_marker_orphans_{0};
+  std::atomic<std::uint64_t> fragment_completion_marker_failures_{0};
   std::atomic<std::uint64_t> fragment_repair_source_denials_{0};
   std::atomic<std::uint64_t> fragment_repair_reader_budget_exhausted_{0};
   std::atomic<std::uint64_t> fragment_initial_round_robin_rotations_{0};
@@ -6058,6 +6299,7 @@ private:
   int fragment_nack_interval_ms_{50};
   int fragment_nack_max_requests_{6};
   int fragment_nack_max_indexes_per_request_{8};
+  int fragment_tail_guard_ms_{1000};
   int fragment_history_limit_{1024};
   int fragment_assembly_limit_{1024};
   int fragment_max_assembly_bytes_{16 * 1024 * 1024};
@@ -6122,6 +6364,25 @@ void record_fragment_repair_observation(const std::string & encoded_frame)
   }
 }
 
+void record_fragment_async_send_started(const std::string & encoded_frame)
+{
+  const auto frame = rmw_fleetqox_cpp::decode_data_frame(encoded_frame);
+  if (!frame.has_value()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_bus_mutex);
+  const auto found = g_retransmit_ledger.find(
+    retransmit_ledger_key(
+      frame->publisher_id,
+      frame->source_sequence_number));
+  if (found == g_retransmit_ledger.end() || !found->second.reliable) {
+    return;
+  }
+  ++found->second.fragment_initial_send_batches_pending;
+  found->second.fragment_initial_pending_suppression_recorded = false;
+  found->second.fragment_fallback_grace_deferral_recorded = false;
+}
+
 void record_fragment_async_send_terminal(
   const std::string & encoded_frame,
   bool completed)
@@ -6138,11 +6399,17 @@ void record_fragment_async_send_terminal(
   if (found == g_retransmit_ledger.end()) {
     return;
   }
-  found->second.fragment_initial_send_pending = false;
-  found->second.fragment_initial_pending_suppression_recorded = false;
-  found->second.fragment_fallback_grace_deferral_recorded = false;
-  if (completed) {
-    found->second.last_send_ns = monotonic_timestamp_ns();
+  ReliableRetransmitEntry & entry = found->second;
+  if (entry.fragment_initial_send_batches_pending == 0) {
+    return;
+  }
+  --entry.fragment_initial_send_batches_pending;
+  if (entry.fragment_initial_send_batches_pending == 0) {
+    entry.fragment_initial_pending_suppression_recorded = false;
+    entry.fragment_fallback_grace_deferral_recorded = false;
+  }
+  if (completed && entry.fragment_initial_send_batches_pending == 0) {
+    entry.last_send_ns = monotonic_timestamp_ns();
     g_fragment_async_send_completions.fetch_add(
       1, std::memory_order_relaxed);
   }
@@ -9220,9 +9487,6 @@ rmw_ret_t publish_payload(FleetQoxPublisherData * data, const std::vector<std::u
     retransmit_entry.expected_acknowledgments = matched_subscription_ids.size();
     retransmit_entry.pending_subscriber_ids.insert(
       matched_subscription_ids.begin(), matched_subscription_ids.end());
-    retransmit_entry.fragment_initial_send_pending =
-      reliable &&
-      socket_transport().queues_async_udp_fragments(encoded_frame);
     g_retransmit_ledger[retransmit_ledger_key(data->publisher_id, source_sequence)] =
       std::move(retransmit_entry);
   }
@@ -9328,7 +9592,7 @@ void reliable_retransmit_loop()
           ++it;
           continue;
         }
-        if (entry.fragment_initial_send_pending) {
+        if (entry.fragment_initial_send_batches_pending > 0) {
           if (!entry.fragment_initial_pending_suppression_recorded) {
             g_fragment_initial_pending_timeout_suppressions.fetch_add(
               1, std::memory_order_relaxed);
@@ -9367,8 +9631,6 @@ void reliable_retransmit_loop()
         }
         entry.last_send_ns = now;
         ++entry.timeout_retransmissions;
-        entry.fragment_initial_send_pending =
-          socket_transport().queues_async_udp_fragments(entry.encoded_frame);
         entry.fragment_initial_pending_suppression_recorded = false;
         entry.fragment_fallback_grace_deferral_recorded = false;
         pending.emplace_back(entry.encoded_frame, entry.qos);
@@ -10481,7 +10743,7 @@ void enqueue_received_frame(const std::string & encoded_frame)
     return;
   }
 
-  std::vector<std::pair<rmw_event_callback_t, const void *>> callbacks;
+  std::vector<NewMessageCallbackNotification> callbacks;
   std::vector<EventCallbackNotification> event_callbacks;
   std::vector<std::pair<std::string, int>> ack_nack_payloads;
   size_t matched_subscriptions = 0;
@@ -10548,10 +10810,14 @@ void enqueue_received_frame(const std::string & encoded_frame)
         ++matched_subscriptions;
         subscription->frame_queue.push_back(encoded_frame);
         enforce_subscription_depth_locked(subscription, &event_callbacks);
-        if (subscription->on_new_message_callback != nullptr) {
-          callbacks.emplace_back(
+        if (!subscription->destroying &&
+          subscription->on_new_message_callback != nullptr)
+        {
+          ++subscription->inflight_new_message_callbacks;
+          callbacks.push_back(NewMessageCallbackNotification{
+            subscription,
             subscription->on_new_message_callback,
-            subscription->on_new_message_user_data);
+            subscription->on_new_message_user_data});
         }
       }
     }
@@ -10577,8 +10843,17 @@ void enqueue_received_frame(const std::string & encoded_frame)
       matched_subscriptions,
       callbacks.size());
   }
-  for (const auto & callback : callbacks) {
-    callback.first(callback.second, 1);
+  for (const NewMessageCallbackNotification & notification : callbacks) {
+    notification.callback(notification.user_data, 1);
+    {
+      std::lock_guard<std::mutex> lock(g_bus_mutex);
+      if (notification.subscription != nullptr &&
+        notification.subscription->inflight_new_message_callbacks > 0)
+      {
+        --notification.subscription->inflight_new_message_callbacks;
+      }
+    }
+    g_subscription_callback_condition.notify_all();
   }
   for (const EventCallbackNotification & notification : event_callbacks) {
     notification.callback(notification.user_data, notification.event_count);
@@ -11129,6 +11404,11 @@ size_t rmw_fleetqox_cpp_socket_fragment_send_queue_high_water()
   return socket_transport().fragment_send_queue_high_water();
 }
 
+size_t rmw_fleetqox_cpp_socket_fragment_repair_queue_high_water()
+{
+  return socket_transport().fragment_repair_queue_high_water();
+}
+
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_queue_admission_waits()
 {
   return socket_transport().fragment_queue_admission_waits();
@@ -11147,6 +11427,32 @@ std::uint64_t rmw_fleetqox_cpp_socket_fragment_queue_admission_wait_ns()
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals()
 {
   return socket_transport().fragment_repair_queue_deferrals();
+}
+
+std::uint64_t
+rmw_fleetqox_cpp_socket_fragment_repair_pressure_priority_promotions()
+{
+  return socket_transport().fragment_repair_pressure_priority_promotions();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_completion_markers_sent()
+{
+  return socket_transport().fragment_completion_markers_sent();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_completion_markers_received()
+{
+  return socket_transport().fragment_completion_markers_received();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_completion_marker_orphans()
+{
+  return socket_transport().fragment_completion_marker_orphans();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_completion_marker_failures()
+{
+  return socket_transport().fragment_completion_marker_failures();
 }
 
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_repair_source_denials()
@@ -12191,7 +12497,10 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t * node, rmw_subscription_t * subsc
   send_subscription_graph_advertisement(data, "remove");
   std::vector<EventCallbackNotification> matched_callbacks;
   {
-    std::lock_guard<std::mutex> lock(g_bus_mutex);
+    std::unique_lock<std::mutex> lock(g_bus_mutex);
+    data->destroying = true;
+    data->on_new_message_callback = nullptr;
+    data->on_new_message_user_data = nullptr;
     g_subscriptions.erase(
       std::remove(g_subscriptions.begin(), g_subscriptions.end(), data),
       g_subscriptions.end());
@@ -12199,6 +12508,9 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t * node, rmw_subscription_t * subsc
       std::remove(g_subscription_handles.begin(), g_subscription_handles.end(), subscription),
       g_subscription_handles.end());
     refresh_publication_matched_events_locked(&matched_callbacks);
+    g_subscription_callback_condition.wait(lock, [data]() {
+      return data->inflight_new_message_callbacks == 0;
+    });
   }
   notify_event_callbacks(matched_callbacks);
   bool stop_deadline_monitor = false;
@@ -13116,6 +13428,10 @@ rmw_ret_t rmw_subscription_set_on_new_message_callback(
     return RMW_RET_INVALID_ARGUMENT;
   }
   std::lock_guard<std::mutex> lock(g_bus_mutex);
+  if (data->destroying) {
+    RMW_SET_ERROR_MSG("subscription is being destroyed");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
   data->on_new_message_callback = callback;
   data->on_new_message_user_data = user_data;
   return RMW_RET_OK;

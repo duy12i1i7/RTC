@@ -46,6 +46,15 @@ def result() -> dict:
                 "fragment_send_queue_high_water": 256,
                 "fragment_send_queue_rejections": 0,
                 "fragment_send_failures": 0,
+                "fragment_completion_markers_sent": 8,
+                "fragment_completion_marker_failures": 0,
+            },
+        },
+        "relay": {
+            "fleetqox_transport_metrics": {
+                "fragment_completion_markers_received": 8,
+                "fragment_completion_marker_orphans": 0,
+                "fragment_completion_marker_failures": 0,
             },
         },
     }
@@ -66,6 +75,7 @@ class InitialFragmentRoundRobinProbeTests(unittest.TestCase):
             summary["round_robin_initial_fragment_scheduling_claim"]
         )
         self.assertTrue(summary["async_fragment_ack_timeout_after_drain_claim"])
+        self.assertTrue(summary["fragment_sender_completion_marker_claim"])
         self.assertFalse(summary["fleet_scale_selective_fragment_repair_claim"])
         self.assertEqual(
             classify_path(
@@ -81,6 +91,34 @@ class InitialFragmentRoundRobinProbeTests(unittest.TestCase):
         row["publisher"]["fleetqox_transport_metrics"][
             "fragment_initial_max_consecutive_same_frame_while_contended"
         ] = 2
+        failed = summarize_probe(
+            row,
+            samples=4,
+            payload_bytes=32768,
+            fragment_chunk_bytes=1024,
+            pacing_us=1600,
+        )
+        self.assertEqual(failed["status"], "failed")
+
+    def test_summary_accepts_retransmission_markers_but_requires_one_per_completion(
+        self,
+    ) -> None:
+        row = result()
+        metrics = row["publisher"]["fleetqox_transport_metrics"]
+        relay_metrics = row["relay"]["fleetqox_transport_metrics"]
+        metrics["fragment_async_send_completions"] = 9
+        metrics["fragment_completion_markers_sent"] = 9
+        relay_metrics["fragment_completion_markers_received"] = 9
+        summary = summarize_probe(
+            row,
+            samples=4,
+            payload_bytes=32768,
+            fragment_chunk_bytes=1024,
+            pacing_us=1600,
+        )
+        self.assertEqual(summary["status"], "ok")
+
+        metrics["fragment_completion_markers_sent"] = 8
         failed = summarize_probe(
             row,
             samples=4,

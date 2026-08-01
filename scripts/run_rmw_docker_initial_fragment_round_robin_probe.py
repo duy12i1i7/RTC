@@ -35,9 +35,14 @@ def summarize_probe(
     fallback_grace_ms: int = DEFAULT_FALLBACK_GRACE_MS,
 ) -> dict[str, Any]:
     publisher = result.get("publisher")
+    relay = result.get("relay")
     metrics = (
         publisher.get("fleetqox_transport_metrics")
         if isinstance(publisher, dict) else None
+    )
+    relay_metrics = (
+        relay.get("fleetqox_transport_metrics")
+        if isinstance(relay, dict) else None
     )
     expected_frames = samples * 2
     contract_ok = (
@@ -83,7 +88,7 @@ def summarize_probe(
         == 1
         and int(metrics.get("fragment_initial_max_active_frames", 0)) >= 2
         and int(metrics.get("fragment_async_send_completions", -1))
-        == expected_frames
+        >= expected_frames
         and int(
             metrics.get(
                 "fragment_initial_pending_timeout_suppressions", 0
@@ -96,6 +101,18 @@ def summarize_probe(
         and int(metrics.get("fragment_send_queue_high_water", 0)) > 0
         and int(metrics.get("fragment_send_queue_rejections", -1)) == 0
         and int(metrics.get("fragment_send_failures", -1)) == 0
+        and int(metrics.get("fragment_completion_markers_sent", -1))
+        >= expected_frames
+        and int(metrics.get("fragment_completion_markers_sent", -1))
+        >= int(metrics.get("fragment_async_send_completions", -1))
+        and int(metrics.get("fragment_completion_marker_failures", -1)) == 0
+        and isinstance(relay_metrics, dict)
+        and int(relay_metrics.get("fragment_completion_markers_received", -1))
+        >= expected_frames
+        and int(relay_metrics.get("fragment_completion_marker_orphans", -1))
+        == 0
+        and int(relay_metrics.get("fragment_completion_marker_failures", -1))
+        == 0
     )
     return {
         "schema_version": SCHEMA_VERSION,
@@ -109,6 +126,7 @@ def summarize_probe(
         "round_robin_initial_fragment_scheduling_claim": contract_ok,
         "correlated_whole_frame_loss_mitigation_claim": contract_ok,
         "async_fragment_ack_timeout_after_drain_claim": contract_ok,
+        "fragment_sender_completion_marker_claim": contract_ok,
         "fleet_scale_selective_fragment_repair_claim": False,
         "production_large_sample_reliability_claim": False,
         "result": result,

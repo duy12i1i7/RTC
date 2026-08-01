@@ -135,10 +135,21 @@ This repository starts with the part that should be proven first:
   `0/0/0`. Async fragment ACK timing is rebased when the final queued fragment
   is physically sent, and a configurable post-drain grace prevents premature
   whole-frame fallback; the deterministic eight-frame gate completes `8/8`
-  with one retry available but zero whole-frame retries. A four-robot
+  with one retry available but zero whole-frame retries. Every completed
+  initial fragment batch now emits an authenticated sender-completion marker;
+  receivers open trailing-index repair after that marker, the final fragment,
+  or a configurable idle guard measured from the latest fragment progress.
+  The same gate requires marker delivery, zero marker/send failure, complete
+  ACK, and clean `0/0/0` teardown. Under repair pressure the sender also lowers
+  the initial-fragment burst from `8` to `4`, `2`, or `1` and exports repair
+  queue high-water and promotion telemetry. A four-robot
   roaming-loss run additionally relays `40/40`; the current 16-robot frontier
-  remains negative (`154/160` best observed), so secure-fragment fleet-scale
-  evidence and production reliability remain open;
+  remains negative (`154/160` best observed). At equal delivery, marker plus
+  idle-guard handling reduces publisher repair from `13345` to `12800`,
+  publisher admission wait from `73.6` to `55.4` seconds, relay requested
+  indexes from `19295` to `17656`, and relay admission wait from `30.9` to
+  `21.6` seconds; five publisher topics are still unacknowledged. Therefore
+  secure-fragment fleet-scale evidence and production reliability remain open;
 - a QoS event ABI surface where publisher/subscription event init/fini,
   event callback setters, support checks, and offered/requested deadline missed
   event production pass in Docker; deadline misses are produced by a timer
