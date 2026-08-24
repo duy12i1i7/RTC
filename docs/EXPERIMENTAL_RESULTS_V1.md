@@ -220,6 +220,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker two-reader source-scoped fragment repair plus untargeted-source fail-closed control | `results_rmw_socket/docker_multireader_fragment_repair_probe_summary.json` |
 | Docker deterministic 8-frame contended initial-fragment round-robin scheduling | `results_rmw_socket/docker_initial_fragment_round_robin_probe_summary.json` |
 | Docker duplicate-fragment/no-progress tail-repair timing regression | `results_rmw_socket/docker_fragment_tail_progress_probe_summary.json` |
+| Docker deterministic bounded progressive multi-round fragment repair | `results_rmw_socket/docker_progressive_fragment_repair_probe_summary.json` |
 | Docker deterministic authenticated fragment completion-marker plus callback-quiescent teardown | `results_rmw_socket/docker_completion_marker_subscription_lifecycle_probe_summary.json` |
 | Docker deterministic MTU-aware 4096-byte requested to 1409-byte effective fragment budget | `results_rmw_socket/docker_mtu_aware_fragment_budget_probe_summary.json` |
 | Docker deterministic completion-marker selective repair with whole-sample retry disabled | `results_rmw_socket/docker_completion_marker_selective_repair_probe_summary.json` |
@@ -1797,6 +1798,25 @@ such duplicates at the relay and improves the prior exact MTU/pacing row from
 `152/160` to `155/160`, with clean stderr but four unacknowledged publisher
 topics. The result remains negative and points next to repair-queue admission
 and progress-aware multi-round scheduling rather than teardown or MTU sizing.
+
+The next scheduler revision separates initial quiescence from later repair
+rounds. The first missing-index NACK still waits for one quiet interval. After
+that, useful fragments do not restart an unbounded quiet-period wait: each
+round keeps its exponential backoff and may receive at most one additional
+base interval of progress grace. In the deterministic Docker gate the receiver
+first requests indexes `1-8`; while the injector sends six useful fragments at
+`75 ms` intervals, the second eight-index request arrives after only five have
+been sent. Receiver counters match exactly at two NACKs, 16 requested indexes,
+and one progressive NACK. Duplicate-tail, selective-repair, and 513-assembly
+fairness regressions remain green.
+
+This closes the deterministic multi-round starvation defect, not the fleet
+reliability boundary. On the exact 16-robot/32-KiB/seed-7 roaming row, the
+ungraced progressive variant delivers `151/160`; bounded grace delivers
+`152/160`, cuts publisher repair-queue deferrals from `1,809` to `698`, and
+cuts publisher admission wait from `49.5` to `27.4` seconds. It still does not
+beat the retained duplicate/no-progress frontier of `155/160`; repair-queue
+fairness/admission and multi-seed validation remain open.
 
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK

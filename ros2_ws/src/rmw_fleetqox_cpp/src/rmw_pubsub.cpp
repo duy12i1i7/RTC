@@ -2590,6 +2590,16 @@ public:
       std::memory_order_relaxed);
   }
 
+  std::uint64_t fragment_progressive_nacks_sent() const
+  {
+    return fragment_progressive_nacks_sent_.load(std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_progress_grace_deferrals() const
+  {
+    return fragment_progress_grace_deferrals_.load(std::memory_order_relaxed);
+  }
+
   std::uint64_t fragment_active_assemblies()
   {
     std::lock_guard<std::mutex> lock(fragment_mutex_);
@@ -5732,6 +5742,7 @@ private:
       std::string assembly_key;
       FragmentAssembly * assembly{nullptr};
       std::vector<size_t> missing;
+      bool progress_since_previous_nack{false};
     };
     const std::int64_t now_ns = monotonic_timestamp_ns();
     const std::int64_t interval_ns =
@@ -5747,13 +5758,30 @@ private:
         const size_t backoff_shift = std::min<size_t>(assembly.nack_count, 3);
         const std::int64_t retry_interval_ns =
           interval_ns * static_cast<std::int64_t>(1u << backoff_shift);
+        const bool progress_since_previous_nack =
+          assembly.nack_count > 0 &&
+          assembly.last_update_ns > assembly.last_nack_ns;
+        const bool initial_quiescence_pending =
+          assembly.nack_count == 0 &&
+          now_ns - assembly.last_update_ns < interval_ns;
+        const bool retry_backoff_pending =
+          assembly.last_nack_ns > 0 &&
+          now_ns - assembly.last_nack_ns < retry_interval_ns;
+        const bool bounded_progress_grace_pending =
+          progress_since_previous_nack &&
+          now_ns - assembly.last_update_ns < interval_ns &&
+          now_ns - assembly.last_nack_ns < retry_interval_ns + interval_ns;
         if (!assembly.repair_capable || !assembly.source_available ||
           assembly.received_count >= assembly.fragment_count ||
           assembly.nack_count >= static_cast<size_t>(fragment_nack_max_requests_) ||
-          now_ns - assembly.last_update_ns < interval_ns ||
-          (assembly.last_nack_ns > 0 &&
-          now_ns - assembly.last_nack_ns < retry_interval_ns))
+          initial_quiescence_pending ||
+          retry_backoff_pending)
         {
+          continue;
+        }
+        if (bounded_progress_grace_pending) {
+          fragment_progress_grace_deferrals_.fetch_add(
+            1, std::memory_order_relaxed);
           continue;
         }
         const std::int64_t tail_guard_ns = std::max<std::int64_t>(
@@ -5771,7 +5799,10 @@ private:
           static_cast<size_t>(fragment_nack_max_indexes_per_request_));
         if (!missing.empty()) {
           candidates.push_back(CandidateRequest{
-            item.first, &assembly, std::move(missing)});
+            item.first,
+            &assembly,
+            std::move(missing),
+            progress_since_previous_nack});
         }
       }
       if (candidates.empty()) {
@@ -5815,6 +5846,10 @@ private:
         remaining_index_budget -= candidate.missing.size();
         assembly.last_nack_ns = now_ns;
         ++assembly.nack_count;
+        if (candidate.progress_since_previous_nack) {
+          fragment_progressive_nacks_sent_.fetch_add(
+            1, std::memory_order_relaxed);
+        }
         pending.push_back(PendingRequest{
           assembly.fragment_id,
           assembly.fragment_count,
@@ -6426,6 +6461,8 @@ private:
   std::atomic<std::uint64_t> fragment_nack_index_budget_reductions_{0};
   std::atomic<size_t> fragment_nack_max_sweep_indexes_requested_{0};
   std::atomic<std::uint64_t> fragment_nack_sweep_budget_exhaustions_{0};
+  std::atomic<std::uint64_t> fragment_progressive_nacks_sent_{0};
+  std::atomic<std::uint64_t> fragment_progress_grace_deferrals_{0};
   std::atomic<std::uint64_t> fragment_assembly_evictions_{0};
   std::atomic<std::uint64_t> fragment_assembly_oversize_drops_{0};
   std::atomic<std::uint64_t> fragment_assembly_metadata_mismatch_drops_{0};
@@ -11763,6 +11800,16 @@ size_t rmw_fleetqox_cpp_socket_fragment_nack_max_sweep_indexes_requested()
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_nack_sweep_budget_exhaustions()
 {
   return socket_transport().fragment_nack_sweep_budget_exhaustions();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_progressive_nacks_sent()
+{
+  return socket_transport().fragment_progressive_nacks_sent();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_progress_grace_deferrals()
+{
+  return socket_transport().fragment_progress_grace_deferrals();
 }
 
 std::uint64_t rmw_fleetqox_cpp_socket_fragment_active_assemblies()

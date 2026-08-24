@@ -143,7 +143,13 @@ This repository starts with the part that should be proven first:
   raw-UDP Docker regression streams `20` duplicates for `1.53 s`; with a
   `400 ms` guard, the receiver emits the exact trailing `2-3` NACK at `436 ms`
   while duplicates are still arriving and exports an exact duplicate/no-progress
-  count of `20`. The round-robin gate requires marker delivery, zero marker/send failure, complete
+  count of `20`. Later repair rounds no longer restart the full quiescence wait
+  after every useful fragment. They retain exponential backoff and a bounded
+  one-interval progress grace, so progress can delay but cannot starve the next
+  request. A deterministic Docker gate requests `1-8`, injects six useful
+  fragments at `75 ms` intervals, and observes the second eight-index request
+  while only five have been injected; exact receiver telemetry records two
+  NACKs and one progressive NACK. The round-robin gate requires marker delivery, zero marker/send failure, complete
   ACK, and clean `0/0/0` teardown. Under repair pressure the sender also lowers
   the initial-fragment burst from `8` to `4`, `2`, or `1` and exports repair
   queue high-water and promotion telemetry. A four-robot
@@ -151,7 +157,11 @@ This repository starts with the part that should be proven first:
   remains negative. The duplicate/no-progress fix raises the MTU-budgeted,
   `2.5 ms` pacing row from `152/160` to `155/160`, and relay telemetry records
   `1,471` duplicates that no longer postpone repair; four publisher topics
-  remain unacknowledged. The prior `1024`-byte row reached `154/160`. At equal
+  remain unacknowledged. The bounded-progress follow-up reaches `152/160` on
+  the same seed: it cuts repair-queue deferrals from `1,809` to `698` and
+  publisher admission wait from `49.5` to `27.4` seconds relative to the
+  ungraced progressive variant, but does not improve the retained `155/160`
+  frontier. The prior `1024`-byte row reached `154/160`. At equal
   delivery, marker plus
   idle-guard handling reduces publisher repair from `13345` to `12800`,
   publisher admission wait from `73.6` to `55.4` seconds, relay requested

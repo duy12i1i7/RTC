@@ -395,6 +395,10 @@ int main(int argc, char ** argv)
     "rmw_fleetqox_cpp_socket_fragment_nack_max_sweep_indexes_requested", nullptr) << ",";
   std::cout << "\"fragment_nack_sweep_budget_exhaustions\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_nack_sweep_budget_exhaustions", nullptr) << ",";
+  std::cout << "\"fragment_progressive_nacks_sent\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_progressive_nacks_sent", nullptr) << ",";
+  std::cout << "\"fragment_progress_grace_deferrals\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_progress_grace_deferrals", nullptr) << ",";
   std::cout << "\"fragment_active_assemblies\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_active_assemblies", nullptr) << ",";
   std::cout << "\"fragment_active_missing_indexes\":" << fleetqox_metric(

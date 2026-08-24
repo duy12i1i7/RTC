@@ -151,6 +151,14 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
             source,
         )
         self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_progressive_nacks_sent",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_progress_grace_deferrals",
+            source,
+        )
+        self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_repair_queue_deferrals",
             source,
         )

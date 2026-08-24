@@ -71,6 +71,12 @@ surfaces; prose and benchmark claims must not exceed that manifest.
   Docker raw-UDP regression streams 20 duplicates beyond a 400-ms idle guard,
   observes the exact `2-3` NACK at 436 ms during that stream, and matches all
   receiver counters exactly;
+- keep later fragment-repair rounds live during useful progress without
+  creating an immediate repair storm. The first NACK still waits for assembly
+  quiescence; later rounds use exponential backoff plus a bounded one-interval
+  progress grace. A deterministic Docker gate observes the second request
+  before a six-fragment progress stream ends and exports progressive-NACK and
+  progress-grace telemetry;
 - produce publication/subscription matched,
   reliability/durability/deadline-incompatible QoS, exact type-incompatible,
   and finite-liveliness changed events from both local

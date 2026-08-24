@@ -1159,6 +1159,16 @@ int main()
             source,
         )
         self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_progressive_nacks_sent",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_progress_grace_deferrals",
+            source,
+        )
+        self.assertIn("initial_quiescence_pending", source)
+        self.assertIn("bounded_progress_grace_pending", source)
+        self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_repair_source_denials",
             source,
         )
