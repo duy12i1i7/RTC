@@ -336,6 +336,16 @@ int main(int argc, char ** argv)
     "rmw_fleetqox_cpp_socket_fragment_send_queue_high_water", nullptr) << ",";
   std::cout << "\"fragment_repair_queue_high_water\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_repair_queue_high_water", nullptr) << ",";
+  std::cout << "\"fragment_repair_round_robin_rotations\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_repair_round_robin_rotations", nullptr) << ",";
+  std::cout << "\"fragment_repair_frame_switches\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_repair_frame_switches", nullptr) << ",";
+  std::cout << "\"fragment_repair_max_active_frames\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_repair_max_active_frames", nullptr) << ",";
+  std::cout << "\"fragment_repair_max_consecutive_same_frame_while_contended\":" <<
+    fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_repair_max_consecutive_same_frame_while_contended",
+    nullptr) << ",";
   std::cout << "\"udp_datagram_size_high_water\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_udp_datagram_size_high_water", nullptr) << ",";
   std::cout << "\"fragment_effective_chunk_bytes_min\":" << fleetqox_metric(

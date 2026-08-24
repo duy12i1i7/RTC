@@ -221,6 +221,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker deterministic 8-frame contended initial-fragment round-robin scheduling | `results_rmw_socket/docker_initial_fragment_round_robin_probe_summary.json` |
 | Docker duplicate-fragment/no-progress tail-repair timing regression | `results_rmw_socket/docker_fragment_tail_progress_probe_summary.json` |
 | Docker deterministic bounded progressive multi-round fragment repair | `results_rmw_socket/docker_progressive_fragment_repair_probe_summary.json` |
+| Docker deterministic per-frame/reader fragment-repair round-robin contention | `results_rmw_socket/docker_fragment_repair_round_robin_probe_summary.json` |
 | Docker deterministic authenticated fragment completion-marker plus callback-quiescent teardown | `results_rmw_socket/docker_completion_marker_subscription_lifecycle_probe_summary.json` |
 | Docker deterministic MTU-aware 4096-byte requested to 1409-byte effective fragment budget | `results_rmw_socket/docker_mtu_aware_fragment_budget_probe_summary.json` |
 | Docker deterministic completion-marker selective repair with whole-sample retry disabled | `results_rmw_socket/docker_completion_marker_selective_repair_probe_summary.json` |
@@ -1817,6 +1818,26 @@ ungraced progressive variant delivers `151/160`; bounded grace delivers
 cuts publisher admission wait from `49.5` to `27.4` seconds. It still does not
 beat the retained duplicate/no-progress frontier of `155/160`; repair-queue
 fairness/admission and multi-seed validation remain open.
+
+The sender repair queue is now partitioned by `(fragment_id, reader target)`
+and drained one fragment per active scope in round-robin order. The dedicated
+Docker gate publishes eight exact 32768-byte frames, deliberately drops eight
+indexes from every frame, and disables whole-sample retry. It reaches eight
+active repair scopes, records 114 rotations and 127 scope switches, and keeps
+the maximum consecutive service for one scope at exactly one while contended.
+All `8/8` frames are delivered and acknowledged with repair HWM `40/256` and
+zero queue deferral, rejection, or send failure. Initial-fragment scheduling,
+two-reader source isolation, and progressive-NACK regressions remain green.
+
+The exact 16-robot/32-KiB/seed-7 rerun still delivers only `152/160`, so this
+does not close the fleet boundary. It does isolate the next bottleneck: compared
+with the bounded-progress FIFO row, publisher selective sends fall from
+`10499` to `6932`, repair deferrals from `698` to `29`, and received NACKs from
+`1973` to `1528`; the fair queue serves 59 active scopes over 5736 rotations
+with maximum contended consecutive service of one. Delivery remaining flat
+despite that pressure reduction points to whole-frame/late-burst observation,
+operating-point timing, and horizon convergence rather than repair FIFO
+starvation alone.
 
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK

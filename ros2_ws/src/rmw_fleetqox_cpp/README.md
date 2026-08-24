@@ -77,6 +77,11 @@ surfaces; prose and benchmark claims must not exceed that manifest.
   progress grace. A deterministic Docker gate observes the second request
   before a six-fragment progress stream ends and exports progressive-NACK and
   progress-grace telemetry;
+- round-robin queued selective fragments by frame and reader target. A
+  deterministic eight-frame contention gate reaches eight active repair
+  scopes, rotates after each fragment while contended, delivers and
+  acknowledges every frame, and exports active-scope, rotation, switch, and
+  maximum-consecutive telemetry;
 - produce publication/subscription matched,
   reliability/durability/deadline-incompatible QoS, exact type-incompatible,
   and finite-liveliness changed events from both local

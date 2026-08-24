@@ -2451,6 +2451,28 @@ public:
     return fragment_repair_queue_high_water_.load(std::memory_order_relaxed);
   }
 
+  std::uint64_t fragment_repair_round_robin_rotations() const
+  {
+    return fragment_repair_round_robin_rotations_.load(
+      std::memory_order_relaxed);
+  }
+
+  std::uint64_t fragment_repair_frame_switches() const
+  {
+    return fragment_repair_frame_switches_.load(std::memory_order_relaxed);
+  }
+
+  size_t fragment_repair_max_active_frames() const
+  {
+    return fragment_repair_max_active_frames_.load(std::memory_order_relaxed);
+  }
+
+  size_t fragment_repair_max_consecutive_same_frame_while_contended() const
+  {
+    return fragment_repair_max_consecutive_same_frame_while_contended_.load(
+      std::memory_order_relaxed);
+  }
+
   size_t udp_datagram_size_high_water() const
   {
     return udp_datagram_size_high_water_.load(std::memory_order_relaxed);
@@ -4533,7 +4555,7 @@ private:
           static_cast<size_t>(fragment_repair_queue_limit_);
         const size_t available =
           repair_capacity - std::min(
-          fragment_repair_send_queue_.size(), repair_capacity);
+          fragment_repair_send_queue_size_, repair_capacity);
         if (accepted_indexes.size() > available) {
           fragment_repair_queue_deferrals_.fetch_add(
             static_cast<std::uint64_t>(accepted_indexes.size() - available),
@@ -4553,7 +4575,7 @@ private:
         const auto admission_ready = [this, admission_capacity, &accepted_indexes]() {
             const size_t pending =
               fragment_initial_send_queue_size_ +
-              fragment_repair_send_queue_.size();
+              fragment_repair_send_queue_size_;
             return !fragment_sender_running_.load(std::memory_order_acquire) ||
                    accepted_indexes.size() <=
                    admission_capacity - std::min(pending, admission_capacity);
@@ -4588,7 +4610,7 @@ private:
         }
       }
       const size_t pending_count =
-        fragment_initial_send_queue_size_ + fragment_repair_send_queue_.size();
+        fragment_initial_send_queue_size_ + fragment_repair_send_queue_size_;
       if (fragment_send_queue_limit_ <= 0 ||
         accepted_indexes.size() >
         static_cast<size_t>(fragment_send_queue_limit_) - std::min(
@@ -4600,11 +4622,30 @@ private:
         return RMW_RET_ERROR;
       }
       if (selective_retransmission) {
+        const std::string repair_frame_scope =
+          fragment_repair_frame_queue_key(fragment_id, repair_target_scope);
+        auto found = fragment_repair_send_queues_.find(repair_frame_scope);
+        if (found == fragment_repair_send_queues_.end()) {
+          found = fragment_repair_send_queues_.emplace(
+            repair_frame_scope, std::deque<PendingFragmentSend>{}).first;
+          fragment_repair_send_order_.push_back(repair_frame_scope);
+          const size_t active_frames = fragment_repair_send_queues_.size();
+          size_t previous_active_max =
+            fragment_repair_max_active_frames_.load(
+            std::memory_order_relaxed);
+          while (previous_active_max < active_frames &&
+            !fragment_repair_max_active_frames_.compare_exchange_weak(
+              previous_active_max,
+              active_frames,
+              std::memory_order_relaxed))
+          {
+          }
+        }
         for (const size_t index : accepted_indexes) {
           fragment_repair_pending_keys_.insert(
             fragment_repair_queue_key(
               fragment_id, index, repair_target_scope));
-          fragment_repair_send_queue_.push_back(PendingFragmentSend{
+          found->second.push_back(PendingFragmentSend{
             payload,
             targets,
             fragment_id,
@@ -4615,8 +4656,9 @@ private:
             true,
             fragment_repair_queue_key(
               fragment_id, index, repair_target_scope)});
+          ++fragment_repair_send_queue_size_;
         }
-        const size_t repair_queue_size = fragment_repair_send_queue_.size();
+        const size_t repair_queue_size = fragment_repair_send_queue_size_;
         size_t observed_repair_high_water =
           fragment_repair_queue_high_water_.load(std::memory_order_relaxed);
         while (repair_queue_size > observed_repair_high_water &&
@@ -4660,7 +4702,7 @@ private:
         found->second.back().initial_send_completion = true;
       }
       const size_t updated_count =
-        fragment_initial_send_queue_size_ + fragment_repair_send_queue_.size();
+        fragment_initial_send_queue_size_ + fragment_repair_send_queue_size_;
       size_t observed_high_water =
         fragment_send_queue_high_water_.load(std::memory_order_relaxed);
       while (updated_count > observed_high_water &&
@@ -4680,8 +4722,11 @@ private:
     size_t consecutive_initial_fragments = 0;
     size_t consecutive_same_initial_frame = 0;
     size_t consecutive_same_contended_initial_frame = 0;
+    size_t consecutive_same_contended_repair_frame = 0;
     std::string last_initial_fragment_id;
     std::string last_contended_initial_fragment_id;
+    std::string last_repair_frame_scope;
+    std::string last_contended_repair_frame_scope;
     while (true) {
       PendingFragmentSend task;
       {
@@ -4689,16 +4734,16 @@ private:
         fragment_send_queue_cv_.wait(lock, [this]() {
           return !fragment_sender_running_.load(std::memory_order_acquire) ||
                  fragment_initial_send_queue_size_ > 0 ||
-                 !fragment_repair_send_queue_.empty();
+                 fragment_repair_send_queue_size_ > 0;
         });
         if (!fragment_sender_running_.load(std::memory_order_acquire)) {
           break;
         }
         size_t effective_initial_burst = 8;
-        if (!fragment_repair_send_queue_.empty() &&
+        if (fragment_repair_send_queue_size_ > 0 &&
           fragment_repair_queue_limit_ > 0)
         {
-          const size_t repair_queue_size = fragment_repair_send_queue_.size();
+          const size_t repair_queue_size = fragment_repair_send_queue_size_;
           const size_t repair_capacity =
             static_cast<size_t>(fragment_repair_queue_limit_);
           if (repair_queue_size * 4 >= repair_capacity * 3) {
@@ -4710,7 +4755,7 @@ private:
           }
         }
         const bool choose_repair =
-          !fragment_repair_send_queue_.empty() &&
+          fragment_repair_send_queue_size_ > 0 &&
           (fragment_initial_send_queue_size_ == 0 ||
           consecutive_initial_fragments >= effective_initial_burst);
         if (choose_repair) {
@@ -4720,8 +4765,57 @@ private:
             fragment_repair_pressure_priority_promotions_.fetch_add(
               1, std::memory_order_relaxed);
           }
-          task = std::move(fragment_repair_send_queue_.front());
-          fragment_repair_send_queue_.pop_front();
+          const bool repair_frame_contention =
+            fragment_repair_send_order_.size() > 1;
+          const std::string repair_frame_scope =
+            std::move(fragment_repair_send_order_.front());
+          fragment_repair_send_order_.pop_front();
+          auto found = fragment_repair_send_queues_.find(repair_frame_scope);
+          if (found == fragment_repair_send_queues_.end() ||
+            found->second.empty())
+          {
+            continue;
+          }
+          task = std::move(found->second.front());
+          found->second.pop_front();
+          --fragment_repair_send_queue_size_;
+          if (found->second.empty()) {
+            fragment_repair_send_queues_.erase(found);
+          } else {
+            fragment_repair_send_order_.push_back(repair_frame_scope);
+            fragment_repair_round_robin_rotations_.fetch_add(
+              1, std::memory_order_relaxed);
+          }
+          if (last_repair_frame_scope != repair_frame_scope) {
+            if (!last_repair_frame_scope.empty()) {
+              fragment_repair_frame_switches_.fetch_add(
+                1, std::memory_order_relaxed);
+            }
+            last_repair_frame_scope = repair_frame_scope;
+          }
+          if (repair_frame_contention) {
+            if (last_contended_repair_frame_scope == repair_frame_scope) {
+              ++consecutive_same_contended_repair_frame;
+            } else {
+              last_contended_repair_frame_scope = repair_frame_scope;
+              consecutive_same_contended_repair_frame = 1;
+            }
+            size_t previous_contended_max =
+              fragment_repair_max_consecutive_same_frame_while_contended_.load(
+              std::memory_order_relaxed);
+            while (previous_contended_max <
+              consecutive_same_contended_repair_frame &&
+              !fragment_repair_max_consecutive_same_frame_while_contended_
+              .compare_exchange_weak(
+                previous_contended_max,
+                consecutive_same_contended_repair_frame,
+                std::memory_order_relaxed))
+            {
+            }
+          } else {
+            last_contended_repair_frame_scope.clear();
+            consecutive_same_contended_repair_frame = 0;
+          }
         } else {
           const bool initial_frame_contention =
             fragment_initial_send_order_.size() > 1;
@@ -4865,6 +4959,13 @@ private:
   {
     return fragment_id + "|" + std::to_string(fragment_index) + "|" +
            target_scope;
+  }
+
+  static std::string fragment_repair_frame_queue_key(
+    const std::string & fragment_id,
+    const std::string & target_scope)
+  {
+    return fragment_id + "|" + target_scope;
   }
 
   void cleanup_recent_fragment_repairs_locked(std::int64_t now_ns)
@@ -5471,7 +5572,9 @@ private:
       fragment_initial_send_queues_.clear();
       fragment_initial_send_order_.clear();
       fragment_initial_send_queue_size_ = 0;
-      fragment_repair_send_queue_.clear();
+      fragment_repair_send_queues_.clear();
+      fragment_repair_send_order_.clear();
+      fragment_repair_send_queue_size_ = 0;
       fragment_repair_pending_keys_.clear();
       fragment_repair_recent_send_ns_.clear();
     }
@@ -6435,6 +6538,11 @@ private:
   std::atomic<std::uint64_t> fragment_send_failures_{0};
   std::atomic<size_t> fragment_send_queue_high_water_{0};
   std::atomic<size_t> fragment_repair_queue_high_water_{0};
+  std::atomic<std::uint64_t> fragment_repair_round_robin_rotations_{0};
+  std::atomic<std::uint64_t> fragment_repair_frame_switches_{0};
+  std::atomic<size_t> fragment_repair_max_active_frames_{0};
+  std::atomic<size_t>
+    fragment_repair_max_consecutive_same_frame_while_contended_{0};
   std::atomic<size_t> udp_datagram_size_high_water_{0};
   std::atomic<size_t> fragment_effective_chunk_bytes_min_{0};
   std::atomic<size_t> fragment_effective_chunk_bytes_max_{0};
@@ -6502,7 +6610,10 @@ private:
     fragment_initial_send_queues_;
   std::deque<std::string> fragment_initial_send_order_;
   size_t fragment_initial_send_queue_size_{0};
-  std::deque<PendingFragmentSend> fragment_repair_send_queue_;
+  std::unordered_map<std::string, std::deque<PendingFragmentSend>>
+    fragment_repair_send_queues_;
+  std::deque<std::string> fragment_repair_send_order_;
+  size_t fragment_repair_send_queue_size_{0};
   std::unordered_set<std::string> fragment_repair_pending_keys_;
   std::unordered_map<std::string, std::int64_t>
     fragment_repair_recent_send_ns_;
@@ -11672,6 +11783,28 @@ size_t rmw_fleetqox_cpp_socket_fragment_send_queue_high_water()
 size_t rmw_fleetqox_cpp_socket_fragment_repair_queue_high_water()
 {
   return socket_transport().fragment_repair_queue_high_water();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_repair_round_robin_rotations()
+{
+  return socket_transport().fragment_repair_round_robin_rotations();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_repair_frame_switches()
+{
+  return socket_transport().fragment_repair_frame_switches();
+}
+
+size_t rmw_fleetqox_cpp_socket_fragment_repair_max_active_frames()
+{
+  return socket_transport().fragment_repair_max_active_frames();
+}
+
+size_t
+rmw_fleetqox_cpp_socket_fragment_repair_max_consecutive_same_frame_while_contended()
+{
+  return socket_transport().
+         fragment_repair_max_consecutive_same_frame_while_contended();
 }
 
 size_t rmw_fleetqox_cpp_socket_udp_datagram_size_high_water()

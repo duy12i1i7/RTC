@@ -163,6 +163,14 @@ class Ros2RelayRmwRunnerTest(unittest.TestCase):
             source,
         )
         self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_round_robin_rotations",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_max_consecutive_same_frame_while_contended",
+            source,
+        )
+        self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_active_missing_indexes",
             source,
         )

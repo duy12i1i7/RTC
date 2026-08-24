@@ -1134,6 +1134,16 @@ int main()
             source,
         )
         self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_round_robin_rotations",
+            source,
+        )
+        self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_repair_max_active_frames",
+            source,
+        )
+        self.assertIn("fragment_repair_send_queues_", source)
+        self.assertIn("fragment_repair_send_order_", source)
+        self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_repair_pressure_priority_promotions",
             source,
         )

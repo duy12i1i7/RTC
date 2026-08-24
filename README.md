@@ -168,6 +168,15 @@ This repository starts with the part that should be proven first:
   indexes from `19295` to `17656`, and relay admission wait from `30.9` to
   `21.6` seconds in that historical row. Therefore
   secure-fragment fleet-scale evidence and production reliability remain open;
+- selective-repair sends are round-robined by `(fragment, reader target)`
+  rather than drained from one global FIFO. A deterministic eight-frame Docker
+  gate drops eight indexes from every exact 32768-byte frame, reaches eight
+  simultaneously active repair scopes, records 114 rotations and 127 scope
+  switches, and limits consecutive service to one fragment while contended.
+  It delivers and acknowledges `8/8` with zero deferral, rejection, or send
+  failure. On the 16-robot/32-KiB/seed-7 frontier this reduces selective sends
+  from `10499` to `6932` and repair deferrals from `698` to `29`, but delivery
+  remains `152/160`; the fleet-scale claim therefore remains false;
 - opt-in MTU-aware UDP wire budgeting. The runtime derives an effective chunk
   from fragment metadata plus AEAD and X.509/signature overhead, routes an
   oversized wire payload through repair-capable fragmentation before applying
