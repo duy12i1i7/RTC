@@ -18,6 +18,7 @@ ARTIFACT = (
 
 
 class QuicApplicationOutcomeTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_authenticated_outcome_passes_five_runs(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         self.assertEqual(summary["status"], "ok")
@@ -53,6 +54,7 @@ class QuicApplicationOutcomeTest(unittest.TestCase):
             self.assertTrue(probe_ok(run["probe"]))
             self.assertTrue(service_ok(run["service"]))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_unproven_identity_state_and_provenance(self) -> None:
         run = json.loads(ARTIFACT.read_text(encoding="utf-8"))["runs"][0]
         mutated = copy.deepcopy(run["probe"])

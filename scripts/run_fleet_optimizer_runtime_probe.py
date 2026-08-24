@@ -39,7 +39,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--robots", type=int, default=6)
     parser.add_argument("--summary-json", default="results_fleet_optimizer/fleet_optimizer_runtime_probe_summary.json")
-    parser.add_argument("--markdown", default="docs/FLEET_OPTIMIZER_RUNTIME_ACTUATION_V1.md")
+    parser.add_argument(
+        "--markdown",
+        default="results_fleet_optimizer/fleet_optimizer_runtime_probe_report.md",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 

@@ -18,6 +18,7 @@ ARTIFACT = (
 
 
 class QuicPostgresApplicationOutcomeFailoverTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_postgresql_outcome_failover_passes_five_runs(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         self.assertEqual(summary["status"], "ok")
@@ -45,6 +46,7 @@ class QuicPostgresApplicationOutcomeFailoverTest(unittest.TestCase):
             self.assertTrue(case_ok(run))
             self.assertTrue(run["database"]["server_version"].startswith("16."))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validator_rejects_lost_outcome_and_fence_regression(self) -> None:
         run = json.loads(ARTIFACT.read_text(encoding="utf-8"))["runs"][0]
         replacement = run["replacement"]

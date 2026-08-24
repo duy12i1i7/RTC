@@ -19,6 +19,7 @@ ARTIFACT = (
 
 
 class QuicPostgresQuorumFailoverTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_quorum_single_winner_or_recovery_regressions(
         self,
     ) -> None:
@@ -144,6 +145,7 @@ class QuicPostgresQuorumFailoverTest(unittest.TestCase):
             with self.subTest(mutation=index):
                 self.assertFalse(case_ok(mutation))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_quorum_gated_automatic_failover_passes_five_runs(
         self,
     ) -> None:

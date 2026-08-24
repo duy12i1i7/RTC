@@ -18,6 +18,7 @@ ARTIFACT = (
 
 
 class Nav2RmfTaskOutcomeGatewayTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_chained_real_workload_outcomes_pass_gateway_five_times(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         self.assertEqual(summary["status"], "ok")
@@ -38,6 +39,7 @@ class Nav2RmfTaskOutcomeGatewayTest(unittest.TestCase):
             self.assertTrue(probe_ok(run["probe"]))
             self.assertTrue(service_ok(run["service"]))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_missing_failure_or_session_reuse(self) -> None:
         run = json.loads(ARTIFACT.read_text(encoding="utf-8"))["runs"][0]
         mutated = copy.deepcopy(run["probe"])

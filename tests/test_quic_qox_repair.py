@@ -11,6 +11,7 @@ ARTIFACT = ROOT / "results_rmw_socket" / "docker_quic_qox_repair_probe_summary.j
 
 
 class QuicQoxRepairTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_unaccounted_repair_capacity(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         run = summary["runs"][0]
@@ -20,6 +21,7 @@ class QuicQoxRepairTest(unittest.TestCase):
         mutated["metrics"]["admission"]["repair_allocated_bytes"] = 0
         self.assertFalse(service_ok(mutated))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_docker_netem_artifact_passes_five_runs(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         self.assertEqual(summary["status"], "ok")

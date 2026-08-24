@@ -35,7 +35,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--markdown",
-        default="docs/ONLINE_FLEET_PATH_PLAN_CONTROLLER_V1.md",
+        default="results_fleet_optimizer/online_fleet_path_plan_probe_report.md",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()

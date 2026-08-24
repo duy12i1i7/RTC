@@ -6,9 +6,15 @@ __pycache__/
 build/
 install/
 log/
-.tmp_fleetrmw_matched_*/
+.tmp_*/
 results/
 results_*/
 traces/
 traces_*/
+.coverage
+coverage/
+*.profraw
+*.profdata
+asan*.log
+ubsan*.log
 .venv/

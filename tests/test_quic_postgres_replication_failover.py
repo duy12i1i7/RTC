@@ -21,6 +21,7 @@ ARTIFACT = (
 
 
 class QuicPostgresReplicationFailoverTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_replication_promotion_or_recovery_regressions(
         self,
     ) -> None:
@@ -62,6 +63,7 @@ class QuicPostgresReplicationFailoverTest(unittest.TestCase):
             with self.subTest(mutation=index):
                 self.assertFalse(case_ok(mutation))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_synchronous_replication_failover_passes_five_runs(
         self,
     ) -> None:

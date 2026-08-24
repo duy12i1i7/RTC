@@ -34,7 +34,10 @@ def main() -> int:
     parser.add_argument("--robots", type=int, default=16)
     parser.add_argument("--capacity-bytes", type=int, default=58_000)
     parser.add_argument("--summary-json", default="results_fleet_optimizer/fleet_optimizer_probe_summary.json")
-    parser.add_argument("--markdown", default="docs/FLEET_LEVEL_QOS_QOE_OPTIMIZER_V1.md")
+    parser.add_argument(
+        "--markdown",
+        default="results_fleet_optimizer/fleet_optimizer_probe_report.md",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 

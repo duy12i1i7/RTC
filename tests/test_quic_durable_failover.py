@@ -15,6 +15,7 @@ ARTIFACT = (
 
 
 class QuicDurableFailoverTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_missing_cursor_or_dedup_recovery(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         phases = summary["runs"][0]["phases"]
@@ -28,6 +29,7 @@ class QuicDurableFailoverTest(unittest.TestCase):
         tail["metrics"]["recovered_consumers"] = 0
         self.assertFalse(service_ok(tail, "resume-tail"))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_docker_netem_artifact_passes_five_runs(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         self.assertEqual(summary["status"], "ok")

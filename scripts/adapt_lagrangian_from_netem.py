@@ -33,7 +33,9 @@ def main() -> None:
     parser.add_argument(
         "--markdown",
         type=Path,
-        default=Path("docs/LAGRANGIAN_OUTCOME_ADAPTATION_V1.md"),
+        default=Path(
+            "results_lagrangian_sweep/lagrangian_outcome_adaptation_report.md"
+        ),
     )
     parser.add_argument("--title", default="Lagrangian Outcome Adaptation V1")
     parser.add_argument("--json", action="store_true")

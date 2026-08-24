@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <iostream>
 #include <sstream>
@@ -69,6 +70,20 @@ bool init_context(
   return true;
 }
 
+size_t positive_size_env(const char * name, size_t default_value, size_t maximum)
+{
+  const char * value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return default_value;
+  }
+  char * end = nullptr;
+  const unsigned long long parsed = std::strtoull(value, &end, 10);
+  if (end == value || *end != '\0' || parsed == 0 || parsed > maximum) {
+    return default_value;
+  }
+  return static_cast<size_t>(parsed);
+}
+
 }  // namespace
 
 int main()
@@ -126,7 +141,14 @@ int main()
     std::cout << "{\"status\":\"message_init_failed\"}" << std::endl;
     return 1;
   }
-  const std::string payload = "fleetqox std_msgs/String over introspection C";
+  const std::string default_payload =
+    "fleetqox std_msgs/String over introspection C";
+  const size_t configured_payload_bytes = positive_size_env(
+    "FLEETQOX_PROBE_PAYLOAD_BYTES", default_payload.size(), 4 * 1024 * 1024);
+  const size_t iterations = positive_size_env(
+    "FLEETQOX_PROBE_ITERATIONS", 1, 100000);
+  const std::string payload = configured_payload_bytes == default_payload.size() ?
+    default_payload : std::string(configured_payload_bytes, 'x');
   if (!rosidl_runtime_c__String__assignn(&outgoing.data, payload.data(), payload.size())) {
     std::cout << "{\"status\":\"string_assign_failed\"}" << std::endl;
     return 1;
@@ -146,15 +168,27 @@ int main()
 
   const std::uint64_t socket_sent_before = rmw_fleetqox_cpp_socket_frames_sent();
   const std::uint64_t socket_received_before = rmw_fleetqox_cpp_socket_frames_received();
-  rmw_ret_t ret = rmw_publish(publisher, &outgoing, nullptr);
-  bool taken = false;
-  if (ret == RMW_RET_OK) {
-    for (int attempt = 0; attempt < 100 && !taken; ++attempt) {
-      ret = rmw_take(subscription, &incoming, &taken, nullptr);
-      if (ret != RMW_RET_OK || taken) {
-        break;
+  rmw_ret_t ret = RMW_RET_OK;
+  size_t messages_taken = 0;
+  bool roundtrips_ok = true;
+  for (size_t iteration = 0; iteration < iterations && roundtrips_ok; ++iteration) {
+    ret = rmw_publish(publisher, &outgoing, nullptr);
+    bool iteration_taken = false;
+    if (ret == RMW_RET_OK) {
+      for (int attempt = 0; attempt < 1000 && !iteration_taken; ++attempt) {
+        ret = rmw_take(subscription, &incoming, &iteration_taken, nullptr);
+        if (ret != RMW_RET_OK || iteration_taken) {
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const std::string iteration_received =
+      incoming.data.data == nullptr ? "" : incoming.data.data;
+    roundtrips_ok =
+      ret == RMW_RET_OK && iteration_taken && iteration_received == payload;
+    if (roundtrips_ok) {
+      ++messages_taken;
     }
   }
   const std::uint64_t socket_frames_sent =
@@ -163,11 +197,12 @@ int main()
     rmw_fleetqox_cpp_socket_frames_received() - socket_received_before;
   const std::string received = incoming.data.data == nullptr ? "" : incoming.data.data;
   const bool ok = ret == RMW_RET_OK &&
-                  taken &&
+                  roundtrips_ok &&
+                  messages_taken == iterations &&
                   received == payload &&
                   standalone_ok &&
-                  socket_frames_sent >= 1 &&
-                  socket_frames_received >= 1;
+                  socket_frames_sent >= iterations &&
+                  socket_frames_received >= iterations;
 
   std::cout << "{\"schema_version\":\"fleetrmw.rmw_std_msgs_string_probe.v1\",";
   std::cout << "\"status\":\"" << (ok ? "ok" : "failed") << "\",";
@@ -176,10 +211,16 @@ int main()
   std::cout << "\"socket_backed\":true,";
   std::cout << "\"standalone_serialization\":" << (standalone_ok ? "true" : "false") << ",";
   std::cout << "\"standalone_serialized_size\":" << standalone.buffer_length << ",";
+  std::cout << "\"payload_bytes\":" << payload.size() << ",";
+  std::cout << "\"iterations\":" << iterations << ",";
+  std::cout << "\"messages_taken\":" << messages_taken << ",";
   std::cout << "\"socket_frames_sent\":" << socket_frames_sent << ",";
   std::cout << "\"socket_frames_received\":" << socket_frames_received << ",";
-  std::cout << "\"taken\":" << (taken ? "true" : "false") << ",";
-  std::cout << "\"payload\":\"" << json_escape(received) << "\"}" << std::endl;
+  std::cout << "\"taken\":" << (messages_taken == iterations ? "true" : "false") << ",";
+  std::cout << "\"payload\":\"" <<
+    json_escape(received.size() <= 256 ? received : received.substr(0, 32)) << "\",";
+  std::cout << "\"payload_truncated\":" <<
+    (received.size() > 256 ? "true" : "false") << "}" << std::endl;
 
   std_msgs__msg__String__fini(&outgoing);
   std_msgs__msg__String__fini(&incoming);

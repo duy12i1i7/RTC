@@ -18,6 +18,7 @@ ARTIFACT = (
 
 
 class QuicAutomaticStandbyTakeoverTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_sequential_start_or_unrecovered_state(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         run = summary["runs"][0]
@@ -39,6 +40,7 @@ class QuicAutomaticStandbyTakeoverTest(unittest.TestCase):
         ]["fence_token"] = 1
         self.assertFalse(case_ok(mutated))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_docker_netem_automatic_takeover_passes_five_runs(
         self,
     ) -> None:

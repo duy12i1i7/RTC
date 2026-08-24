@@ -11,6 +11,7 @@ ARTIFACT = ROOT / "results_rmw_socket" / "docker_quic_admission_probe_summary.js
 
 
 class QuicGatewayAdmissionTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_unaccounted_admission(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         run = summary["runs"][0]
@@ -20,6 +21,7 @@ class QuicGatewayAdmissionTest(unittest.TestCase):
         mutated["metrics"]["admission"]["accepted_total"] = 4
         self.assertFalse(service_ok(mutated))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_docker_netem_artifact_passes_five_runs(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         self.assertEqual(summary["status"], "ok")

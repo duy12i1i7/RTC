@@ -18,6 +18,7 @@ ARTIFACT = (
 
 
 class QuicDurableApplicationOutcomeFailoverTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_docker_netem_failover_passes_five_runs(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         self.assertEqual(summary["status"], "ok")
@@ -50,6 +51,7 @@ class QuicDurableApplicationOutcomeFailoverTest(unittest.TestCase):
                 self.assertTrue(probe_ok(phase["probe"], mode))
                 self.assertTrue(service_ok(phase["service"], mode))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_lost_outcome_or_double_debt(self) -> None:
         run = json.loads(ARTIFACT.read_text(encoding="utf-8"))["runs"][0]
         resume = run["resume"]

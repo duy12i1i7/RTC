@@ -133,8 +133,9 @@ Remote `udy` result:
 
 This closes stale request/response delivery for the current SetBool service
 path. C-level no-response and malformed-response handling is covered in
-`docs/RMW_SERVICE_ERROR_V1.md`, and the first ROS CLI timeout smoke is covered in
-`docs/RMW_SERVICE_TIMEOUT_V1.md`. The service/action work is not complete yet.
+The malformed/error and ROS CLI timeout controls are retained as executable
+Docker runners and summarized in `EXPERIMENTAL_RESULTS_V1.md`. The
+service/action work is not complete yet.
 Remaining service work:
 
 - cancellation/error propagation through caller-visible APIs;

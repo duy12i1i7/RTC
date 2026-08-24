@@ -17,6 +17,7 @@ ARTIFACT = (
 
 
 class QuicNativeQoeDebtTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_publisher_or_unproven_debt(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         run = summary["runs"][0]
@@ -39,6 +40,7 @@ class QuicNativeQoeDebtTest(unittest.TestCase):
         mutated["transport_metrics"]["native_qoe_latest_debt"] = 0.0
         self.assertFalse(native_qoe_service_ok(mutated, derived_qoe=True))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_authenticated_native_qoe_contrast_passes_five_runs(
         self,
     ) -> None:

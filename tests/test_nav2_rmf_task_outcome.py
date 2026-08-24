@@ -17,6 +17,7 @@ ARTIFACT = (
 
 
 class Nav2RmfTaskOutcomeTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_real_upstream_terminal_results_map_to_gateway_documents(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         self.assertEqual(summary["status"], "ok")
@@ -37,6 +38,7 @@ class Nav2RmfTaskOutcomeTest(unittest.TestCase):
         )
         self.assertEqual([row["delivered"] for row in outcomes], [True] * 3)
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validator_rejects_conflated_cancel_and_delivery(self) -> None:
         client = json.loads(ARTIFACT.read_text(encoding="utf-8"))["client"]
         mutated = copy.deepcopy(client)

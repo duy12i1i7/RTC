@@ -1345,6 +1345,9 @@ int main()
         self.assertIn("rmw_deserialize(&standalone", std_msgs_probe_source)
         self.assertIn("standalone_serialization", std_msgs_probe_source)
         self.assertIn("std_msgs__msg__String", std_msgs_probe_source)
+        self.assertIn("FLEETQOX_PROBE_PAYLOAD_BYTES", std_msgs_probe_source)
+        self.assertIn("FLEETQOX_PROBE_ITERATIONS", std_msgs_probe_source)
+        self.assertIn("messages_taken", std_msgs_probe_source)
         twist_probe = PKG / "src" / "geometry_twist_probe.cpp"
         self.assertTrue(twist_probe.exists())
         twist_probe_source = twist_probe.read_text()
@@ -2590,9 +2593,11 @@ int main()
         self.assertIn("prepare_reused_build=False", docker_multi_robot_stochastic_netem_sweep_source)
         self.assertIn("prepare_reused_build: bool = True", docker_multi_robot_stochastic_netem_sweep_source)
         self.assertIn("contract_evidence_failed", docker_multi_robot_stochastic_netem_sweep_source)
-        stochastic_sweep_doc = ROOT / "docs" / "RMW_MULTI_ROBOT_LIVE_STOCHASTIC_NETEM_SWEEP_V1.md"
-        self.assertTrue(stochastic_sweep_doc.exists())
-        self.assertIn("failure boundary", stochastic_sweep_doc.read_text())
+        integration_validation_doc = ROOT / "docs" / "INTEGRATION_AND_VALIDATION.md"
+        self.assertTrue(integration_validation_doc.exists())
+        integration_validation_source = integration_validation_doc.read_text()
+        self.assertIn("Docker/tc-netem", integration_validation_source)
+        self.assertIn("8/16/32 robot scales", integration_validation_source)
         docker_multi_robot_stochastic_netem_ablation_script = (
             ROOT / "scripts" / "run_rmw_docker_multi_robot_live_stochastic_netem_ablation.py"
         )
@@ -2608,9 +2613,10 @@ int main()
         self.assertIn("mode_record_from_sweep", docker_multi_robot_stochastic_netem_ablation_source)
         self.assertIn("repair_cost_frames_mean", docker_multi_robot_stochastic_netem_ablation_source)
         self.assertIn("prepare_reused_build=not reuse_build", docker_multi_robot_stochastic_netem_ablation_source)
-        stochastic_ablation_doc = ROOT / "docs" / "RMW_MULTI_ROBOT_LIVE_STOCHASTIC_NETEM_ABLATION_V1.md"
-        self.assertTrue(stochastic_ablation_doc.exists())
-        self.assertIn("proactive repair", stochastic_ablation_doc.read_text())
+        self.assertIn(
+            "fragment loss/repair/admission/fairness",
+            integration_validation_source,
+        )
         live_baseline_comparison_script = ROOT / "scripts" / "compare_fleetrmw_live_baselines.py"
         self.assertTrue(live_baseline_comparison_script.exists())
         live_baseline_comparison_source = live_baseline_comparison_script.read_text()
@@ -2619,9 +2625,11 @@ int main()
         self.assertIn("indirect_named_profile", live_baseline_comparison_source)
         self.assertIn("fleet_router_terminal_horizon", live_baseline_comparison_source)
         self.assertIn("FleetRMW Matched 4-Robot Profile Rows", live_baseline_comparison_source)
-        live_baseline_comparison_doc = ROOT / "docs" / "RMW_LIVE_BASELINE_COMPARISON_V1.md"
-        self.assertTrue(live_baseline_comparison_doc.exists())
-        self.assertIn("direct superiority benchmark", live_baseline_comparison_doc.read_text())
+        self.assertIn("common-middle harness", integration_validation_source)
+        self.assertIn(
+            "No current result supports a universal latency or superiority claim.",
+            integration_validation_source,
+        )
         ros2_direct_rmw_netem_probe_script = ROOT / "scripts" / "run_ros2_direct_rmw_netem_probe.py"
         self.assertTrue(ros2_direct_rmw_netem_probe_script.exists())
         ros2_direct_rmw_netem_probe_source = ros2_direct_rmw_netem_probe_script.read_text()
@@ -2635,9 +2643,9 @@ int main()
         self.assertIn("fleetrmw.ros2_direct_rmw_netem_matrix.v1", ros2_direct_rmw_netem_matrix_source)
         self.assertIn("skipped_run_count", ros2_direct_rmw_netem_matrix_source)
         self.assertIn("run_probe", ros2_direct_rmw_netem_matrix_source)
-        ros2_direct_rmw_netem_doc = ROOT / "docs" / "ROS2_DIRECT_RMW_NETEM_MATRIX_V1.md"
-        self.assertTrue(ros2_direct_rmw_netem_doc.exists())
-        self.assertIn("ROS 2 Direct RMW Netem Matrix", ros2_direct_rmw_netem_doc.read_text())
+        self.assertIn("Fast DDS", integration_validation_source)
+        self.assertIn("Cyclone DDS", integration_validation_source)
+        self.assertIn("Zenoh RMW", integration_validation_source)
         manifest_source = (ROOT / "experiments" / "testbed_manifest.json").read_text()
         self.assertIn("fleetrmw_multi_robot_live_stochastic_netem_ablation", manifest_source)
         self.assertIn("ros2_direct_rmw_netem_matrix", manifest_source)

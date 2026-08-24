@@ -19,6 +19,7 @@ ARTIFACT = (
 
 
 class QuicPostgresFailoverTest(unittest.TestCase):
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_validators_reject_storage_or_evidence_regressions(self) -> None:
         summary = json.loads(ARTIFACT.read_text(encoding="utf-8"))
         run = summary["runs"][0]
@@ -65,6 +66,7 @@ class QuicPostgresFailoverTest(unittest.TestCase):
             with self.subTest(mutation=mutations.index(mutation)):
                 self.assertFalse(case_ok(mutation))
 
+    @unittest.skipUnless(ARTIFACT.is_file(), "external Docker evidence artifact absent")
     def test_canonical_docker_netem_postgresql_takeover_passes_five_runs(
         self,
     ) -> None:
