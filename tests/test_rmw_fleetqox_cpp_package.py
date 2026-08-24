@@ -1118,6 +1118,10 @@ int main()
             source,
         )
         self.assertIn(
+            "rmw_fleetqox_cpp_socket_fragment_duplicate_no_progress_drops",
+            source,
+        )
+        self.assertIn(
             "rmw_fleetqox_cpp_socket_fragment_queue_admission_waits",
             source,
         )

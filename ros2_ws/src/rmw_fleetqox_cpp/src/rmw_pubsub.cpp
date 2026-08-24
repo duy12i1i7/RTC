@@ -2421,6 +2421,11 @@ public:
     return completed_fragment_duplicates_dropped_.load(std::memory_order_relaxed);
   }
 
+  std::uint64_t fragment_duplicate_no_progress_drops() const
+  {
+    return fragment_duplicate_no_progress_drops_.load(std::memory_order_relaxed);
+  }
+
   std::uint64_t test_dropped_fragments() const
   {
     return test_dropped_fragments_.load(std::memory_order_relaxed);
@@ -6212,13 +6217,16 @@ private:
       assembly.source = *source;
       assembly.source_available = true;
     }
-    assembly.last_update_ns = now_ns;
     if (!assembly.received[fragment_index]) {
       assembly.chunks[fragment_index] = chunk;
       assembly.received[fragment_index] = true;
       assembly.received_count += 1;
       assembly.highest_received_index = std::max(
         assembly.highest_received_index, fragment_index);
+      assembly.last_update_ns = now_ns;
+    } else {
+      fragment_duplicate_no_progress_drops_.fetch_add(
+        1, std::memory_order_relaxed);
     }
     if (assembly.received_count != assembly.fragment_count) {
       lock.unlock();
@@ -6386,6 +6394,7 @@ private:
   std::atomic<std::uint64_t> fragment_repair_requests_coalesced_{0};
   std::atomic<std::uint64_t> fragment_repair_cooldown_coalesced_{0};
   std::atomic<std::uint64_t> completed_fragment_duplicates_dropped_{0};
+  std::atomic<std::uint64_t> fragment_duplicate_no_progress_drops_{0};
   std::atomic<std::uint64_t> test_dropped_fragments_{0};
   std::atomic<std::uint64_t> fragment_send_queue_rejections_{0};
   std::atomic<std::uint64_t> fragment_send_failures_{0};
@@ -11596,6 +11605,11 @@ std::uint64_t rmw_fleetqox_cpp_socket_fragment_repair_cooldown_coalesced()
 std::uint64_t rmw_fleetqox_cpp_socket_completed_fragment_duplicates_dropped()
 {
   return socket_transport().completed_fragment_duplicates_dropped();
+}
+
+std::uint64_t rmw_fleetqox_cpp_socket_fragment_duplicate_no_progress_drops()
+{
+  return socket_transport().fragment_duplicate_no_progress_drops();
 }
 
 std::uint64_t rmw_fleetqox_cpp_socket_test_dropped_fragments()

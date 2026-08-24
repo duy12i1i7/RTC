@@ -219,6 +219,7 @@ used to decide what the first FleetRMW prototype must solve.
 | Docker deterministic 513-assembly fleet-aware fragment-NACK hard-cap/rotation fairness | `results_rmw_socket/docker_fragment_nack_fairness_probe_summary.json` |
 | Docker two-reader source-scoped fragment repair plus untargeted-source fail-closed control | `results_rmw_socket/docker_multireader_fragment_repair_probe_summary.json` |
 | Docker deterministic 8-frame contended initial-fragment round-robin scheduling | `results_rmw_socket/docker_initial_fragment_round_robin_probe_summary.json` |
+| Docker duplicate-fragment/no-progress tail-repair timing regression | `results_rmw_socket/docker_fragment_tail_progress_probe_summary.json` |
 | Docker deterministic authenticated fragment completion-marker plus callback-quiescent teardown | `results_rmw_socket/docker_completion_marker_subscription_lifecycle_probe_summary.json` |
 | Docker deterministic MTU-aware 4096-byte requested to 1409-byte effective fragment budget | `results_rmw_socket/docker_mtu_aware_fragment_budget_probe_summary.json` |
 | Docker deterministic completion-marker selective repair with whole-sample retry disabled | `results_rmw_socket/docker_completion_marker_selective_repair_probe_summary.json` |
@@ -1783,6 +1784,19 @@ fleet-scale operating point. Same-hop resume validation includes `timeout_s`,
 fragment size, retry count, pacing, NACK interval/max requests/history, async
 mode, queue limit, and relay drain mode. The next transport step is adaptive
 capacity admission/pacing plus repeated CPU/memory and secure-fragment gates.
+
+The MTU-budgeted follow-up identified a second repair-timing defect: duplicate
+fragments refreshed the assembly's idle clock even though they added no data,
+so repeated repair traffic could postpone trailing-index discovery. The clock
+now advances only for a newly received index and a separate counter records
+duplicates ignored for progress. A deterministic raw-UDP Docker gate sends 20
+duplicates for 1.53 seconds; with a 400-ms guard, the receiver emits exactly
+one `2-3` NACK at 436 ms while the duplicate stream is still active and all
+receiver metrics match. The matched 16-robot/32-KiB/seed-7 rerun records 1,471
+such duplicates at the relay and improves the prior exact MTU/pacing row from
+`152/160` to `155/160`, with clean stderr but four unacknowledged publisher
+topics. The result remains negative and points next to repair-queue admission
+and progress-aware multi-round scheduling rather than teardown or MTU sizing.
 
 The full-scale rerun also exposed and fixed a FleetRMW initial-sequence ACK
 bug. A first observation at sequence 2 previously advanced the cumulative ACK

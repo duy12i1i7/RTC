@@ -138,17 +138,25 @@ This repository starts with the part that should be proven first:
   with one retry available but zero whole-frame retries. Every completed
   initial fragment batch now emits an authenticated sender-completion marker;
   receivers open trailing-index repair after that marker, the final fragment,
-  or a configurable idle guard measured from the latest fragment progress.
-  The same gate requires marker delivery, zero marker/send failure, complete
+  or a configurable idle guard measured from the latest unique-fragment
+  progress. Duplicate fragments no longer postpone that guard. A deterministic
+  raw-UDP Docker regression streams `20` duplicates for `1.53 s`; with a
+  `400 ms` guard, the receiver emits the exact trailing `2-3` NACK at `436 ms`
+  while duplicates are still arriving and exports an exact duplicate/no-progress
+  count of `20`. The round-robin gate requires marker delivery, zero marker/send failure, complete
   ACK, and clean `0/0/0` teardown. Under repair pressure the sender also lowers
   the initial-fragment burst from `8` to `4`, `2`, or `1` and exports repair
   queue high-water and promotion telemetry. A four-robot
   roaming-loss run additionally relays `40/40`; the current 16-robot frontier
-  remains negative (`154/160` best observed). At equal delivery, marker plus
+  remains negative. The duplicate/no-progress fix raises the MTU-budgeted,
+  `2.5 ms` pacing row from `152/160` to `155/160`, and relay telemetry records
+  `1,471` duplicates that no longer postpone repair; four publisher topics
+  remain unacknowledged. The prior `1024`-byte row reached `154/160`. At equal
+  delivery, marker plus
   idle-guard handling reduces publisher repair from `13345` to `12800`,
   publisher admission wait from `73.6` to `55.4` seconds, relay requested
   indexes from `19295` to `17656`, and relay admission wait from `30.9` to
-  `21.6` seconds; five publisher topics are still unacknowledged. Therefore
+  `21.6` seconds in that historical row. Therefore
   secure-fragment fleet-scale evidence and production reliability remain open;
 - opt-in MTU-aware UDP wire budgeting. The runtime derives an effective chunk
   from fragment metadata plus AEAD and X.509/signature overhead, routes an
@@ -158,7 +166,7 @@ This repository starts with the part that should be proven first:
   deterministic gate requests `4096`-byte chunks, measures `1409` effective
   bytes and exact `1472` wire high-water on both hops, records eight reductions
   with zero budget/send failures, delivers `8/8`, completes ACK, and exits
-  `0/0/0`. One lossy 16-robot run reaches only `152/160`, so automatic PMTU
+  `0/0/0`. The latest lossy 16-robot run reaches only `155/160`, so automatic PMTU
   discovery, secure credential amortization, and fleet reliability remain
   open;
 - a QoS event ABI surface where publisher/subscription event init/fini,

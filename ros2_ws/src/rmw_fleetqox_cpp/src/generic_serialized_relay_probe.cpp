@@ -326,6 +326,8 @@ int main(int argc, char ** argv)
     "rmw_fleetqox_cpp_socket_fragment_repair_cooldown_coalesced", nullptr) << ",";
   std::cout << "\"completed_fragment_duplicates_dropped\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_completed_fragment_duplicates_dropped", nullptr) << ",";
+  std::cout << "\"fragment_duplicate_no_progress_drops\":" << fleetqox_metric(
+    "rmw_fleetqox_cpp_socket_fragment_duplicate_no_progress_drops", nullptr) << ",";
   std::cout << "\"fragment_send_queue_rejections\":" << fleetqox_metric(
     "rmw_fleetqox_cpp_socket_fragment_send_queue_rejections", nullptr) << ",";
   std::cout << "\"fragment_send_failures\":" << fleetqox_metric(

@@ -66,6 +66,11 @@ surfaces; prose and benchmark claims must not exceed that manifest.
   total): every destroy blocks while its matched-event callback is held, then
   completes cleanly after release. This is entity callback-lifetime evidence,
   not a general guarantee for concurrent use of an entity after destruction;
+- treat only a newly received fragment as assembly progress. Duplicate repair
+  traffic is counted separately and cannot postpone trailing-index repair: a
+  Docker raw-UDP regression streams 20 duplicates beyond a 400-ms idle guard,
+  observes the exact `2-3` NACK at 436 ms during that stream, and matches all
+  receiver counters exactly;
 - produce publication/subscription matched,
   reliability/durability/deadline-incompatible QoS, exact type-incompatible,
   and finite-liveliness changed events from both local
